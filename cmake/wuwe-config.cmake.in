@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+set_and_check(WUWE_LIB_DIR "@PACKAGE_LIB_INSTALL_DIR@")
+include("${WUWE_LIB_DIR}/cmake/wuwe-targets.cmake")
+
+check_required_components(wuwe)
