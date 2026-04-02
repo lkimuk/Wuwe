@@ -1,8 +1,12 @@
 #ifndef WUWE_AGENT_LLM_TYPES_H
 #define WUWE_AGENT_LLM_TYPES_H
 
+#include <optional>
+#include <string>
+#include <system_error>
+#include <vector>
+
 #include <wuwe/common/wuwe_fwd.h>
-#include <wuwe/agent/llm/llm_error.h>
 
 WUWE_AGENT_NAMESPACE_BEGIN
 
@@ -25,10 +29,8 @@ struct llm_usage {
 };
 
 struct llm_response {
-    bool ok {false};
     std::string content;
-    std::string error_message;
-    llm_error_code error_code {llm_error_code::none};
+    std::error_code error_code;
     llm_usage usage;
 };
 

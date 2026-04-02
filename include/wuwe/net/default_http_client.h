@@ -5,7 +5,7 @@
 
 #include <cpr/cpr.h>
 
-#include <wuwe/agent/net/http_client.h>
+#include <wuwe/net/http_client.h>
 #include <wuwe/common/wuwe_fwd.h>
 
 WUWE_AGENT_NAMESPACE_BEGIN

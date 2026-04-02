@@ -2,7 +2,7 @@
 #include <iostream>
 #include <string>
 
-#include <wuwe/agent/net/default_http_client.h>
+#include <wuwe/net/default_http_client.h>
 
 int main() {
     wuwe::agent::default_http_client client;
@@ -17,16 +17,15 @@ int main() {
 
     const auto response = client.send(request);
 
-    std::cout << "ok: " << std::boolalpha << response.ok << '\n';
-    std::cout << "status_code: " << response.status_code << '\n';
+    std::cout << "ok: " << std::boolalpha << !response.error_code << '\n';
 
-    if (!response.error_message.empty()) {
-        std::cout << "error_message: " << response.error_message << '\n';
+    if (response.error_code) {
+        std::cout << "error_code: " << response.error_code.message() << '\n';
     }
 
     const std::size_t preview_size = std::min<std::size_t>(response.body.size(), 300);
     std::cout << "body_preview:\n";
     std::cout << response.body.substr(0, preview_size) << '\n';
 
-    return response.ok ? 0 : 1;
+    return response.error_code ? 1 : 0;
 }

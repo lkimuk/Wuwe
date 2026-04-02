@@ -1,6 +1,8 @@
 #include <wuwe/agent/llm/openai_llm_client.h>
 
-#include <wuwe/agent/net/default_http_client.h>
+#include <wuwe/net/default_http_client.h>
+
+#include <system_error>
 
 WUWE_AGENT_NAMESPACE_BEGIN
 
@@ -56,18 +58,14 @@ json openai_llm_client::build_openai_payload(const llm_request& request) const {
 llm_response openai_llm_client::parse_openai_response(const http_response& response) const {
     llm_response result;
 
-    if (!response.ok) {
-        result.ok = false;
-        result.error_message = response.error_message;
-        result.error_code = llm_error_code::http_error;
+    if (response.error_code) {
+        result.error_code = response.error_code;
         return result;
     }
 
     const auto data = json::parse(response.body, nullptr, false);
     if (data.is_discarded()) {
-        result.ok = false;
-        result.error_message = "failed to parse response body";
-        result.error_code = llm_error_code::invalid_response;
+        result.error_code = std::make_error_code(std::errc::protocol_error);
         return result;
     }
 
@@ -76,15 +74,11 @@ llm_response openai_llm_client::parse_openai_response(const http_response& respo
         data["choices"].empty() ||
         !data["choices"][0].contains("message") ||
         !data["choices"][0]["message"].contains("content")) {
-        result.ok = false;
-        result.error_message = "missing choices[0].message.content in response";
-        result.error_code = llm_error_code::invalid_response;
+        result.error_code = std::make_error_code(std::errc::protocol_error);
         return result;
     }
 
-    result.ok = true;
     result.content = data["choices"][0]["message"]["content"].get<std::string>();
-    result.error_code = llm_error_code::none;
 
     if (data.contains("usage") && data["usage"].is_object()) {
         const auto& usage = data["usage"];

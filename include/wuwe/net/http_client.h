@@ -2,10 +2,12 @@
 #define WUWE_AGENT_NET_HTTP_CLIENT_H
 
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include <wuwe/common/wuwe_fwd.h>
+#include <wuwe/net/http_status_code.h>
 
 WUWE_AGENT_NAMESPACE_BEGIN
 
@@ -18,10 +20,8 @@ struct http_request {
 };
 
 struct http_response {
-    bool ok {false};
-    int status_code {0};
+    std::error_code error_code;
     std::string body;
-    std::string error_message;
 };
 
 class http_client {
