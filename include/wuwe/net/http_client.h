@@ -12,22 +12,22 @@
 WUWE_AGENT_NAMESPACE_BEGIN
 
 struct http_request {
-    std::string method;
-    std::string url;
-    std::vector<std::pair<std::string, std::string>> headers;
-    std::string body;
-    int timeout_ms;
+  std::string method;
+  std::string url;
+  std::vector<std::pair<std::string, std::string>> headers;
+  std::string body;
+  int timeout_ms;
 };
 
 struct http_response {
-    std::error_code error_code;
-    std::string body;
+  std::error_code error_code;
+  std::string body;
 };
 
 class http_client {
 public:
-    virtual ~http_client() = default;
-    virtual http_response send(const http_request& request) = 0;
+  virtual ~http_client() = default;
+  virtual http_response send(const http_request &request) = 0;
 };
 
 WUWE_AGENT_NAMESPACE_END

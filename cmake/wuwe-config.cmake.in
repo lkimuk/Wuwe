@@ -2,6 +2,14 @@
 
 include(CMakeFindDependencyMacro)
 
+if(NOT TARGET CURL::libcurl_static AND NOT TARGET CURL::libcurl)
+    include("${PACKAGE_PREFIX_DIR}/lib/cmake/CURL/CURLConfig.cmake")
+endif()
+
+if(NOT TARGET cpr::cpr)
+    include("${PACKAGE_PREFIX_DIR}/lib/cmake/cpr/cprTargets.cmake")
+endif()
+
 set_and_check(WUWE_LIB_DIR "@PACKAGE_LIB_INSTALL_DIR@")
 include("${WUWE_LIB_DIR}/cmake/wuwe-targets.cmake")
 

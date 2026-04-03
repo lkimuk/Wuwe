@@ -8,10 +8,10 @@
 WUWE_AGENT_NAMESPACE_BEGIN
 
 struct llm_client_config {
-    std::string base_url;
-    std::string api_key;
-    std::string default_model;
-    int timeout_ms {30000};
+  std::string base_url;
+  std::string api_key;
+  std::string default_model;
+  int timeout_ms{30000};
 };
 
 WUWE_AGENT_NAMESPACE_END

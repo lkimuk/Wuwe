@@ -8,9 +8,9 @@ WUWE_AGENT_NAMESPACE_BEGIN
 
 class llm_client {
 public:
-    virtual ~llm_client() = default;
+  virtual ~llm_client() = default;
 
-    virtual llm_response complete(const llm_request& request) = 0;
+  virtual llm_response complete(const llm_request &request) = 0;
 };
 
 WUWE_AGENT_NAMESPACE_END

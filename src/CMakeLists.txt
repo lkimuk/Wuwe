@@ -27,13 +27,14 @@ FetchContent_MakeAvailable(cpr)
 # ---------------------------------------------------------------------------------------
 add_library(${PROJECT_NAME} STATIC ${PROJECT_SOURCES})
 
-target_include_directories(${PROJECT_NAME} PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+target_include_directories(${PROJECT_NAME}
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
 )
 
-target_link_libraries(${PROJECT_NAME} PUBLIC cpr::cpr)
+target_link_libraries(${PROJECT_NAME} PRIVATE cpr::cpr)
 
 # target_compile_options(arks PRIVATE)
 # target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
@@ -55,6 +56,11 @@ install(
 )
 
 install(
+    DIRECTORY ${CMAKE_SOURCE_DIR}/third_party/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(
     EXPORT ${PROJECT_NAME}-targets
     NAMESPACE ${PROJECT_NAME}::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/cmake
@@ -64,7 +70,7 @@ include(CMakePackageConfigHelpers)
 set(LIB_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME})
 configure_package_config_file(
     ${CMAKE_SOURCE_DIR}/cmake/${PROJECT_NAME}-config.cmake.in
-    ${CMAKE_BINARY_DIR}/${PROJECT_NAME}-config.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}-config.cmake
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/cmake
     PATH_VARS LIB_INSTALL_DIR
 )
