@@ -12,23 +12,18 @@ template <typename T> struct constant_init {
   };
   constexpr constant_init() noexcept : obj() {}
 
-  ~constant_init()
-  { /* do nothing, union object is not destroyed */
-  }
+  ~constant_init() { /* do nothing, union object is not destroyed */ }
 };
 
 struct http_status_category_impl final : public std::error_category {
 public:
-  const char *name() const noexcept final
-  {
+  const char *name() const noexcept final {
     return "http_status";
   }
 
-  std::string message(int code) const final
-  {
+  std::string message(int code) const final {
     using wuwe::http_status_code;
-    switch (static_cast<http_status_code>(code))
-    {
+    switch (static_cast<http_status_code>(code)) {
       case http_status_code::continue_:
         return "Continue";
       case http_status_code::switching_protocols:
@@ -77,8 +72,7 @@ public:
 
 } // namespace
 
-const std::error_category &http_status_category() noexcept
-{
+const std::error_category &http_status_category() noexcept {
   static constant_init<http_status_category_impl> http_status_category_instantance;
   return http_status_category_instantance.obj;
 }

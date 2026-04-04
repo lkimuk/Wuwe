@@ -1,30 +1,30 @@
-#include <algorithm>
 #include <iostream>
-#include <string>
 
-#include <wuwe/net/default_http_client.h>
+#include <windows.h>
 
-int main()
-{
-  wuwe::agent::default_http_client client;
+#include <wuwe/net/net_errc.h>
+#include <wuwe/wuwe.h>
 
-  wuwe::agent::http_request request;
-  request.method = "GET";
-  request.url = "https://postman-echo.com/get?ping=1";
-  request.headers = {{"Accept", "application/json"}, {"User-Agent", "wuwe-example/0.1"}};
+int main() {
+  SetConsoleOutputCP(CP_UTF8);
+  SetConsoleCP(CP_UTF8);
 
-  const auto response = client.send(request);
+  wuwe::llm_config config {
+    .base_url = "https://openrouter.ai/api",
+    .model = "qwen/qwen3.6-plus:free",
+    .timeout = 30000,
+  };
 
-  std::cout << "ok: " << std::boolalpha << !response.error_code << '\n';
+  wuwe::llm_client_factory factory;
+  auto client = factory.create_shared("OpenRouter", config);
 
-  if (response.error_code)
-  {
-    std::cout << "error_code: " << response.error_code.message() << '\n';
+  const auto response = client->complete("Tell me some happy things?");
+  if (response) {
+    wuwe::println("content: {}", response.content);
+  }
+  else {
+    wuwe::println("error: {}", response.error_code.message());
   }
 
-  const std::size_t preview_size = std::min<std::size_t>(response.body.size(), 300);
-  std::cout << "body_preview:\n";
-  std::cout << response.body.substr(0, preview_size) << '\n';
-
-  return response.error_code ? 1 : 0;
+  return response.error_code.value();
 }

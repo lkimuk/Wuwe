@@ -1,4 +1,4 @@
-﻿//   ___ __  __ ___ 
+﻿//   ___ __  __ ___
 //  / __|  \/  | _ \ GMP(Generative Metaprogramming)
 // | (_ | |\/| |  _/ version 0.2.0
 //  \___|_|  |_|_|   https://github.com/lkimuk/gmp
@@ -17,7 +17,7 @@
 /**
  * @def GMP_EXPAND(...)
  * @brief Force the full expansion of macro arguments.
- * 
+ *
  * This macro forces the complete expansion of its arguments.
  * It is commonly used as an intermediate step to ensure that
  * macro arguments are fully evaluated before being passed to
@@ -35,7 +35,7 @@
  *
  * int value = BAZ(BAR); // value will be 42
  * @endcode
- * 
+ *
  * @see GMP_IDENTITY for a simpler single-argument version
  */
 #define GMP_EXPAND(...) __VA_ARGS__
@@ -43,7 +43,7 @@
 /**
  * @def GMP_IDENTITY(x)
  * @brief Identity macro that returns its argument unchanged, forcing expansion.
- * 
+ *
  * This macro serves as the identity function for macros - it returns
  * its argument exactly as provided. It forces the full expansion of
  * its argument, similar to GMP_EXPAND, but with a different name that
@@ -55,16 +55,16 @@
  * @note In terms of functionality, GMP_IDENTITY and GMP_EXPAND are
  *       identical - both force the expansion of their arguments.
  *       However, they exist as separate macros for the following reasons:
- *       
+ *
  *       1. **Macro Recursion Avoidance**: When GMP_EXPAND is heavily used
  *          throughout a macro library, there may be edge cases where
  *          recursive macro expansion causes issues. Having GMP_IDENTITY
  *          as an alternative allows breaking potential recursion cycles.
- *       
+ *
  *       2. **Code Readability**: GMP_IDENTITY clearly communicates the
  *          intent of passing an argument through unchanged, while
  *          GMP_EXPAND emphasizes the expansion aspect.
- *       
+ *
  *       3. **Implementation Flexibility**: Some macro patterns may work
  *          better with one name versus the other due to how the
  *          preprocessor resolves macro names.
@@ -80,11 +80,11 @@
  * @code
  * #define FOO BAR
  * #define BAR 42
- * 
+ *
  * // Both produce the same result
  * int a = GMP_EXPAND(FOO);    // expands to 42
  * int b = GMP_IDENTITY(FOO);  // also expands to 42
- * 
+ *
  * // Usage in macro definitions
  * #define ADD(x, y) GMP_IDENTITY(x + y)
  * int sum = ADD(10, 20);  // expands to 10 + 20
@@ -97,7 +97,7 @@
 /**
  * \def GMP_STRINGIFY(x)
  * \brief Convert a macro argument to a string literal.
- * 
+ *
  * This macro converts its argument \a x into a string literal.
  * Unlike directly using the `#` operator, this macro ensures that
  * \a x is fully expanded before being stringified. This is important
@@ -114,7 +114,7 @@
  *
  * // Without GMP_STRINGIFY:
  * const char* str1 = #VERSION; // "VERSION"
- * 
+ *
  * // With GMP_STRINGIFY:
  * const char* str2 = GMP_STRINGIFY(VERSION); // "2.15"
  * \endcode
@@ -128,14 +128,14 @@
 /**
  * \def GMP_CONCAT(lhs, rhs)
  * \brief  Concatenates two tokens after expanding them.
- * 
+ *
  * This macro concatenates two tokens \a lhs and \a rhs after
  * expanding them.
- * 
+ *
  * \param lhs First token.
  * \param rhs Second token.
  * \return The concatenation of the expanded \a lhs and \a rhs.
- * 
+ *
  * \par Example
  * \code
  * #define FOO 1
@@ -189,10 +189,10 @@
 /**
  * \def GMP_SIZE_OF_VAARGS(...)
  * \brief Get the size of variable arguments.
- * 
+ *
  * \param ... Variable argument list
  * \return Size of arguments
- * 
+ *
  * \par Example
  * \code
  * GMP_SIZE_OF_VAARGS()                      // 0
@@ -230,14 +230,14 @@
 
 /**
  * \brief Check if variable arguments are empty.
- * 
+ *
  * This macro checks if the variable arguments are empty by expanding
  * and evaluating the arguments in various forms. It uses helper macros
  * to perform the actual checks.
- * 
+ *
  * \param ... Variable argument list
  * \return 1 if variable arguments are empty, otherwise 0.
- * 
+ *
  * \par Example
  * \code
  * GMP_IS_EMPTY()       // 1
@@ -327,11 +327,11 @@
  * @warning INTERNAL USE ONLY - Input must have 0-2 arguments max
  * @warning Do not use with more than 2 arguments - undefined behavior
  * @note This minimal 2-argument version exists to avoid circular dependency in GMP_HAS_COMMA
- * 
+ *
  * \par Example
  * \code
  * _GMP_HAS_COMMA_MINIMUM()       // 0
- * _GMP_HAS_COMMA_MINIMUM(1)      // 0  
+ * _GMP_HAS_COMMA_MINIMUM(1)      // 0
  * _GMP_HAS_COMMA_MINIMUM(1, 2)   // 1
  * \endcode
  */
@@ -366,7 +366,7 @@
  * \code
  * #define TEST_1(x) printf("One argument: %c\n", (x))
  * #define TEST_1_1(x, y) printf("Two arguments: %c, %c\n", (x), (y))
- * 
+ *
  * GMP_OVERLOAD_INVOKE(TEST, 1)('a');         // Expands to: TEST_1('a')
  * GMP_OVERLOAD_INVOKE(TEST, 1, 1)('a', 'b'); // Expands to: TEST_1_1('a', 'b')
  * \endcode
@@ -388,11 +388,11 @@
  * @param idx Zero-based index of the parameter to retrieve
  * @param ... Variable argument list
  * @return The parameter at the specified index, or empty if index out of bounds
- * 
+ *
  * @par Example
  * \code
  * GMP_GET_N(0, a, b, c)    // expands to: a
- * GMP_GET_N(1, a, b, c)    // expands to: b  
+ * GMP_GET_N(1, a, b, c)    // expands to: b
  * GMP_GET_N(2, a, b, c)    // expands to: c
  * \endcode
  */
@@ -920,11 +920,11 @@
 
 /**
  * @brief Remove parentheses from a tuple/parameter list
- * 
+ *
  * This macro is used to remove the parentheses surrounding a tuple or parameter list,
  * converting it into a comma-separated sequence of arguments.
  * Primarily used in variadic macros to process parenthesized argument groups.
- * 
+ *
  * Example:
  *   GMP_REMOVE_PARENS((int, float, char))  // Expands to: int, float, char
  *   GMP_REMOVE_PARENS((42, "hello", 3.14)) // Expands to: 42, "hello", 3.14
@@ -934,50 +934,52 @@
 
 /**
  * @brief Get the nth element from a tuple/parameter list
- * 
+ *
  * This macro extracts the element at the specified index from a parenthesized
  * tuple or parameter list. The tuple is first converted to a parameter sequence
  * by removing parentheses, then the nth element is selected.
- * 
+ *
  * Example:
  *   GMP_GET_TUPLE(0, (int, float, char))  // Expands to: int
  *   GMP_GET_TUPLE(1, (42, "hello", 3.14)) // Expands to: "hello"
- * 
+ *
  * @param idx Zero-based index of the element to retrieve
  * @param tup Parenthesized tuple containing the elements
- * 
+ *
  * @note The tuple must contain at least (idx + 1) elements.
  *       If idx is out of bounds, the behavior is undefined.
  */
 #define GMP_GET_TUPLE(idx, tup) GMP_GET_N(idx, GMP_REMOVE_PARENS(tup))
 
+#define GMP_IS_TUPLE(symbol) GMP_IS_EMPTY(GMP_EMPTY symbol)
+
 /**
  * @def GMP_TUPLE_APPEND(tup, x)
  * @brief Append an element to the end of a tuple.
- * 
+ *
  * This macro creates a new tuple by adding the element \a x to the end
  * of the input tuple \a tup. It handles both empty and non-empty tuples
  * correctly.
- * 
+ *
  * @param tup The input tuple (may be empty)
  * @param x The element to append to the tuple
  * @return A new tuple with \a x added at the end
- * 
+ *
  * @note If \a tup is empty, the result is a single-element tuple containing \a x.
  * @note This macro ensures proper parentheses handling for empty tuples.
- * 
+ *
  * @par Example
  * @code
  * // Append to non-empty tuple
  * GMP_TUPLE_APPEND((a, b, c), d)  // expands to (a, b, c, d)
- * 
- * // Append to empty tuple  
+ *
+ * // Append to empty tuple
  * GMP_TUPLE_APPEND((), x)         // expands to (x)
- * 
+ *
  * // Chaining append operations
  * GMP_TUPLE_APPEND(GMP_TUPLE_APPEND((a, b), c), d)  // expands to (a, b, c, d)
  * @endcode
- * 
+ *
  * @see GMP_TUPLE_PREPEND for adding elements to the beginning
  * @see GMP_TUPLE_CONCAT for concatenating two tuples
  */
@@ -988,30 +990,30 @@
 /**
  * @def GMP_TUPLE_PREPEND(tup, x)
  * @brief Prepend an element to the beginning of a tuple.
- * 
+ *
  * This macro creates a new tuple by adding the element \a x to the beginning
  * of the input tuple \a tup. It handles both empty and non-empty tuples
  * correctly.
- * 
+ *
  * @param tup The input tuple (may be empty)
  * @param x The element to prepend to the tuple
  * @return A new tuple with \a x added at the beginning
- * 
+ *
  * @note If \a tup is empty, the result is a single-element tuple containing \a x.
  * @note This macro ensures proper parentheses handling for empty tuples.
- * 
+ *
  * @par Example
  * @code
  * // Prepend to non-empty tuple
  * GMP_TUPLE_PREPEND((b, c, d), a)  // expands to (a, b, c, d)
- * 
+ *
  * // Prepend to empty tuple
  * GMP_TUPLE_PREPEND((), x)         // expands to (x)
- * 
+ *
  * // Chaining prepend operations
  * GMP_TUPLE_PREPEND(GMP_TUPLE_PREPEND((c, d), b), a)  // expands to (a, b, c, d)
  * @endcode
- * 
+ *
  * @see GMP_TUPLE_APPEND for adding elements to the end
  * @see GMP_TUPLE_CONCAT for concatenating two tuples
  */
@@ -1022,38 +1024,38 @@
 /**
  * @def GMP_TUPLE_CONCAT(tup_a, tup_b)
  * @brief Concatenate two tuples into a single tuple.
- * 
+ *
  * This macro combines two tuples \a tup_a and \a tup_b into a new tuple
  * that contains all elements from \a tup_a followed by all elements from \a tup_b.
  * The macro efficiently handles edge cases where one or both tuples are empty.
- * 
+ *
  * @param tup_a The first tuple (elements will appear first in the result)
  * @param tup_b The second tuple (elements will appear after \a tup_a's elements)
  * @return A new tuple containing all elements from both input tuples in order
- * 
+ *
  * @note If both tuples are empty, the result is an empty tuple.
  * @note If one tuple is empty, the result is simply the other tuple.
  * @note The macro ensures proper parentheses handling and avoids unnecessary commas.
- * 
+ *
  * @par Example
  * @code
  * // Concatenate two non-empty tuples
  * GMP_TUPLE_CONCAT((a, b), (c, d))    // expands to (a, b, c, d)
- * 
+ *
  * // First tuple empty
  * GMP_TUPLE_CONCAT((), (x, y, z))     // expands to (x, y, z)
- * 
+ *
  * // Second tuple empty
  * GMP_TUPLE_CONCAT((1, 2, 3), ())     // expands to (1, 2, 3)
- * 
+ *
  * // Both tuples empty
  * GMP_TUPLE_CONCAT((), ())            // expands to ()
- * 
+ *
  * // Mixed sizes
  * GMP_TUPLE_CONCAT((a), (b, c, d))    // expands to (a, b, c, d)
  * GMP_TUPLE_CONCAT((a, b, c), (d))    // expands to (a, b, c, d)
  * @endcode
- * 
+ *
  * @see GMP_TUPLE_APPEND for adding a single element to the end
  * @see GMP_TUPLE_PREPEND for adding a single element to the beginning
  * @see GMP_TUPLE_SLICE for extracting a subsequence from a tuple
@@ -1068,17 +1070,17 @@
 /**
  * @def GMP_TUPLE_SIZE(tup)
  * @brief Calculate the number of elements in a tuple.
- * 
+ *
  * This macro calculates the size (number of elements) of a tuple.
- * 
+ *
  * @param tup The tuple enclosed in parentheses, e.g., (a, b, c)
  * @return The number of elements in the tuple as a macro integer
- * 
+ *
  * @par Example
  * @code
  * #define TUPLE_1 (apple, banana, cherry)
  * #define TUPLE_2 (x, y)
- * 
+ *
  * int size1 = GMP_TUPLE_SIZE(TUPLE_1);  // expands to 3
  * int size2 = GMP_TUPLE_SIZE(TUPLE_2);  // expands to 2
  * int size3 = GMP_TUPLE_SIZE(());       // expands to 0 (empty tuple)
@@ -1089,42 +1091,42 @@
 /**
  * @def GMP_TUPLE_SKIP(count, tup)
  * @brief Skip the first 'count' elements from a tuple and return the remaining elements.
- * 
+ *
  * This macro creates a new tuple by removing the first 'count' elements from the input tuple.
  * It uses \ref GMP_WHILE to iteratively process the tuple elements, building up the result
  * by appending elements that should not be skipped.
- * 
+ *
  * The algorithm works as follows:
  * 1. State: (current_index, input_tuple, result_tuple)
  * 2. Continue while: current_index != size_of_input_tuple (i.e., haven't processed all elements)
  * 3. Operation for each iteration:
  *    - If current_index >= count: append current element to result
  *    - Increment current_index
- * 
+ *
  * @param count Number of elements to skip from the beginning (0-based)
  * @param tup Input tuple enclosed in parentheses
  * @return New tuple containing elements from index 'count' to the end
- * 
+ *
  * @note If count >= tuple size, returns an empty tuple.
  * @note If count == 0, returns the original tuple.
  * @note The implementation uses GMP_EQUAL_INT_INDEPENDENT for comparison, making it
  *       independent of other comparison mechanisms.
- * 
+ *
  * @par Example
  * @code
  * // Skip first 2 elements
  * GMP_TUPLE_SKIP(2, (a, b, c, d, e))  // expands to (c, d, e)
- * 
+ *
  * // Skip 0 elements (return original)
  * GMP_TUPLE_SKIP(0, (a, b, c, d, e))  // expands to (a, b, c, d, e)
- * 
+ *
  * // Skip all elements
  * GMP_TUPLE_SKIP(5, (a, b, c, d, e))  // expands to ()
- * 
+ *
  * // Skip more than exist (empty result)
  * GMP_TUPLE_SKIP(10, (a, b, c, d, e)) // expands to ()
  * @endcode
- * 
+ *
  * @see GMP_TUPLE_TAKE for taking the first N elements
  * @see GMP_TUPLE_SLICE for selecting a range of elements
  */
@@ -1146,47 +1148,47 @@
 /**
  * @def GMP_TUPLE_TAKE(count, tup)
  * @brief Take the first 'count' elements from a tuple.
- * 
+ *
  * This macro creates a new tuple containing the first 'count' elements
  * from the input tuple \a tup. If 'count' exceeds the tuple size, the
  * entire tuple is returned as a fallback behavior.
- * 
+ *
  * @param count Number of elements to take from the beginning (non-negative)
  * @param tup Input tuple
  * @return A new tuple containing the first 'count' elements
- * 
+ *
  * @note If count == 0, returns an empty tuple.
  * @note If count >= GMP_TUPLE_SIZE(tup), returns the entire tuple.
  * @note The implementation builds the result by prepending elements in reverse order
  *       and then reversing them, which is efficient for macro processing.
- * 
+ *
  * @par Example
  * @code
  * // Take first 3 elements
  * GMP_TUPLE_TAKE(3, (a, b, c, d, e))  // expands to (a, b, c)
- * 
+ *
  * // Take first element
  * GMP_TUPLE_TAKE(1, (x, y, z))        // expands to (x)
- * 
+ *
  * // Take zero elements
  * GMP_TUPLE_TAKE(0, (a, b, c))        // expands to ()
- * 
+ *
  * // Take more than available (returns full tuple)
  * GMP_TUPLE_TAKE(10, (a, b, c))       // expands to (a, b, c)
- * 
+ *
  * // Take all elements exactly
  * GMP_TUPLE_TAKE(3, (a, b, c))        // expands to (a, b, c)
  * @endcode
- * 
+ *
  * @par Error Handling
  * If 'count' is greater than the tuple size, the macro falls back to
  * returning the entire tuple. This is considered a "soft error" rather
  * than a compile-time failure, as it may be useful in some metaprogramming
  * contexts.
- * 
+ *
  * @warning For precise error checking in safety-critical contexts,
  *          consider validating 'count' before calling this macro.
- * 
+ *
  * @see GMP_TUPLE_SKIP for taking elements from the end (complementary operation)
  * @see GMP_TUPLE_SLICE for taking a range of elements
  * @see GMP_TUPLE_APPEND for adding elements to the end
@@ -1484,21 +1486,21 @@
 
 /**
  * @brief Executes a macro call on each argument independently, supporting nested iteration
- * 
- * This macro applies a given macro to each argument in the variadic list, similar to 
+ *
+ * This macro applies a given macro to each argument in the variadic list, similar to
  * GMP_FOR_EACH but designed specifically to support nested macro iteration scenarios.
- * 
+ *
  * Unlike GMP_FOR_EACH, this macro can be nested with GMP_FOR_EACH to enable multi-level
  * iteration, as regular GMP_FOR_EACH cannot be recursively called due to macro expansion
  * limitations.
- * 
+ *
  * @param call The macro to apply to each element (must be a macro that takes one argument)
  * @param ... Variable number of arguments to process
- * 
+ *
  * @note The primary purpose of this macro is to work alongside GMP_FOR_EACH for nested
  *       iterations. Using GMP_FOR_EACH alone for nested scenarios is not possible due
  *       to macro recursion restrictions.
- * 
+ *
  * @see GMP_FOR_EACH for the standard non-nestable version
  */
 #define GMP_FOR_EACH_INDEPENDENT(call, ...) GMP_EVAL( _GMP_FOR_EACH_INDEPENDENT_IMPL(call, __VA_ARGS__) )
@@ -1514,7 +1516,7 @@
 
 /**
  * @def GMP_WHILE(cond, call, ...)
- * 
+ *
  * Example usage:
  * \code
  * #define DECLARE_VARIABLES(num) int variable_ ## num;
@@ -1781,24 +1783,24 @@
 
 /**
  * @brief Compare two numbers by simultaneous decrementing, return final state
- * 
+ *
  * This macro compares two numbers x and y by repeatedly decrementing both values
  * until at least one reaches zero. It returns the final state (x_final, y_final)
  * which indicates the comparison result by their values:
- * 
+ *
  * Process examples:
  *   GMP_CMP(2, 3) → expands through:
  *     (2, 3) → (1, 2) → (0, 1)  // returns (0, 1)
- *   GMP_CMP(3, 2) → expands through:  
+ *   GMP_CMP(3, 2) → expands through:
  *     (3, 2) → (2, 1) → (1, 0)  // returns (1, 0)
  *   GMP_CMP(2, 2) → expands through:
  *     (2, 2) → (1, 1) → (0, 0)  // returns (0, 0)
- * 
+ *
  * Result interpretation:
  *   - (0, 0): x == y (both reached zero simultaneously)
  *   - (0, y): x < y (x reached zero first, y still positive)
  *   - (x, 0): x > y (y reached zero first, x still positive)
- * 
+ *
  * @param x First number to compare (non-negative)
  * @param y Second number to compare (non-negative)
  * @return Final state tuple (x_final, y_final) indicating comparison result
@@ -1810,10 +1812,10 @@
 /**
  * \def GMP_INC(value)
  * \brief Increment a value by 1.
- * 
+ *
  * This macro uses overload invocation to increment a value by 1.
  * It relies on specific macro definitions for each value.
- * 
+ *
  * \param value The value to increment.
  * \return The incremented value.
  */
@@ -2334,10 +2336,10 @@
 /**
  * \def GMP_DEC(value)
  * \brief Decrement a value by 1.
- * 
+ *
  * This macro uses overload invocation to decrement a value by 1.
  * It relies on specific macro definitions for each value.
- * 
+ *
  * \param value The value to decrement.
  * \return The decremented value.
  */
@@ -2859,10 +2861,10 @@
 /**
  * \def GMP_NOT(value)
  * \brief Macro to perform logical NOT operation on a value.
- * 
+ *
  * This macro uses overload invocation to perform a logical NOT operation.
  * It relies on specific macro definitions for each value.
- * 
+ *
  * \param value The value to perform logical NOT on.
  * \return 1 if the value is 0, 0 otherwise.
  */
@@ -2872,10 +2874,10 @@
 
 /**
  * \brief Macro to perform logical AND operation between two values.
- * 
+ *
  * This macro uses overload invocation to perform a logical AND operation.
  * It relies on specific macro definitions for each combination of values.
- * 
+ *
  * \param a The first operand (0 or 1).
  * \param b The second operand (0 or 1).
  * \return 1 if both operands are 1, 0 otherwise.
@@ -2889,22 +2891,22 @@
 /**
  * @def GMP_OR(a, b)
  * @brief Logical OR operation for two boolean values.
- * 
+ *
  * This macro computes the logical OR of two boolean values \a a and \a b.
  * Both arguments are treated as boolean values (0 = false, non-zero = true).
- * 
+ *
  * Truth table:
  * - GMP_OR(0, 0) = 0
  * - GMP_OR(0, 1) = 1
  * - GMP_OR(1, 0) = 1
  * - GMP_OR(1, 1) = 1
- * 
+ *
  * @param a First boolean value (0 or non-zero)
  * @param b Second boolean value (0 or non-zero)
  * @return 1 if either \a a or \a b is non-zero, 0 otherwise
- * 
+ *
  * @note Non-zero values are treated as true (1).
- * 
+ *
  * @par Example
  * @code
  * GMP_OR(0, 0)  // expands to 0
@@ -2912,7 +2914,7 @@
  * GMP_OR(GMP_BOOL(5), 0)  // expands to 1 (5 is non-zero, treated as true)
  * GMP_OR(GMP_BOOL(3), GMP_BOOL(7))  // expands to 1 (both non-zero)
  * @endcode
- * 
+ *
  * @see GMP_AND for logical AND operation
  * @see GMP_NOT for logical NOT operation
  */
@@ -2925,22 +2927,22 @@
 /**
  * @def GMP_XOR(a, b)
  * @brief Logical XOR (exclusive OR) operation for two boolean values.
- * 
+ *
  * This macro computes the logical XOR of two boolean values \a a and \a b.
  * XOR returns true (1) if exactly one of the inputs is true, false (0) otherwise.
- * 
+ *
  * Truth table:
  * - GMP_XOR(0, 0) = 0
  * - GMP_XOR(0, 1) = 1
  * - GMP_XOR(1, 0) = 1
  * - GMP_XOR(1, 1) = 0
- * 
+ *
  * @param a First boolean value (0 or non-zero)
  * @param b Second boolean value (0 or non-zero)
  * @return 1 if exactly one of \a a or \a b is non-zero, 0 otherwise
- * 
+ *
  * @note Non-zero values are treated as true (1).
- * 
+ *
  * @par Example
  * @code
  * GMP_XOR(0, 0)  // expands to 0
@@ -2950,13 +2952,13 @@
  * GMP_XOR(GMP_BOOL(5), 0)  // expands to 1 (5 is non-zero)
  * GMP_XOR(GMP_BOOL(3), GMP_BOOL(7))  // expands to 0 (both non-zero)
  * @endcode
- * 
+ *
  * @par XOR Properties
  * - Commutative: GMP_XOR(a, b) == GMP_XOR(b, a)
  * - Associative: GMP_XOR(a, GMP_XOR(b, c)) == GMP_XOR(GMP_XOR(a, b), c)
  * - Identity: GMP_XOR(a, 0) == a
  * - Self-inverse: GMP_XOR(a, a) == 0
- * 
+ *
  * @see GMP_AND for logical AND operation
  * @see GMP_OR for logical OR operation
  * @see GMP_NOT for logical NOT operation
@@ -2975,10 +2977,10 @@
 
 /**
  * \brief Macro to convert a value to a boolean representation.
- * 
+ *
  * This macro uses overload invocation to convert a value to its boolean representation.
  * It relies on specific macro definitions for each value.
- * 
+ *
  * \param value The value to convert (0 or non-zero).
  * \return 0 if the value is 0, 1 otherwise.
  */
@@ -3244,15 +3246,15 @@
 /**
  * @def GMP_MAX(a, b)
  * @brief Returns the maximum of two integer values.
- * 
+ *
  * This macro compares two integers \a a and \a b and returns the larger value.
- * 
+ *
  * @param a First integer value
  * @param b Second integer value
  * @return The maximum of \a a and \a b
- * 
+ *
  * @note Both values should be within the valid range of GMP integer operations.
- * 
+ *
  * @par Example
  * @code
  * GMP_MAX(3, 7)   // expands to 7
@@ -3265,13 +3267,13 @@
 /**
  * @def GMP_MIN(a, b)
  * @brief Returns the minimum of two integer values.
- * 
+ *
  * This macro compares two integers \a a and \a b and returns the smaller value.
- * 
+ *
  * @param a First integer value
  * @param b Second integer value
  * @return The minimum of \a a and \a b
- * 
+ *
  * @par Example
  * @code
  * GMP_MIN(3, 7)   // expands to 3
@@ -3285,14 +3287,14 @@
 /**
  * @def GMP_MINMAX(a, b)
  * @brief Returns a tuple containing the minimum and maximum of two values in order.
- * 
+ *
  * This macro returns a tuple (min, max) where the first element is the smaller
  * value and the second element is the larger value.
- * 
+ *
  * @param a First integer value
  * @param b Second integer value
  * @return Tuple (min, max) in ascending order
- * 
+ *
  * @par Example
  * @code
  * GMP_MINMAX(7, 3)   // expands to (3, 7)
@@ -3305,14 +3307,14 @@
 /**
  * @def GMP_MAXMIN(a, b)
  * @brief Returns a tuple containing the maximum and minimum of two values in order.
- * 
+ *
  * This macro returns a tuple (max, min) where the first element is the larger
  * value and the second element is the smaller value.
- * 
+ *
  * @param a First integer value
  * @param b Second integer value
  * @return Tuple (max, min) in descending order
- * 
+ *
  * @par Example
  * @code
  * GMP_MAXMIN(7, 3)   // expands to (7, 3)
@@ -3325,14 +3327,14 @@
 /**
  * @def GMP_SWAP(a, b)
  * @brief Swaps the positions of two values.
- * 
+ *
  * This macro simply returns its arguments in reversed order.
  * It can be used as a building block for more complex operations.
- * 
+ *
  * @param a First value
  * @param b Second value
  * @return Tuple (b, a) with arguments swapped
- * 
+ *
  * @par Example
  * @code
  * GMP_SWAP(x, y)   // expands to y, x
@@ -3343,17 +3345,17 @@
 /**
  * @def GMP_ADD(a, b)
  * @brief Computes the sum of two integer values using iterative addition.
- * 
+ *
  * This macro implements addition by repeatedly incrementing the smaller value
  * while decrementing the larger value.
- * 
+ *
  * @param a First integer value
  * @param b Second integer value
  * @return The sum of \a a and \a b
- * 
+ *
  * @note The implementation ensures that the iteration count equals min(a,b),
  *       making it efficient for the typical case where one value is small.
- * 
+ *
  * @par Example
  * @code
  * GMP_ADD(2, 3)   // expands to 5
@@ -3369,14 +3371,14 @@
 /**
  * @def GMP_SUB(a, b)
  * @brief Computes the difference between two integer values (a - b).
- * 
+ *
  * This macro implements subtraction with support for negative results.
  * If a >= b, returns a - b. If a < b, returns -(b - a).
- * 
+ *
  * @param a First integer value (minuend)
  * @param b Second integer value (subtrahend)
  * @return The difference a - b (may be negative)
- * 
+ *
  * @par Example
  * @code
  * GMP_SUB(5, 3)   // expands to 2
@@ -3384,7 +3386,7 @@
  * GMP_SUB(7, 7)   // expands to 0
  * GMP_SUB(0, 0)   // expands to 0
  * @endcode
- * 
+ *
  * @note The negative result is represented with a minus sign prefix.
  */
 #define GMP_SUB(a, b) _GMP_SUB(GMP_LESS_INT(a, b), a, b)
@@ -3397,26 +3399,26 @@
 
 /**
  * @brief Conditional selection macro that evaluates to one of two expressions based on a condition
- * 
- * This macro provides a functional-style if-then-else construct that can be used in 
- * preprocessor contexts. It selects between \a then_expr and \a else_expr based on 
+ *
+ * This macro provides a functional-style if-then-else construct that can be used in
+ * preprocessor contexts. It selects between \a then_expr and \a else_expr based on
  * the boolean value of \a cond.
- * 
+ *
  * @param cond Condition value (0 for false, any other value for true)
  * @param then_expr Expression to evaluate if \a cond is true (non-zero)
  * @param else_expr Expression to evaluate if \a cond is false (zero)
  * @return \a then_expr if \a cond is true, \a else_expr if \a cond is false
- * 
+ *
  * @note The condition \a cond should be a simple value (0 or 1) for reliable behavior
  * @note Both \a then_expr and \a else_expr are fully evaluated by the preprocessor
- * 
+ *
  * @par Example
  * \code
  * #define DEBUG_LEVEL 1
  * GMP_IF_THEN_ELSE(DEBUG_LEVEL, "Debug mode", "Release mode")
  * // Expands to: "Debug mode"
- * 
- * GMP_IF_THEN_ELSE(0, "This won't appear", "This will appear")  
+ *
+ * GMP_IF_THEN_ELSE(0, "This won't appear", "This will appear")
  * // Expands to: "This will appear"
  * \endcode
  */
@@ -3427,44 +3429,44 @@
 /**
  * @def GMP_IF(cond, expr)
  * @brief Conditional macro expansion based on boolean condition.
- * 
+ *
  * This macro expands to \a expr if \a cond evaluates to true (non-zero),
  * otherwise expands to nothing (empty expansion).
- * 
+ *
  * @param cond Boolean condition (0 = false, non-zero = true)
  * @param expr Expression to expand if condition is true
  * @return \a expr if \a cond is true, otherwise nothing
- * 
+ *
  * @note Unlike GMP_IF_THEN_ELSE, this macro only has a "then" branch.
  * @note The condition is evaluated as boolean (0 = false, other = true).
- * 
+ *
  * @par Example
  * @code
  * // Expand based on condition
  * #define DEBUG_MODE 1
  * GMP_IF(DEBUG_MODE, std::cout << "Debug message\n";)
  * // Expands to: std::cout << "Debug message\n";
- * 
+ *
  * #define RELEASE_MODE 0
  * GMP_IF(RELEASE_MODE, std::cout << "Release message\n";)
  * // Expands to: (nothing)
- * 
+ *
  * // Use with other macros
  * #define LOG_IF(cond, msg) GMP_IF(cond, LOG(msg))
  * LOG_IF(1, "This will be logged")
  * LOG_IF(0, "This will not be logged")
  * @endcode
- * 
+ *
  * @see GMP_IF_THEN_ELSE for if-then-else with both branches
  * @see GMP_BOOL for explicit boolean conversion
  */
-#define GMP_IF(cond, expr) GMP_OVERLOAD_INVOKE(_GMP_IF, cond)(expr) 
+#define GMP_IF(cond, expr) GMP_OVERLOAD_INVOKE(_GMP_IF, cond)(expr)
 #define _GMP_IF_1(expr) expr
 #define _GMP_IF_0(expr)
 
 /**
  * @brief Maximum depth allowed for macro nesting.
- * 
+ *
  * This macro defines the maximum depth allowed for macro nesting.
  * Exceeding this depth may lead to compiler errors or warnings related to
  * macro recursion depth.
@@ -3473,10 +3475,10 @@
 
 /**
  * \brief Macro to check if an index is within a specified range.
- * 
+ *
  * This macro checks if the given index is within a specified range defined by \ref GMP_MAX_INDEX.
  * If the index exceeds \ref GMP_MAX_INDEX, an error is generated; otherwise, it performs no action.
- * 
+ *
  * \param index The index to check.
  */
 #define GMP_CHECK_INDEX(index) GMP_OVERLOAD_INVOKE(_GMP_CHECK_INDEX_R, _GMP_HAS_COMMA_MINIMUM(GMP_OVERLOAD_INVOKE(_GMP_CHECK_INDEX, index)))(index)
@@ -3758,10 +3760,10 @@
 /**
  * \def GMP_MAKE_INDEX_SEQUENCE(index)
  * \brief Generates a comma-separated index sequence up to a given index.
- * 
+ *
  * This macro uses overload invocation and recursive macro expansion
  * to generate a comma-separated sequence of indices from 0 up to the specified index.
- * 
+ *
  * \param index The maximum index value to include in the sequence.
  * \return A comma-separated sequence of indices.
  */
@@ -4561,13 +4563,13 @@
 
 /**
  * @brief Check if i < j by analyzing comparison result state
- * 
+ *
  * This macro checks if the first number is less than the second by analyzing
  * the final state (i_final, j_final) from the comparison process.
- * 
+ *
  * Mathematical logic:
  *   i < j  ⇔  (i_final == 0) && (j_final > 0)
- * 
+ *
  * @param i First number to compare
  * @param j Second number to compare
  * @return True if i < j, false otherwise
@@ -4578,16 +4580,16 @@
 /**
  * @def GMP_LESS_EQUAL_INT(i, j)
  * @brief Test if i ≤ j (i is less than or equal to j).
- * 
+ *
  * Returns 1 if i is less than or equal to j, 0 otherwise.
  * Implements: i ≤ j ≡ (i < j) ∨ (i == j)
- * 
+ *
  * @param i First integer
  * @param j Second integer
  * @return 1 if i ≤ j, 0 otherwise
- * 
+ *
  * @note This is logically equivalent to NOT(i > j)
- * 
+ *
  * @par Example
  * @code
  * GMP_LESS_EQUAL_INT(3, 5)   // expands to 1 (true)
@@ -4595,7 +4597,7 @@
  * GMP_LESS_EQUAL_INT(4, 4)   // expands to 1 (true)
  * GMP_LESS_EQUAL_INT(0, 0)   // expands to 1 (true)
  * @endcode
- * 
+ *
  * @see GMP_LESS_INT for strict less than (<)
  * @see GMP_EQUAL_INT for equality (==)
  * @see GMP_GREATER_EQUAL_INT for greater than or equal (≥)
@@ -4604,13 +4606,13 @@
 
 /**
  * @brief Check if i > j by analyzing comparison result state
- * 
+ *
  * This macro checks if the first number is greater than the second by analyzing
  * the final state (i_final, j_final) from the comparison process.
- * 
+ *
  * Mathematical logic:
  *   i > j  ⇔  (i_final > 0) && (j_final == 0)
- * 
+ *
  * @param i First number to compare
  * @param j Second number to compare
  * @return 1 if i > j, 0 otherwise
@@ -4621,16 +4623,16 @@
 /**
  * @def GMP_GREATER_EQUAL_INT(i, j)
  * @brief Test if i ≥ j (i is greater than or equal to j).
- * 
+ *
  * Returns 1 if i is greater than or equal to j, 0 otherwise.
  * Implements: i ≥ j ≡ (i > j) ∨ (i == j)
- * 
+ *
  * @param i First integer
  * @param j Second integer
  * @return 1 if i ≥ j, 0 otherwise
- * 
+ *
  * @note This is logically equivalent to NOT(i < j)
- * 
+ *
  * @par Example
  * @code
  * GMP_GREATER_EQUAL_INT(5, 3)   // expands to 1 (true)
@@ -4638,7 +4640,7 @@
  * GMP_GREATER_EQUAL_INT(4, 4)   // expands to 1 (true)
  * GMP_GREATER_EQUAL_INT(0, 0)   // expands to 1 (true)
  * @endcode
- * 
+ *
  * @see GMP_GREATER_INT for strict greater than (>)
  * @see GMP_EQUAL_INT for equality (==)
  * @see GMP_LESS_EQUAL_INT for less than or equal (≤)
@@ -4647,17 +4649,17 @@
 
 /**
  * @brief Integer subtraction (i - j)
- * 
+ *
  * Returns the result of subtracting j from i.
  * Result can be negative, but input parameters must be non-negative.
- * 
- * Example: 
+ *
+ * Example:
  *   GMP_SUB_INT(9, 14)  → -5
  *   GMP_SUB_INT(23, 14) → 9
  *   GMP_SUB_INT(8, 8)   → 0
- * 
+ *
  * @param i Minuend (non-negative integer)
- * @param j Subtrahend (non-negative integer) 
+ * @param j Subtrahend (non-negative integer)
  * @return i - j (can be negative)
  */
 #define GMP_SUB_INT(i, j) GMP_IDENTITY(_GMP_SUB_INT_IMPL GMP_CMP(i, j))
@@ -4676,13 +4678,13 @@
 /**
  * \brief Macro to defer the expansion of another macro.
  *
- * This macro is used to defer the expansion of the given macro \a id by inserting 
- * an additional layer of indirection. This can be useful in certain macro programming 
+ * This macro is used to defer the expansion of the given macro \a id by inserting
+ * an additional layer of indirection. This can be useful in certain macro programming
  * scenarios where immediate expansion of a macro needs to be prevented.
  *
  * \param id The macro to be deferred.
  * \return This macro does not return any value. It simply defers the expansion of \a id.
- * 
+ *
  * \par Example
  * \code
  * #define Bar() 1
@@ -4731,24 +4733,24 @@
  * @param call The function or macro to be called in each iteration.
  * @param count The number of times the function call should be executed.
  * @param ... Additional arguments passed to each invocation of \a call.
- * 
+ *
  * @note The \a count value should not be greater than \ref GMP_MAX_INT.
- * 
+ *
  * @par Example
  * @code
  * void bar(int arg1, const char* arg2) {
  *     printf("bar %d, %s\n", arg1, arg2);
  * }
- * 
- * #define Bar(arg1, arg2) bar(arg1, arg2); 
+ *
+ * #define Bar(arg1, arg2) bar(arg1, arg2);
  * GMP_REPEAT(Bar, 3, 1, "arg2") // Execute bar function 3 times
  * // Expands to: bar(1, "arg2"); bar(1, "arg2"); bar(1, "arg2");
  * @endcode
- * 
+ *
  * @par Error Handling
  * If \a count exceeds \ref GMP_MAX_INT, a compile-time error is triggered
  * via \ref GMP_CHECK_INDEX. For valid counts, the macro executes safely.
- * 
+ *
  * @see GMP_CHECK_INDEX for index validation
  * @see GMP_EVAL for expression evaluation
  */
@@ -4765,17 +4767,17 @@
 
 /**
  * @brief Generate nested namespaces
- * 
+ *
  * These macros create a series of nested namespaces from a list of namespace names.
- * 
+ *
  * Example:
  *   GMP_GENERATE_NAMESPACES_BEGIN(outer, inner, detail)
  *   GMP_GENERATE_NAMESPACES_END(outer, inner, detail)
- *   
+ *
  *   Expands to:
  *   namespace outer { namespace inner { namespace detail {
  *   } } }
- * 
+ *
  * @param ... Variable list of namespace names to create nested hierarchy
  */
 #define GMP_GENERATE_NAMESPACES_BEGIN(...) GMP_FOR_EACH(_GMP_START_NAMESPACES, __VA_ARGS__)
@@ -4784,54 +4786,54 @@
 /**
  * @def GMP_CONCATS(x, y, ...)
  * @brief Concatenate multiple tokens into a single token.
- * 
+ *
  * This macro concatenates all provided tokens into a single token.
  * It accepts two or more arguments and can handle an arbitrary number
  * of tokens (subject to compiler limits).
- * 
+ *
  * The macro works by recursively concatenating tokens in pairs:
  * 1. First concatenate x and y into a single token
  * 2. Then concatenate that result with the next token
  * 3. Continue until all tokens are concatenated
- * 
+ *
  * @param x First token to concatenate
- * @param y Second token to concatenate  
+ * @param y Second token to concatenate
  * @param ... Additional tokens to concatenate (optional)
  * @return A single token formed by concatenating all input tokens
- * 
+ *
  * @note The macro requires at least 2 arguments. For single-token
  *       "concatenation", use GMP_IDENTITY or simply pass the token directly.
  * @note This macro uses GMP_EVAL to ensure complete expansion of
  *       intermediate concatenation results.
- * 
+ *
  * @par Example
  * @code
  * #define PREFIX foo
  * #define SUFFIX bar
- * 
+ *
  * // Basic concatenation
  * GMP_CONCATS(a, b, c)        // expands to abc
  * GMP_CONCATS(1, 2, 3, 4)     // expands to 1234
- * 
+ *
  * // With macro expansion
  * GMP_CONCATS(PREFIX, _, SUFFIX)  // expands to foo_bar
- * 
+ *
  * // Creating identifiers
  * GMP_CONCATS(func_, 1)       // expands to func_1
  * GMP_CONCATS(TYPE, _ptr)     // expands to TYPE_ptr
- * 
+ *
  * // Multiple concatenations
  * GMP_CONCATS(a, b, c, d, e)  // expands to abcde
  * @endcode
- * 
+ *
  * @par Comparison with GMP_CONCAT
  * - GMP_CONCAT concatenates exactly two tokens
  * - GMP_CONCATS concatenates two or more tokens
  * - GMP_CONCATS(x, y) is functionally equivalent to GMP_CONCAT(x, y)
- * 
+ *
  * @warning Avoid excessive recursion depth. While the macro can handle
  *          many tokens, very long argument lists may hit compiler limits.
- * 
+ *
  * @see GMP_CONCAT for concatenating exactly two tokens
  * @see GMP_STRINGIFY for converting tokens to string literals
  * @see GMP_EXPAND for ensuring macro expansion
@@ -4844,20 +4846,20 @@
 
 /**
  * @brief Removes trailing comma from variadic macro arguments
- * 
+ *
  * This macro eliminates the trailing comma that may appear in variadic arguments,
  * particularly useful when dealing with empty argument lists or conditional macro expansions.
- * 
+ *
  * @note This is a helper macro that works in conjunction with other GMP tuple utilities.
- * 
+ *
  * Example usage:
  * @code
- * GMP_REMOVE_TRAILING_COMMA(a, b, c,)  // Expands to: a, b, c 
- * GMP_REMOVE_TRAILING_COMMA()          // Expands to: 
- * GMP_REMOVE_TRAILING_COMMA(,)         // Expands to: 
+ * GMP_REMOVE_TRAILING_COMMA(a, b, c,)  // Expands to: a, b, c
+ * GMP_REMOVE_TRAILING_COMMA()          // Expands to:
+ * GMP_REMOVE_TRAILING_COMMA(,)         // Expands to:
  * GMP_REMOVE_TRAILING_COMMA(_0,)       // Expands to: _0
  * @endcode
- * 
+ *
  * @param ... Variadic arguments (may include a trailing comma)
  * @return Arguments without trailing comma, wrapped in parentheses
  */
@@ -4874,7 +4876,7 @@
 
 /**
  * @brief C++ standard version detection
- * 
+ *
  * These macros detect the C++ standard version being used.
  * Values correspond to the actual __cplusplus macro values.
  */
@@ -4888,49 +4890,49 @@
 
 /**
  * @brief Check if current C++ standard is greater than or equal to the specified version
- * 
+ *
  * This macro checks if the current C++ standard meets or exceeds the given version.
- * 
+ *
  * Example:
  *   GMP_CPP_AT_LEAST(17)  // true if C++17 or newer
  *   GMP_CPP_AT_LEAST(20)  // true if C++20 or newer
- * 
+ *
  * @param version The C++ standard version year (98, 11, 14, 17, 20, 23, 26)
  */
 #define GMP_CPP_AT_LEAST(version) (__cplusplus >= GMP_CONCAT(GMP_CPP_STD, version))
 
 /**
  * @brief Check if current C++ standard is exactly the specified version
- * 
+ *
  * This macro checks if the current C++ standard exactly matches the given version.
- * 
+ *
  * Example:
  *   GMP_CPP_EXACTLY(17)  // true only for C++17
- * 
+ *
  * @param version The C++ standard version year
  */
 #define GMP_CPP_EXACTLY(version) (__cplusplus == GMP_CONCAT(GMP_CPP_STD, version))
 
 /**
  * @brief Check if current C++ standard is newer than the specified version
- * 
+ *
  * This macro checks if the current C++ standard is strictly newer than the given version.
- * 
+ *
  * Example:
  *   GMP_CPP_NEWER_THAN(17)  // true for C++20, C++23, etc.
- * 
+ *
  * @param version The C++ standard version year
  */
 #define GMP_CPP_NEWER_THAN(version) (__cplusplus > GMP_CONCAT(GMP_CPP_STD, version))
 
 /**
  * @brief Check if current C++ standard is older than the specified version
- * 
+ *
  * This macro checks if the current C++ standard is strictly older than the given version.
- * 
+ *
  * Example:
  *   GMP_CPP_OLDER_THAN(17)  // true for C++14, C++11, etc.
- * 
+ *
  * @param version The C++ standard version year
  */
 #define GMP_CPP_OLDER_THAN(version) (__cplusplus < GMP_CONCAT(GMP_CPP_STD, version))
