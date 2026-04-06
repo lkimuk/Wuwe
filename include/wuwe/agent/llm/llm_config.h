@@ -31,6 +31,8 @@ struct llm_client_config {
   std::string api_key { load_api_key_from_env() };
   std::string model;
   int timeout { 30000 };
+  int max_retries { 2 };
+  int retry_backoff_ms { 600 };
 };
 
 using llm_config = llm_client_config;

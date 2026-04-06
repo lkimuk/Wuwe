@@ -49,6 +49,9 @@ http_response default_http_client::send(const http_request& request) {
   cpr::Session session;
   session.SetUrl(cpr::Url { request.url });
   session.SetHeader(make_cpr_headers(request));
+  if (request.timeout > 0) {
+    session.SetTimeout(cpr::Timeout { request.timeout });
+  }
 
   if (!request.body.empty()) {
     session.SetBody(cpr::Body { request.body });
