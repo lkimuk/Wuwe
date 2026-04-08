@@ -2,7 +2,7 @@
  *
 MIT License
 
-Copyright (c) 2020 lkimuk(Gaoxing Li)
+Copyright (c) 2020 Gaoxing Li
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -29,7 +29,7 @@ SOFTWARE.
 #include <cstdlib>
 #include <new>
 
-#include "lock.hpp"
+#include <gmp/dp/lock.hpp>
 
 namespace gmp {
 

@@ -12,49 +12,11 @@
 #ifndef GMP_META_HPP_
 #define GMP_META_HPP_
 
-#include <array>
 #include <source_location>
 
-#include <gmp/meta/fixed_string.hpp>
-#include <gmp/meta/detail/name.hpp>
+#include <gmp/meta/type_name.hpp>
 
 namespace gmp {
-
-/**
- * @brief Get the string representation of a type at compile-time.
- * 
- * This function returns a compile-time string representing the name of the 
- * given type T. The implementation is compiler-specific and extracts the 
- * type name from compiler-generated function signatures.
- * 
- * @tparam T The type whose name is to be retrieved.
- * @return A fixed_string containing the type name. If the compiler is not 
- *         supported (currently GCC, Clang, and MSVC are supported), returns 
- *         "Unknown type name".
- * 
- * @note This function is marked as consteval, ensuring it's evaluated 
- *       entirely at compile-time. The returned string is suitable for 
- *       compile-time string manipulation and comparison.
- * 
- * @example
- * @code
- * auto int_name = type_name<int>();     // "int" on all compilers
- * auto vec_name = type_name<std::vector<int>>(); // Compiler-specific representation
- * 
- * // Can be used in static assertions
- * static_assert(type_name<int>().size() == 3);
- * @endcode
- */
-template<typename T>
-consteval auto type_name() {
-    constexpr auto name = detail::type_name_of<T>();
-#if GMP_COMPILER_MSVC
-    constexpr fixed_string<name.size()> type(name);
-    return remove_all<"class ", "struct ", "enum ">(constant_arg<type>);
-#else
-    return fixed_string<name.size()>(name);
-#endif
-}
 
 /**
  * @brief Count the number of enumerators in an enumeration type at compile-time.
@@ -231,6 +193,58 @@ consteval int member_count() {
     }
 }
 
+/**
+ * @brief Get the name of a specific member of an aggregate type at compile-time.
+ * 
+ * @tparam I The zero-based index of the member to get the name for.
+ * @tparam T The aggregate type containing the member.
+ * @return A fixed_string containing the member name.
+ * 
+ * @note This function is consteval and requires:
+ *       - T to be an aggregate type
+ *       - I to be within the valid range [0, member_count<T>())
+ *       - member_count<T>() to not exceed GMP_MAX_SUPPORTED_FIELDS
+ * 
+ * @throws Compile-time error if any of the above requirements are not met.
+ * 
+ * @example
+ * @code
+ * struct Person {
+ *     std::string name;
+ *     int age;
+ *     double height;
+ * };
+ * 
+ * struct Empty {};
+ * 
+ * // Get individual member names
+ * constexpr auto first_member = member_name<0, Person>();
+ * static_assert(first_member == "name");
+ * 
+ * constexpr auto second_member = member_name<1, Person>();
+ * static_assert(second_member == "age");
+ * 
+ * constexpr auto third_member = member_name<2, Person>();
+ * static_assert(third_member == "height");
+ * 
+ * // Use in static assertions
+ * static_assert(member_name<0, Person>().size() == 4);
+ * 
+ * // Template metaprogramming
+ * template<typename T, size_t I>
+ * struct MemberTraits {
+ *     static constexpr auto name = member_name<I, T>();
+ *     static constexpr size_t index = I;
+ * };
+ * 
+ * static_assert(MemberTraits<Person, 1>::name == "age");
+ * 
+ * // These would cause compile-time errors:
+ * // member_name<0, Empty>();     // Error: I < member_count<T>() fails
+ * // member_name<3, Person>();    // Error: Index out of bounds
+ * // member_name<0, int>();       // Error: Not an aggregate
+ * @endcode
+ */
 template<std::size_t I, typename T>
     requires std::is_aggregate_v<T> &&
         (I < member_count<T>()) &&
@@ -247,6 +261,62 @@ consteval auto member_name() noexcept {
     static_assert(member_count<T>() <= GMP_MAX_SUPPORTED_FIELDS, "member_name() only supports up to " GMP_STRINGIFY(GMP_MAX_SUPPORTED_FIELDS) " fields.");
 }
 
+/**
+ * @brief Get all member names of an aggregate type at compile-time.
+ * 
+ * This function returns an array containing the names of all members
+ * of the aggregate type T.
+ * 
+ * @tparam T The aggregate type to get member names for.
+ * @return A std::array of std::string_view containing all member names.
+ *         Returns an empty array if the aggregate has no members.
+ * 
+ * @example
+ * @code
+ * struct Vector3 { float x; float y; float z; };
+ * struct Empty {};
+ * struct Config { int timeout; bool enabled; std::string host; };
+ * 
+ * // Get all member names
+ * constexpr auto vec_members = member_names<Vector3>();
+ * static_assert(vec_members.size() == 3);
+ * static_assert(vec_members[0] == "x");
+ * static_assert(vec_members[1] == "y");
+ * static_assert(vec_members[2] == "z");
+ * 
+ * // Empty aggregate
+ * constexpr auto empty_members = member_names<Empty>();
+ * static_assert(empty_members.empty());
+ * 
+ * // Compile-time iteration
+ * template<typename T>
+ * constexpr bool has_member(std::string_view name) {
+ *     constexpr auto names = member_names<T>();
+ *     for (size_t i = 0; i < names.size(); ++i) {
+ *         if (names[i] == name) return true;
+ *     }
+ *     return false;
+ * }
+ * 
+ * static_assert(has_member<Config>("timeout"));
+ * static_assert(has_member<Config>("host"));
+ * static_assert(!has_member<Config>("port"));
+ * 
+ * // Generate compile-time member name list
+ * template<typename T>
+ * struct MemberList {
+ *     static constexpr auto names = member_names<T>();
+ *     static constexpr size_t size = names.size();
+ *     
+ *     template<size_t I>
+ *     static constexpr auto get() { return names[I]; }
+ * };
+ * 
+ * using Vector3Members = MemberList<Vector3>;
+ * static_assert(Vector3Members::size == 3);
+ * static_assert(Vector3Members::get<1>() == "y");
+ * @endcode
+ */
 template<typename T>
 consteval auto member_names() {
     constexpr auto size = member_count<T>();
@@ -259,6 +329,76 @@ consteval auto member_names() {
             });
         }(std::make_index_sequence<size>{});
     }
+}
+
+/**
+ * @brief Extract the type of the I-th member (field) from a struct/class T
+ * 
+ * @tparam I - Index of the member to extract (0-based)
+ * @tparam T - The struct/class type to introspect
+ * 
+ * @returns The type of the I-th member, stripped of const, volatile, and reference qualifiers
+ * 
+ * @note Requires that T is an aggregate type (struct/class with public members)
+ * @note The member count must be known at compile time
+ * 
+ * @example
+ * struct Point { int x; float y; };
+ * using XType = member_type_t<0, Point>;  // int
+ * using YType = member_type_t<1, Point>;  // float
+ */
+template<std::size_t I, typename T>
+using member_type_t = std::remove_cvref_t<
+    decltype(*detail::field_getter<I, T>(constant_arg<member_count<T>()>))>;
+
+namespace detail {
+
+template<typename T>
+struct member_type_names_holder {
+    static constexpr std::size_t N = member_count<T>();
+
+    static constexpr auto fixed_names = []<std::size_t... Is>(std::index_sequence<Is...>) {
+        return std::tuple{ pretty_type_name<member_type_t<Is, T>>()()... };
+    }(std::make_index_sequence<N>{});
+
+    static constexpr auto views = []<std::size_t... Is>(std::index_sequence<Is...>) {
+        return std::array<std::string_view, N>{
+            std::get<Is>(fixed_names).to_string_view()...
+        };
+    }(std::make_index_sequence<N>{});
+};
+
+} // namespace detail
+
+/**
+ * @brief Returns an array of string_view containing the type names of all members of aggregate type T
+ * 
+ * @tparam T - The aggregate type to introspect (struct/class with public members)
+ * 
+ * @return std::array<std::string_view, N> where N is the member count of T,
+ *         containing the demangled/pretty type names of each member in declaration order
+ * 
+ * @note The type names are generated at compile time and stored as static data
+ * @note The returned string_views remain valid for the entire program lifetime
+ * @note Requires T to be an aggregate type with known member count at compile time
+ * 
+ * @example
+ * struct Person {
+ *     int age;
+ *     std::string name;
+ *     double height;
+ * };
+ * 
+ * auto names = member_type_names<Person>();
+ * // names[0] == "int"
+ * // names[1] == "std::string" (or "std::basic_string<char>")
+ * // names[2] == "double"
+ * 
+ * @see member_type_t, member_count
+ */
+template<typename T>
+constexpr auto member_type_names() {
+    return detail::member_type_names_holder<T>::views;
 }
 
 } // namespace gmp

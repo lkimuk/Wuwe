@@ -1,9 +1,7 @@
 #ifndef WUWE_AGENT_LLM_TOOLS_H
 #define WUWE_AGENT_LLM_TOOLS_H
 
-#include <array>
 #include <concepts>
-#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -116,6 +114,9 @@ inline constexpr bool is_instance_description_member_v =
   (gmp::member_names<T>()[I] == "description") &&
   std::is_convertible_v<gmp::member_type_t<I, T>, std::string_view>;
 
+template <typename T, std::size_t I>
+inline constexpr bool is_tool_parameter_member_v = !is_instance_description_member_v<T, I>;
+
 template <typename T>
 consteval bool has_instance_description_member() {
   constexpr auto count = gmp::member_count<T>();
@@ -189,6 +190,16 @@ tool_json build_json_value(T&& value);
 template <std::size_t I, typename T>
 decltype(auto) get_member_ref(T&& value);
 
+template <typename T>
+auto tool_prototype() -> std::optional<T> {
+  if constexpr (std::default_initializable<T>) {
+    return T {};
+  }
+  else {
+    return std::nullopt;
+  }
+}
+
 template <typename Enum>
 Enum parse_reflectable_enum(const tool_json& json_value) {
   if (json_value.is_string()) {
@@ -234,7 +245,7 @@ void validate_object_keys(const tool_json& json_value) {
   for (const auto& [key, _] : json_value.items()) {
     bool found = false;
     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-      (((!is_instance_description_member_v<T, Is> && member_names[Is] == key) ? found = true : found), ...);
+      (((is_tool_parameter_member_v<T, Is> && member_names[Is] == key) ? found = true : found), ...);
     }(std::make_index_sequence<member_names.size()>{});
 
     if (!found) {
@@ -245,7 +256,7 @@ void validate_object_keys(const tool_json& json_value) {
         bool first = true;
         [&]<std::size_t... Is>(std::index_sequence<Is...>) {
           (([&] {
-              if constexpr (!is_instance_description_member_v<T, Is>) {
+              if constexpr (is_tool_parameter_member_v<T, Is>) {
                 if (!first) {
                   message << ", ";
                 }
@@ -268,7 +279,7 @@ std::string tool_description_string() {
   }
   else {
     constexpr auto count = gmp::member_count<T>();
-    const auto prototype = T {};
+    const auto prototype = *tool_prototype<T>();
     std::string result;
     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
       (([&] {
@@ -288,29 +299,21 @@ tool_json build_object_json_schema() {
   tool_json required = tool_json::array();
 
   constexpr auto member_names = gmp::member_names<T>();
-  constexpr bool has_default_object = std::default_initializable<T>;
-  const auto default_object = []() -> std::optional<T> {
-    if constexpr (has_default_object) {
-      return T {};
-    }
-    else {
-      return std::nullopt;
-    }
-  }();
+  const auto default_object = tool_prototype<T>();
 
   [&]<std::size_t... Is>(std::index_sequence<Is...>) {
     (([&] {
         using member_type = gmp::member_type_t<Is, T>;
         using schema_type = unwrap_field_t<member_type>;
 
-        if constexpr (is_instance_description_member_v<T, Is>) {
+        if constexpr (!is_tool_parameter_member_v<T, Is>) {
           return;
         }
 
         auto field_schema = build_json_schema<schema_type>();
 
         if constexpr (is_field_v<member_type>) {
-          if constexpr (has_default_object) {
+          if (default_object.has_value()) {
             const auto& member = get_member_ref<Is>(*default_object);
             if (!member.description.empty()) {
               field_schema["description"] = member.description;
@@ -331,7 +334,7 @@ tool_json build_object_json_schema() {
         properties[std::string(member_names[Is])] = std::move(field_schema);
 
         if constexpr (is_field_v<member_type>) {
-          if constexpr (has_default_object) {
+          if (default_object.has_value()) {
             const auto& member = get_member_ref<Is>(*default_object);
             if (!member.default_value.has_value() && !is_optional_v<schema_type>) {
               required.push_back(member_names[Is]);
@@ -457,17 +460,10 @@ gmp::member_type_t<I, T> tool_object_member_get(const tool_json& object) {
   constexpr auto member_names = gmp::member_names<T>();
   const std::string key(member_names[I]);
   const auto it = object.find(key);
-  const auto prototype = []() -> std::optional<T> {
-    if constexpr (std::default_initializable<T>) {
-      return T {};
-    }
-    else {
-      return std::nullopt;
-    }
-  }();
+  const auto prototype = tool_prototype<T>();
 
   if constexpr (is_instance_description_member_v<T, I>) {
-    if constexpr (std::default_initializable<T>) {
+    if (prototype.has_value()) {
       return get_member_ref<I>(*prototype);
     }
     else {
@@ -484,7 +480,7 @@ gmp::member_type_t<I, T> tool_object_member_get(const tool_json& object) {
   if constexpr (is_field_v<member_type>) {
     member_type result {};
 
-    if constexpr (std::default_initializable<T>) {
+    if (prototype.has_value()) {
       const auto& member = get_member_ref<I>(*prototype);
       result.description = member.description;
       result.default_value = member.default_value;

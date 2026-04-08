@@ -1,4 +1,4 @@
-//   ___ __  __ ___
+//   ___ __  __ ___ 
 //  / __|  \/  | _ \ GMP(Generative Metaprogramming)
 // | (_ | |\/| |  _/ version 0.1.0
 //  \___|_|  |_|_|   https://github.com/lkimuk/gmp
@@ -13,8 +13,7 @@
 #define GMP_HPP_
 
 #include <gmp/macro/macro.hpp>
-#include <gmp/meta/meta.hpp>
 #include <gmp/meta/string.hpp>
-#include <gmp/dp/object_factory.hpp>
+#include <gmp/meta/meta.hpp>
 
 #endif // GMP_HPP_

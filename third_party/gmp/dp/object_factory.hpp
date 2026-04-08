@@ -109,12 +109,11 @@ private:
         GMP_CONCATS(gmp_reg_, AbstractProduct, _, _GMP_GET_CONCRETE_PRODUCT_CLASS(ConcreteProduct))(GMP_IF_THEN_ELSE(GMP_IS_TUPLE(ConcreteProduct), GMP_STRINGIFY(GMP_GET_TUPLE(0, ConcreteProduct)), GMP_STRINGIFY(ConcreteProduct)));
 
 /**
- * @brief
- *
+ * @brief 
+ * 
  * @example
- * GMP_FACTORY_REGISTER(base_class, constructor_arg_type, (name1, derived_class1), (name2,
- * derived_class2)) GMP_FACTORY_REGISTER(base_class, (constructor_arg1_type, arg2_type),
- * derived_class1, class2)
+ * GMP_FACTORY_REGISTER(base_class, constructor_arg_type, (name1, derived_class1), (name2, derived_class2))
+ * GMP_FACTORY_REGISTER(base_class, (constructor_arg1_type, arg2_type), derived_class1, class2)
  */
 #define GMP_FACTORY_REGISTER(AbstractProduct, ConstructorArgs, ...) \
   GMP_EVAL( _GMP_FACTORY_REGISTER_IMPL(AbstractProduct, ConstructorArgs, __VA_ARGS__) )
