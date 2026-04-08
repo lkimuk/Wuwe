@@ -125,7 +125,8 @@ consteval bool has_instance_description_member() {
 }
 
 template <typename T>
-concept tool_has_any_description = tool_has_description<T> || has_instance_description_member<T>();
+concept tool_has_any_description =
+  tool_has_description<T> || has_instance_description_member<T>();
 
 template <typename T>
 concept tool_has_invoke = requires(const T& value) {
