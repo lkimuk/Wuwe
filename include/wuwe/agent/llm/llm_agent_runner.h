@@ -2,19 +2,23 @@
 #define WUWE_AGENT_LLM_AGENT_RUNNER_H
 
 #include <string_view>
+#include <memory>
 #include <utility>
 
 #include <wuwe/agent/llm/llm_client.h>
-#include <wuwe/agent/llm/tool_registry.h>
+#include <wuwe/agent/llm/llm_tools.h>
 #include <wuwe/common/wuwe_fwd.h>
 
 WUWE_NAMESPACE_BEGIN
 
 class llm_agent_runner {
 public:
+  explicit llm_agent_runner(llm_client& client, int max_tool_rounds = 4)
+      : client_(client), max_tool_rounds_(max_tool_rounds) {}
+
   explicit llm_agent_runner(
-    llm_client& client, const llm_tool_registry* tool_registry = nullptr, int max_tool_rounds = 4)
-      : client_(client), tool_registry_(tool_registry), max_tool_rounds_(max_tool_rounds) {}
+    llm_client& client, std::shared_ptr<const llm_tool_provider> tool_provider, int max_tool_rounds = 4)
+      : client_(client), tool_provider_(std::move(tool_provider)), max_tool_rounds_(max_tool_rounds) {}
 
   llm_response complete(std::string_view prompt) const {
     llm_request request;
@@ -23,8 +27,8 @@ public:
   }
 
   llm_response complete(llm_request request) const {
-    if (tool_registry_ != nullptr) {
-      request.tools = tool_registry_->tools();
+    if (tool_provider_ != nullptr) {
+      request.tools = tool_provider_->tools();
     }
 
     llm_response response = client_.complete(request);
@@ -33,7 +37,7 @@ public:
     }
 
     for (int round = 0; round < max_tool_rounds_; ++round) {
-      if (response.tool_calls.empty() || tool_registry_ == nullptr) {
+      if (response.tool_calls.empty() || tool_provider_ == nullptr) {
         return response;
       }
 
@@ -44,7 +48,7 @@ public:
       });
 
       for (const auto& call : response.tool_calls) {
-        const llm_tool_result tool_result = tool_registry_->invoke(call.name, call.arguments_json);
+        const llm_tool_result tool_result = tool_provider_->invoke(call.name, call.arguments_json);
         request.messages.push_back({
           .role = "tool",
           .content = tool_result.error_code ? tool_result.error_code.message() : tool_result.content,
@@ -65,9 +69,15 @@ public:
 
 private:
   llm_client& client_;
-  const llm_tool_registry* tool_registry_;
+  std::shared_ptr<const llm_tool_provider> tool_provider_;
   int max_tool_rounds_;
 };
+
+template <typename... Tools>
+llm_agent_runner llm_client::build_tools(int max_tool_rounds) {
+  return llm_agent_runner(
+    *this, std::make_shared<llm_reflected_tool_provider<Tools...>>(), max_tool_rounds);
+}
 
 WUWE_NAMESPACE_END
 

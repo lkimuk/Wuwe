@@ -5,6 +5,37 @@
 #include <wuwe/net/net_errc.h>
 #include <wuwe/wuwe.h>
 
+struct get_weather {
+  static constexpr std::string_view description = "Get the current weather in a given location.";
+
+  std::string city;
+
+  std::string invoke() const {
+    if (city == "New York") {
+      return "The weather in New York is sunny with a high of 25°C.";
+    }
+    else if (city == "London") {
+      return "The weather in London is rainy with a high of 18°C.";
+    }
+    else if (city == "Tokyo") {
+      return "The weather in Tokyo is cloudy with a high of 22°C.";
+    }
+    else {
+      return "Sorry, I don't have weather information for that city.";
+    }
+  }
+};
+
+template <typename T> void print() {
+  wuwe::println("name: {}\ndescription: {}", gmp::type_name<T>().to_string_view(), T::description);
+  wuwe::println("Members:");
+  auto member_names = gmp::member_names<T>();
+  auto member_type_names = gmp::member_type_names<T>();
+  for (unsigned i = 0; i < member_names.size(); ++i) {
+    wuwe::println("{} {}", member_type_names[i], member_names[i]);
+  }
+}
+
 int main() {
   SetConsoleOutputCP(CP_UTF8);
   SetConsoleCP(CP_UTF8);
@@ -18,23 +49,9 @@ int main() {
   wuwe::llm_client_factory factory;
   auto client = factory.create_shared("OpenRouter", config);
 
-  wuwe::llm_tool_registry registry;
-  registry.register_tool({ .name = "get_happy_fact",
-                           .description = "Get one uplifting fact to cheer up the user.",
-                           .parameters_json_schema = R"({
-        "type":"object",
-        "properties":{},
-        "additionalProperties":false
-      })" },
-    [](const std::string&) {
-      return wuwe::llm_tool_result {
-        .content = R"({"fact":"A 20-minute walk can noticeably improve mood for many people."})"
-      };
-    });
-
-  wuwe::llm_agent_runner runner(*client, &registry);
-  const auto response =
-    runner.complete("Tell me some happy things. Use tools when it helps provide a better answer.");
+  auto runner = client->build_tools<get_weather>();
+  const auto response = runner.complete(
+    "What's the weather in Tokyo? Use tools when it helps provide a better answer.");
   if (response) {
     wuwe::println("content: {}", response.content);
   }
@@ -47,6 +64,8 @@ int main() {
       wuwe::println("error: {}", response.error_code.message());
     }
   }
+
+  // print<get_weather>();
 
   return response.error_code.value();
 }
