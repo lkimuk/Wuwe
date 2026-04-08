@@ -5,10 +5,7 @@
 #include <wuwe/net/net_errc.h>
 #include <wuwe/wuwe.h>
 
-enum class temperature_unit {
-  celsius,
-  fahrenheit
-};
+enum class temperature_unit { celsius, fahrenheit };
 
 struct weather_report {
   std::string city;
@@ -19,56 +16,45 @@ struct weather_report {
 };
 
 struct get_weather {
-  static constexpr std::string_view description = "Get the current weather in a given location.";
+  std::string_view description = "Get the current weather in a given location.";
 
   std::string city;
-  wuwe::field<temperature_unit> unit {
-    .default_value = temperature_unit::celsius,
-    .description = "Preferred unit for the reported temperature."
-  };
+  wuwe::field<temperature_unit> unit { .default_value = temperature_unit::celsius,
+    .description = "Preferred unit for the reported temperature." };
 
   weather_report invoke() const {
     if (city == "New York") {
-      return {
-        .city = city,
+      return { .city = city,
         .summary = "sunny",
         .high = unit == temperature_unit::celsius ? 25 : 77,
         .unit = unit,
-        .advisory = "A light jacket is enough for the evening."
-      };
+        .advisory = "A light jacket is enough for the evening." };
     }
     else if (city == "London") {
-      return {
-        .city = city,
+      return { .city = city,
         .summary = "rainy",
         .high = unit == temperature_unit::celsius ? 18 : 64,
         .unit = unit,
-        .advisory = "Bring an umbrella."
-      };
+        .advisory = "Bring an umbrella." };
     }
     else if (city == "Tokyo") {
-      return {
-        .city = city,
+      return { .city = city,
         .summary = "cloudy",
         .high = unit == temperature_unit::celsius ? 22 : 72,
         .unit = unit,
-        .advisory = std::nullopt
-      };
+        .advisory = std::nullopt };
     }
     else {
-      return {
-        .city = city,
+      return { .city = city,
         .summary = "unknown",
         .high = 0,
         .unit = unit,
-        .advisory = "Sorry, I don't have weather information for that city."
-      };
+        .advisory = "Sorry, I don't have weather information for that city." };
     }
   }
 };
 
-template <>
-struct wuwe::llm_tool_field_traits<get_weather, 0> {
+template <> struct wuwe::llm_tool_field_traits<get_weather, 0> {
   static constexpr std::string_view description = "Target city, for example New York or Tokyo.";
 };
 
@@ -81,10 +67,8 @@ struct get_happy_fact {
   };
 
   result invoke() const {
-    return {
-      .fact = "A 20-minute walk can noticeably improve mood for many people.",
-      .mood_boost = 7
-    };
+    return { .fact = "A 20-minute walk can noticeably improve mood for many people.",
+      .mood_boost = 7 };
   }
 };
 
@@ -102,8 +86,8 @@ int main() {
   auto client = factory.create_shared("OpenRouter", config);
 
   auto runner = client->build_tools<get_weather, get_happy_fact>();
-  const auto response = runner.complete(
-    "What's the weather in Tokyo in fahrenheit? Also share one happy fact. Use tools when it helps.");
+  const auto response = runner.complete("What's the weather in Tokyo in fahrenheit? Also share one "
+                                        "happy fact. Use tools when it helps.");
   if (response) {
     wuwe::println("content: {}", response.content);
   }

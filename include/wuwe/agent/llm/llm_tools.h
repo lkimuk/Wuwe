@@ -98,10 +98,34 @@ struct unwrap_field<field<T>> {
 template <typename T>
 using unwrap_field_t = typename unwrap_field<T>::type;
 
+template <typename T, typename = void>
+struct has_static_description : std::false_type {};
+
 template <typename T>
-concept tool_has_description = requires {
-  T::description;
-};
+struct has_static_description<T, std::void_t<decltype(&T::description), decltype(T::description)>>
+    : std::bool_constant<
+        !std::is_member_object_pointer_v<decltype(&T::description)> &&
+        std::is_convertible_v<decltype(T::description), std::string_view>> {};
+
+template <typename T>
+concept tool_has_description = has_static_description<T>::value;
+
+template <typename T, std::size_t I>
+inline constexpr bool is_instance_description_member_v =
+  std::default_initializable<T> &&
+  (gmp::member_names<T>()[I] == "description") &&
+  std::is_convertible_v<gmp::member_type_t<I, T>, std::string_view>;
+
+template <typename T>
+consteval bool has_instance_description_member() {
+  constexpr auto count = gmp::member_count<T>();
+  return []<std::size_t... Is>(std::index_sequence<Is...>) {
+    return (is_instance_description_member_v<T, Is> || ...);
+  }(std::make_index_sequence<count> {});
+}
+
+template <typename T>
+concept tool_has_any_description = tool_has_description<T> || has_instance_description_member<T>();
 
 template <typename T>
 concept tool_has_invoke = requires(const T& value) {
@@ -156,6 +180,9 @@ std::string type_name_string() {
 }
 
 template <typename T>
+std::string tool_description_string();
+
+template <typename T>
 tool_json build_json_value(T&& value);
 
 template <std::size_t I, typename T>
@@ -205,27 +232,52 @@ void validate_object_keys(const tool_json& json_value) {
 
   for (const auto& [key, _] : json_value.items()) {
     bool found = false;
-    for (const auto member_name : member_names) {
-      if (member_name == key) {
-        found = true;
-        break;
-      }
-    }
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+      (((!is_instance_description_member_v<T, Is> && member_names[Is] == key) ? found = true : found), ...);
+    }(std::make_index_sequence<member_names.size()>{});
 
     if (!found) {
       std::ostringstream message;
       message << "unexpected field '" << key << "'";
       if constexpr (member_names.size() > 0) {
         message << ", expected fields: ";
-        for (std::size_t i = 0; i < member_names.size(); ++i) {
-          if (i != 0) {
-            message << ", ";
-          }
-          message << member_names[i];
-        }
+        bool first = true;
+        [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+          (([&] {
+              if constexpr (!is_instance_description_member_v<T, Is>) {
+                if (!first) {
+                  message << ", ";
+                }
+                message << member_names[Is];
+                first = false;
+              }
+            }()),
+            ...);
+        }(std::make_index_sequence<member_names.size()>{});
       }
       throw std::invalid_argument(message.str());
     }
+  }
+}
+
+template <typename T>
+std::string tool_description_string() {
+  if constexpr (tool_has_description<T>) {
+    return std::string(T::description);
+  }
+  else {
+    constexpr auto count = gmp::member_count<T>();
+    const auto prototype = T {};
+    std::string result;
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+      (([&] {
+          if constexpr (is_instance_description_member_v<T, Is>) {
+            result = std::string(std::string_view(get_member_ref<Is>(prototype)));
+          }
+        }()),
+        ...);
+    }(std::make_index_sequence<count> {});
+    return result;
   }
 }
 
@@ -249,6 +301,11 @@ tool_json build_object_json_schema() {
     (([&] {
         using member_type = gmp::member_type_t<Is, T>;
         using schema_type = unwrap_field_t<member_type>;
+
+        if constexpr (is_instance_description_member_v<T, Is>) {
+          return;
+        }
+
         auto field_schema = build_json_schema<schema_type>();
 
         if constexpr (is_field_v<member_type>) {
@@ -408,6 +465,15 @@ gmp::member_type_t<I, T> tool_object_member_get(const tool_json& object) {
     }
   }();
 
+  if constexpr (is_instance_description_member_v<T, I>) {
+    if constexpr (std::default_initializable<T>) {
+      return get_member_ref<I>(*prototype);
+    }
+    else {
+      return member_type {};
+    }
+  }
+
   if constexpr (!is_field_v<member_type> && field_has_default_value<T, I>) {
     if (it == object.end() || it->is_null()) {
       return llm_tool_field_traits<T, I>::default_value();
@@ -565,7 +631,9 @@ decltype(auto) get_member_ref(T&& value) {
 
 template <typename T>
 llm_tool_result invoke_reflected_tool(const std::string& arguments_json) {
-  static_assert(tool_has_description<T>, "tool must define static constexpr description");
+  static_assert(
+    tool_has_any_description<T>,
+    "tool must define static constexpr description or a default-initialized member named description");
   static_assert(tool_has_invoke<T>, "tool must provide invoke() const");
 
   try {
@@ -584,13 +652,15 @@ llm_tool_result invoke_reflected_tool(const std::string& arguments_json) {
 
 template <typename T>
 llm_tool make_reflected_tool() {
-  static_assert(tool_has_description<T>, "tool must define static constexpr description");
+  static_assert(
+    tool_has_any_description<T>,
+    "tool must define static constexpr description or a default-initialized member named description");
   static_assert(tool_has_invoke<T>, "tool must provide invoke() const");
   static_assert(std::is_aggregate_v<T>, "tool must be an aggregate so GMP can reflect its fields");
 
   return llm_tool {
     .name = type_name_string<T>(),
-    .description = std::string(T::description),
+    .description = tool_description_string<T>(),
     .parameters_json_schema = dump_json_compact(build_object_json_schema<T>())
   };
 }
