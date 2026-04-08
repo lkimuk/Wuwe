@@ -6,7 +6,8 @@ This document describes how reflected LLM tools are defined in Wuwe.
 
 LLM tools are ordinary C++ aggregate types with:
 
-- a `static constexpr std::string_view description`
+- either `static constexpr std::string_view description` or a default-initialized instance member
+  named `description`
 - public fields used as tool parameters
 - an `invoke() const` method used to execute the tool
 
@@ -31,6 +32,43 @@ The tool can then be bound with:
 auto client = factory.create_shared("OpenRouter", config);
 auto runner = client->build_tools<get_weather>();
 ```
+
+## Description Styles
+
+Two description styles are supported.
+
+### 1. `static constexpr description`
+
+```cpp
+struct get_weather {
+  static constexpr std::string_view description =
+    "Get the current weather in a given location.";
+
+  std::string city;
+};
+```
+
+### 2. Instance `description`
+
+```cpp
+struct get_weather {
+  std::string_view description = "Get the current weather in a given location.";
+
+  std::string city;
+};
+```
+
+When using the instance form, the type must be default-initializable because Wuwe reads the
+description from `T{}.description`.
+
+### Description precedence
+
+If both description forms are present, Wuwe uses this priority:
+
+1. `static constexpr description`
+2. instance `description`
+
+The instance `description` member is treated as tool metadata, not as a tool parameter.
 
 ## Supported Parameter Styles
 
