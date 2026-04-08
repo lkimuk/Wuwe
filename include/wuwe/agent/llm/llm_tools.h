@@ -27,6 +27,31 @@ struct llm_tool_result {
   std::error_code error_code;
 };
 
+template <typename T>
+struct field {
+  using value_type = T;
+
+  T value {};
+  std::optional<T> default_value {};
+  std::string_view description {};
+
+  constexpr operator T&() noexcept {
+    return value;
+  }
+
+  constexpr operator const T&() const noexcept {
+    return value;
+  }
+
+  constexpr T* operator->() noexcept {
+    return &value;
+  }
+
+  constexpr const T* operator->() const noexcept {
+    return &value;
+  }
+};
+
 class llm_tool_provider {
 public:
   virtual ~llm_tool_provider() = default;
@@ -53,6 +78,25 @@ inline constexpr bool is_vector_v = false;
 
 template <typename T, typename Allocator>
 inline constexpr bool is_vector_v<std::vector<T, Allocator>> = true;
+
+template <typename T>
+inline constexpr bool is_field_v = false;
+
+template <typename T>
+inline constexpr bool is_field_v<field<T>> = true;
+
+template <typename T>
+struct unwrap_field {
+  using type = T;
+};
+
+template <typename T>
+struct unwrap_field<field<T>> {
+  using type = T;
+};
+
+template <typename T>
+using unwrap_field_t = typename unwrap_field<T>::type;
 
 template <typename T>
 concept tool_has_description = requires {
@@ -113,6 +157,9 @@ std::string type_name_string() {
 
 template <typename T>
 tool_json build_json_value(T&& value);
+
+template <std::size_t I, typename T>
+decltype(auto) get_member_ref(T&& value);
 
 template <typename Enum>
 Enum parse_reflectable_enum(const tool_json& json_value) {
@@ -188,23 +235,55 @@ tool_json build_object_json_schema() {
   tool_json required = tool_json::array();
 
   constexpr auto member_names = gmp::member_names<T>();
+  constexpr bool has_default_object = std::default_initializable<T>;
+  const auto default_object = []() -> std::optional<T> {
+    if constexpr (has_default_object) {
+      return T {};
+    }
+    else {
+      return std::nullopt;
+    }
+  }();
 
   [&]<std::size_t... Is>(std::index_sequence<Is...>) {
     (([&] {
         using member_type = gmp::member_type_t<Is, T>;
-        auto field_schema = build_json_schema<member_type>();
+        using schema_type = unwrap_field_t<member_type>;
+        auto field_schema = build_json_schema<schema_type>();
 
-        if constexpr (field_has_description<T, Is>) {
+        if constexpr (is_field_v<member_type>) {
+          if constexpr (has_default_object) {
+            const auto& member = get_member_ref<Is>(*default_object);
+            if (!member.description.empty()) {
+              field_schema["description"] = member.description;
+            }
+            if (member.default_value.has_value()) {
+              field_schema["default"] = build_json_value(*member.default_value);
+            }
+          }
+        }
+        else if constexpr (field_has_description<T, Is>) {
           field_schema["description"] = llm_tool_field_traits<T, Is>::description;
         }
 
-        if constexpr (field_has_default_value<T, Is>) {
+        if constexpr (!is_field_v<member_type> && field_has_default_value<T, Is>) {
           field_schema["default"] = build_json_value(llm_tool_field_traits<T, Is>::default_value());
         }
 
         properties[std::string(member_names[Is])] = std::move(field_schema);
 
-        if constexpr (!is_optional_v<member_type> && !field_has_default_value<T, Is>) {
+        if constexpr (is_field_v<member_type>) {
+          if constexpr (has_default_object) {
+            const auto& member = get_member_ref<Is>(*default_object);
+            if (!member.default_value.has_value() && !is_optional_v<schema_type>) {
+              required.push_back(member_names[Is]);
+            }
+          }
+          else if constexpr (!is_optional_v<schema_type>) {
+            required.push_back(member_names[Is]);
+          }
+        }
+        else if constexpr (!is_optional_v<member_type> && !field_has_default_value<T, Is>) {
           required.push_back(member_names[Is]);
         }
       }()),
@@ -223,7 +302,10 @@ template <typename T>
 tool_json build_json_schema() {
   using value_type = std::remove_cvref_t<T>;
 
-  if constexpr (is_optional_v<value_type>) {
+  if constexpr (is_field_v<value_type>) {
+    return build_json_schema<typename value_type::value_type>();
+  }
+  else if constexpr (is_optional_v<value_type>) {
     return build_json_schema<typename value_type::value_type>();
   }
   else if constexpr (is_vector_v<value_type>) {
@@ -267,7 +349,12 @@ template <typename T>
 T tool_json_get(const tool_json& json_value) {
   using value_type = std::remove_cvref_t<T>;
 
-  if constexpr (is_optional_v<value_type>) {
+  if constexpr (is_field_v<value_type>) {
+    value_type result {};
+    result.value = tool_json_get<typename value_type::value_type>(json_value);
+    return result;
+  }
+  else if constexpr (is_optional_v<value_type>) {
     using inner_type = typename value_type::value_type;
     if (json_value.is_null()) {
       return std::nullopt;
@@ -308,17 +395,53 @@ T tool_json_get(const tool_json& json_value) {
 template <std::size_t I, typename T>
 gmp::member_type_t<I, T> tool_object_member_get(const tool_json& object) {
   using member_type = gmp::member_type_t<I, T>;
+  using schema_type = unwrap_field_t<member_type>;
   constexpr auto member_names = gmp::member_names<T>();
   const std::string key(member_names[I]);
   const auto it = object.find(key);
+  const auto prototype = []() -> std::optional<T> {
+    if constexpr (std::default_initializable<T>) {
+      return T {};
+    }
+    else {
+      return std::nullopt;
+    }
+  }();
 
-  if constexpr (field_has_default_value<T, I>) {
+  if constexpr (!is_field_v<member_type> && field_has_default_value<T, I>) {
     if (it == object.end() || it->is_null()) {
       return llm_tool_field_traits<T, I>::default_value();
     }
   }
 
-  if constexpr (is_optional_v<member_type>) {
+  if constexpr (is_field_v<member_type>) {
+    member_type result {};
+
+    if constexpr (std::default_initializable<T>) {
+      const auto& member = get_member_ref<I>(*prototype);
+      result.description = member.description;
+      result.default_value = member.default_value;
+    }
+
+    if (it == object.end() || it->is_null()) {
+      if (result.default_value.has_value()) {
+        result.value = *result.default_value;
+        return result;
+      }
+      if constexpr (is_optional_v<schema_type>) {
+        result.value = std::nullopt;
+        return result;
+      }
+
+      std::ostringstream message;
+      message << "missing required field '" << key << "'";
+      throw std::invalid_argument(message.str());
+    }
+
+    result.value = tool_json_get<schema_type>(*it);
+    return result;
+  }
+  else if constexpr (is_optional_v<member_type>) {
     if (it == object.end() || it->is_null()) {
       return std::nullopt;
     }
@@ -338,7 +461,10 @@ template <typename T>
 tool_json build_json_value(T&& value) {
   using value_type = std::remove_cvref_t<T>;
 
-  if constexpr (is_optional_v<value_type>) {
+  if constexpr (is_field_v<value_type>) {
+    return build_json_value(value.value);
+  }
+  else if constexpr (is_optional_v<value_type>) {
     if (!value.has_value()) {
       return nullptr;
     }
@@ -417,6 +543,24 @@ std::string available_tool_names() {
   std::size_t index = 0;
   ((out << (index++ == 0 ? "" : ", ") << type_name_string<Tools>()), ...);
   return out.str();
+}
+
+#define WUWE_LLM_GET_MEMBER_REF_IMPL(N) \
+  template <std::size_t I, typename T> \
+  decltype(auto) get_member_ref_impl(T&& value, gmp::constant_arg_t<N>) { \
+    auto&& [GMP_GET_FIRST_N(N, GMP_IDENTIFIERS)] = value; \
+    return std::get<I>(std::forward_as_tuple(GMP_GET_FIRST_N(N, GMP_IDENTIFIERS))); \
+  }
+
+GMP_FOR_EACH(WUWE_LLM_GET_MEMBER_REF_IMPL, GMP_RANGE(1, GMP_INC(GMP_MAX_SUPPORTED_FIELDS)))
+
+#undef WUWE_LLM_GET_MEMBER_REF_IMPL
+
+template <std::size_t I, typename T>
+decltype(auto) get_member_ref(T&& value) {
+  constexpr auto member_count = gmp::member_count<std::remove_cvref_t<T>>();
+  static_assert(I < member_count, "member index out of range");
+  return get_member_ref_impl<I>(std::forward<T>(value), gmp::constant_arg<member_count>);
 }
 
 template <typename T>

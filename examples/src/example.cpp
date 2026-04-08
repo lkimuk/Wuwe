@@ -22,7 +22,10 @@ struct get_weather {
   static constexpr std::string_view description = "Get the current weather in a given location.";
 
   std::string city;
-  temperature_unit unit { temperature_unit::celsius };
+  wuwe::field<temperature_unit> unit {
+    .default_value = temperature_unit::celsius,
+    .description = "Preferred unit for the reported temperature."
+  };
 
   weather_report invoke() const {
     if (city == "New York") {
@@ -67,15 +70,6 @@ struct get_weather {
 template <>
 struct wuwe::llm_tool_field_traits<get_weather, 0> {
   static constexpr std::string_view description = "Target city, for example New York or Tokyo.";
-};
-
-template <>
-struct wuwe::llm_tool_field_traits<get_weather, 1> {
-  static constexpr std::string_view description = "Preferred unit for the reported temperature.";
-
-  static constexpr temperature_unit default_value() {
-    return temperature_unit::celsius;
-  }
 };
 
 struct get_happy_fact {
