@@ -51,7 +51,7 @@ public:
         const llm_tool_result tool_result = tool_provider_->invoke(call.name, call.arguments_json);
         request.messages.push_back({
           .role = "tool",
-          .content = tool_result.error_code ? tool_result.error_code.message() : tool_result.content,
+          .content = tool_result.content.empty() ? tool_result.error_code.message() : tool_result.content,
           .name = call.name,
           .tool_call_id = call.id
         });

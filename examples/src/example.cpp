@@ -5,36 +5,94 @@
 #include <wuwe/net/net_errc.h>
 #include <wuwe/wuwe.h>
 
+enum class temperature_unit {
+  celsius,
+  fahrenheit
+};
+
+struct weather_report {
+  std::string city;
+  std::string summary;
+  int high;
+  temperature_unit unit;
+  std::optional<std::string> advisory;
+};
+
 struct get_weather {
   static constexpr std::string_view description = "Get the current weather in a given location.";
 
   std::string city;
+  temperature_unit unit { temperature_unit::celsius };
 
-  std::string invoke() const {
+  weather_report invoke() const {
     if (city == "New York") {
-      return "The weather in New York is sunny with a high of 25°C.";
+      return {
+        .city = city,
+        .summary = "sunny",
+        .high = unit == temperature_unit::celsius ? 25 : 77,
+        .unit = unit,
+        .advisory = "A light jacket is enough for the evening."
+      };
     }
     else if (city == "London") {
-      return "The weather in London is rainy with a high of 18°C.";
+      return {
+        .city = city,
+        .summary = "rainy",
+        .high = unit == temperature_unit::celsius ? 18 : 64,
+        .unit = unit,
+        .advisory = "Bring an umbrella."
+      };
     }
     else if (city == "Tokyo") {
-      return "The weather in Tokyo is cloudy with a high of 22°C.";
+      return {
+        .city = city,
+        .summary = "cloudy",
+        .high = unit == temperature_unit::celsius ? 22 : 72,
+        .unit = unit,
+        .advisory = std::nullopt
+      };
     }
     else {
-      return "Sorry, I don't have weather information for that city.";
+      return {
+        .city = city,
+        .summary = "unknown",
+        .high = 0,
+        .unit = unit,
+        .advisory = "Sorry, I don't have weather information for that city."
+      };
     }
   }
 };
 
-template <typename T> void print() {
-  wuwe::println("name: {}\ndescription: {}", gmp::type_name<T>().to_string_view(), T::description);
-  wuwe::println("Members:");
-  auto member_names = gmp::member_names<T>();
-  auto member_type_names = gmp::member_type_names<T>();
-  for (unsigned i = 0; i < member_names.size(); ++i) {
-    wuwe::println("{} {}", member_type_names[i], member_names[i]);
+template <>
+struct wuwe::llm_tool_field_traits<get_weather, 0> {
+  static constexpr std::string_view description = "Target city, for example New York or Tokyo.";
+};
+
+template <>
+struct wuwe::llm_tool_field_traits<get_weather, 1> {
+  static constexpr std::string_view description = "Preferred unit for the reported temperature.";
+
+  static constexpr temperature_unit default_value() {
+    return temperature_unit::celsius;
   }
-}
+};
+
+struct get_happy_fact {
+  static constexpr std::string_view description = "Get one uplifting fact to cheer up the user.";
+
+  struct result {
+    std::string fact;
+    int mood_boost;
+  };
+
+  result invoke() const {
+    return {
+      .fact = "A 20-minute walk can noticeably improve mood for many people.",
+      .mood_boost = 7
+    };
+  }
+};
 
 int main() {
   SetConsoleOutputCP(CP_UTF8);
@@ -49,9 +107,9 @@ int main() {
   wuwe::llm_client_factory factory;
   auto client = factory.create_shared("OpenRouter", config);
 
-  auto runner = client->build_tools<get_weather>();
+  auto runner = client->build_tools<get_weather, get_happy_fact>();
   const auto response = runner.complete(
-    "What's the weather in Tokyo? Use tools when it helps provide a better answer.");
+    "What's the weather in Tokyo in fahrenheit? Also share one happy fact. Use tools when it helps.");
   if (response) {
     wuwe::println("content: {}", response.content);
   }
@@ -64,8 +122,6 @@ int main() {
       wuwe::println("error: {}", response.error_code.message());
     }
   }
-
-  // print<get_weather>();
 
   return response.error_code.value();
 }
