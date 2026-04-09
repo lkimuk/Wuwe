@@ -224,6 +224,31 @@ This mirrors the style already used by `llm_response`.
 
 The first version should only expose three built-in step kinds.
 
+## Step Names
+
+Each step has a `name`, for example:
+
+```cpp
+.llm("analyze", { ... })
+.tool("lookup", { ... })
+.decision("decide", ... )
+```
+
+The `name` is not just a display label. It is the stable identifier of the step inside the chain.
+
+It is needed for:
+
+- step registration inside `prompt_chain`
+- selecting the chain start step
+- explicit control-flow jumps through `next_step`
+- decision-step routing
+- diagnostics and future tracing
+
+Without step names, the runtime would have to rely on implicit order only, which makes branching,
+validation loops, and debugging much harder.
+
+In other words, `name` is the node id of the workflow.
+
 ## 1. `llm_step`
 
 An `llm_step` runs an LLM prompt using the current chain state.
