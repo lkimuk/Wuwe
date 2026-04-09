@@ -1,8 +1,8 @@
 #ifndef WUWE_AGENT_LLM_AGENT_RUNNER_H
 #define WUWE_AGENT_LLM_AGENT_RUNNER_H
 
-#include <string_view>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include <wuwe/agent/llm/llm_client.h>
@@ -16,9 +16,10 @@ public:
   explicit llm_agent_runner(llm_client& client, int max_tool_rounds = 4)
       : client_(client), max_tool_rounds_(max_tool_rounds) {}
 
-  explicit llm_agent_runner(
-    llm_client& client, std::shared_ptr<const llm_tool_provider> tool_provider, int max_tool_rounds = 4)
-      : client_(client), tool_provider_(std::move(tool_provider)), max_tool_rounds_(max_tool_rounds) {}
+  explicit llm_agent_runner(llm_client& client,
+    std::shared_ptr<const llm_tool_provider> tool_provider, int max_tool_rounds = 4)
+      : client_(client), tool_provider_(std::move(tool_provider)),
+        max_tool_rounds_(max_tool_rounds) {}
 
   llm_response complete(std::string_view prompt) const {
     llm_request request;
@@ -41,20 +42,16 @@ public:
         return response;
       }
 
-      request.messages.push_back({
-        .role = "assistant",
-        .content = response.content,
-        .tool_calls = response.tool_calls
-      });
+      request.messages.push_back(
+        { .role = "assistant", .content = response.content, .tool_calls = response.tool_calls });
 
       for (const auto& call : response.tool_calls) {
         const llm_tool_result tool_result = tool_provider_->invoke(call.name, call.arguments_json);
-        request.messages.push_back({
-          .role = "tool",
-          .content = tool_result.content.empty() ? tool_result.error_code.message() : tool_result.content,
+        request.messages.push_back({ .role = "tool",
+          .content =
+            tool_result.content.empty() ? tool_result.error_code.message() : tool_result.content,
           .name = call.name,
-          .tool_call_id = call.id
-        });
+          .tool_call_id = call.id });
       }
 
       response = client_.complete(request);
@@ -73,8 +70,7 @@ private:
   int max_tool_rounds_;
 };
 
-template <typename... Tools>
-llm_agent_runner llm_client::build_tools(int max_tool_rounds) {
+template <typename... Tools> llm_agent_runner llm_client::bind_tools(int max_tool_rounds) {
   return llm_agent_runner(
     *this, std::make_shared<llm_reflected_tool_provider<Tools...>>(), max_tool_rounds);
 }

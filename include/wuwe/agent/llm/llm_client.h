@@ -21,8 +21,7 @@ public:
     return complete(request);
   }
 
-  template <typename... Tools>
-  llm_agent_runner build_tools(int max_tool_rounds = 4);
+  template<typename... Tools> llm_agent_runner bind_tools(int max_tool_rounds = 4);
 
   virtual llm_response complete(const llm_request& request) = 0;
 };

@@ -85,7 +85,7 @@ int main() {
   wuwe::llm_client_factory factory;
   auto client = factory.create_shared("OpenRouter", config);
 
-  auto runner = client->build_tools<get_weather, get_happy_fact>();
+  auto runner = client->bind_tools<get_weather, get_happy_fact>();
   const auto response = runner.complete("What's the weather in Tokyo in fahrenheit? Also share one "
                                         "happy fact. Use tools when it helps.");
   if (response) {

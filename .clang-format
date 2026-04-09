@@ -29,5 +29,6 @@ IndentCaseLabels: true
 SpaceBeforeParens: ControlStatements
 PointerAlignment: Left
 ReferenceAlignment: Left
+SpaceAfterTemplateKeyword: false
 SortIncludes: true
 Standard: Latest
