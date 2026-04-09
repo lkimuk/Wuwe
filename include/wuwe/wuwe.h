@@ -4,6 +4,7 @@
 #include <gmp/dp/object_factory.hpp>
 
 #include <wuwe/agent/llm/llm_agent_runner.h>
+#include <wuwe/agent/llm/prompt_chain.h>
 #include <wuwe/agent/llm/llm_tools.h>
 #include <wuwe/agent/llm/openrouter_llm_client.h>
 #include <wuwe/common/print.h>

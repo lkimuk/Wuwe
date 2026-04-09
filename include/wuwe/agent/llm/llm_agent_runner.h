@@ -11,6 +11,53 @@
 
 WUWE_NAMESPACE_BEGIN
 
+namespace detail {
+
+inline llm_response complete_request_with_tools(
+  llm_client& client, llm_request request, const std::shared_ptr<const llm_tool_provider>& tool_provider,
+  int max_tool_rounds) {
+  if (tool_provider != nullptr) {
+    request.tools = tool_provider->tools();
+  }
+
+  llm_response response = client.complete(request);
+  if (response.error_code) {
+    return response;
+  }
+
+  for (int round = 0; round < max_tool_rounds; ++round) {
+    if (response.tool_calls.empty() || tool_provider == nullptr) {
+      return response;
+    }
+
+    request.messages.push_back({
+      .role = "assistant",
+      .content = response.content,
+      .tool_calls = response.tool_calls
+    });
+
+    for (const auto& call : response.tool_calls) {
+      const llm_tool_result tool_result = tool_provider->invoke(call.name, call.arguments_json);
+      request.messages.push_back({
+        .role = "tool",
+        .content = tool_result.content.empty() ? tool_result.error_code.message() : tool_result.content,
+        .name = call.name,
+        .tool_call_id = call.id
+      });
+    }
+
+    response = client.complete(request);
+    if (response.error_code) {
+      return response;
+    }
+  }
+
+  response.error_code = std::make_error_code(std::errc::resource_unavailable_try_again);
+  return response;
+}
+
+} // namespace detail
+
 class llm_agent_runner {
 public:
   explicit llm_agent_runner(llm_client& client, int max_tool_rounds = 4)
@@ -27,44 +74,7 @@ public:
   }
 
   llm_response complete(llm_request request) const {
-    if (tool_provider_ != nullptr) {
-      request.tools = tool_provider_->tools();
-    }
-
-    llm_response response = client_.complete(request);
-    if (response.error_code) {
-      return response;
-    }
-
-    for (int round = 0; round < max_tool_rounds_; ++round) {
-      if (response.tool_calls.empty() || tool_provider_ == nullptr) {
-        return response;
-      }
-
-      request.messages.push_back({
-        .role = "assistant",
-        .content = response.content,
-        .tool_calls = response.tool_calls
-      });
-
-      for (const auto& call : response.tool_calls) {
-        const llm_tool_result tool_result = tool_provider_->invoke(call.name, call.arguments_json);
-        request.messages.push_back({
-          .role = "tool",
-          .content = tool_result.content.empty() ? tool_result.error_code.message() : tool_result.content,
-          .name = call.name,
-          .tool_call_id = call.id
-        });
-      }
-
-      response = client_.complete(request);
-      if (response.error_code) {
-        return response;
-      }
-    }
-
-    response.error_code = std::make_error_code(std::errc::resource_unavailable_try_again);
-    return response;
+    return detail::complete_request_with_tools(client_, std::move(request), tool_provider_, max_tool_rounds_);
   }
 
 private:
