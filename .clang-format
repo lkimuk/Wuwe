@@ -23,12 +23,13 @@ BraceWrapping:
   BeforeCatch: true
   BeforeElse: true
 AllowShortIfStatementsOnASingleLine: Never
-AllowShortFunctionsOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: None
 AllowShortLoopsOnASingleLine: false
 IndentCaseLabels: true
 SpaceBeforeParens: ControlStatements
 PointerAlignment: Left
 ReferenceAlignment: Left
 SpaceAfterTemplateKeyword: false
+BreakTemplateDeclarations: Yes
 SortIncludes: true
 Standard: Latest
