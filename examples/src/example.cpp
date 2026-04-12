@@ -1,5 +1,3 @@
-#include <iostream>
-
 #include <windows.h>
 
 #include <wuwe/net/net_errc.h>
@@ -54,7 +52,7 @@ struct get_weather {
   }
 };
 
-template <> struct wuwe::llm_tool_field_traits<get_weather, 0> {
+template <> struct wuwe::tool_field_traits<get_weather, 0> {
   static constexpr std::string_view description = "Target city, for example New York or Tokyo.";
 };
 

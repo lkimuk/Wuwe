@@ -1,7 +1,6 @@
 #ifndef WUWE_AGENT_LLM_CLIENT_H
 #define WUWE_AGENT_LLM_CLIENT_H
 
-#include <memory>
 #include <string_view>
 
 #include <wuwe/agent/llm/llm_types.h>
@@ -21,7 +20,8 @@ public:
     return complete(request);
   }
 
-  template<typename... Tools> llm_agent_runner bind_tools(int max_tool_rounds = 4);
+  template<typename... Tools>
+  llm_agent_runner bind_tools(int max_tool_rounds = 4);
 
   virtual llm_response complete(const llm_request& request) = 0;
 };
