@@ -127,24 +127,6 @@ std::string type_name_string() {
   return std::string(gmp::type_name<T>().to_string_view());
 }
 
-#define WUWE_TOOL_GET_MEMBER_REF_IMPL(N) \
-  template <std::size_t I, typename T> \
-  decltype(auto) get_member_ref_impl(T&& value, gmp::constant_arg_t<N>) { \
-    auto&& [GMP_GET_FIRST_N(N, GMP_IDENTIFIERS)] = value; \
-    return std::get<I>(std::forward_as_tuple(GMP_GET_FIRST_N(N, GMP_IDENTIFIERS))); \
-  }
-
-GMP_FOR_EACH(WUWE_TOOL_GET_MEMBER_REF_IMPL, GMP_RANGE(1, GMP_INC(GMP_MAX_SUPPORTED_FIELDS)))
-
-#undef WUWE_TOOL_GET_MEMBER_REF_IMPL
-
-template<std::size_t I, typename T>
-decltype(auto) get_member_ref(T&& value) {
-  constexpr auto member_count = gmp::member_count<std::remove_cvref_t<T>>();
-  static_assert(I < member_count, "member index out of range");
-  return get_member_ref_impl<I>(std::forward<T>(value), gmp::constant_arg<member_count>);
-}
-
 template<tool_type T>
 std::string get_description() {
   if constexpr (has_static_description_v<T>) {
@@ -240,7 +222,7 @@ json build_object_json_schema() {
       auto field_schema = build_json_schema<schema_type>();
       if constexpr (is_field_v<member_type>) {
         if (default_object.has_value()) {
-          const auto& member = get_member_ref<Is>(*default_object);
+          const auto& member = gmp::member_ref<Is>(*default_object);
           if (!member.description.empty()) {
             field_schema["description"] = member.description;
           }
@@ -261,7 +243,7 @@ json build_object_json_schema() {
 
       if constexpr (is_field_v<member_type>) {
         if (default_object.has_value()) {
-          const auto& member = get_member_ref<Is>(*default_object);
+          const auto& member = gmp::member_ref<Is>(*default_object);
           if (!member.default_value.has_value() && !is_optional_v<schema_type>) {
             required.push_back(member_names[Is]);
           }
@@ -437,7 +419,7 @@ gmp::member_type_t<I, T> tool_object_member_get(const json& object) {
 
   if constexpr (is_instance_description_member_v<T, I>) {
     if (prototype.has_value()) {
-      return get_member_ref<I>(*prototype);
+      return gmp::member_ref<I>(*prototype);
     }
     else {
       return member_type {};
@@ -454,7 +436,7 @@ gmp::member_type_t<I, T> tool_object_member_get(const json& object) {
     member_type result {};
 
     if (prototype.has_value()) {
-      const auto& member = get_member_ref<I>(*prototype);
+      const auto& member = gmp::member_ref<I>(*prototype);
       result.description = member.description;
       result.default_value = member.default_value;
     }
@@ -568,7 +550,7 @@ bool try_invoke_tool(const std::string& expected_name, const std::string& name,
 template<typename... Tools>
 struct tool_provider {
   std::vector<llm_tool> tools() const noexcept {
-    return { detail::make_tool<Tools>()... };
+     return { detail::make_tool<Tools>()... };
   }
 
   llm_tool_result invoke(const std::string& name, const std::string& arguments_json) const {
@@ -578,7 +560,9 @@ struct tool_provider {
       .error_code = std::make_error_code(std::errc::function_not_supported),
     };
 
-    (detail::try_invoke_tool<Tools>(detail::type_name_string<Tools>(), name, arguments_json, result) || ...);
+    (detail::try_invoke_tool<Tools>(
+       detail::type_name_string<Tools>(), name, arguments_json, result) ||
+      ...);
     return result;
   }
 };
