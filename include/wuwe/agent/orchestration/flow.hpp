@@ -1,5 +1,5 @@
-#ifndef WUWE_AGENT_RUNNABLE_H
-#define WUWE_AGENT_RUNNABLE_H
+#ifndef WUWE_AGENT_FLOW_HPP
+#define WUWE_AGENT_FLOW_HPP
 
 #include <functional>
 #include <memory>
@@ -26,7 +26,7 @@ template<typename T>
 inline constexpr bool is_llm_request_v = std::is_same_v<decay_t<T>, llm_request>;
 
 template<typename T>
-decltype(auto) continue_chain(const std::shared_ptr<llm_client>& client, T&& value) {
+decltype(auto) continue_flow(const std::shared_ptr<llm_client>& client, T&& value) {
   if constexpr (is_prompt_text_v<T>) {
     return client->complete(std::string_view(value));
   }
@@ -41,9 +41,9 @@ decltype(auto) continue_chain(const std::shared_ptr<llm_client>& client, T&& val
 } // namespace detail
 
 template<typename F>
-class runnable {
+class flow {
 public:
-  runnable(std::shared_ptr<llm_client> client, F func)
+  flow(std::shared_ptr<llm_client> client, F func)
       : client_(std::move(client)), callable_(std::move(func)) {
   }
 
@@ -58,11 +58,11 @@ public:
 
     auto composed = [f, g = std::forward<G>(g)](
                       const std::shared_ptr<llm_client>& client, auto&& x) -> decltype(auto) {
-      return detail::continue_chain(
+      return detail::continue_flow(
         client, std::invoke(g, std::invoke(f, client, std::forward<decltype(x)>(x))));
     };
 
-    return runnable<std::decay_t<decltype(composed)>>(client_, std::move(composed));
+    return flow<std::decay_t<decltype(composed)>>(client_, std::move(composed));
   }
 
 private:
@@ -71,7 +71,7 @@ private:
 };
 
 template<typename F, typename G>
-auto operator|(const runnable<F>& r, G&& g) {
+auto operator|(const flow<F>& r, G&& g) {
   return r.then(std::forward<G>(g));
 }
 
@@ -79,12 +79,12 @@ template<typename F>
 auto operator|(std::shared_ptr<llm_client> client, F&& f) {
   auto first = [func = std::forward<F>(f)](
                  const std::shared_ptr<llm_client>& client, auto&& input) -> decltype(auto) {
-    return detail::continue_chain(client, std::invoke(func, std::forward<decltype(input)>(input)));
+    return detail::continue_flow(client, std::invoke(func, std::forward<decltype(input)>(input)));
   };
 
-  return runnable<std::decay_t<decltype(first)>>(std::move(client), std::move(first));
+  return flow<std::decay_t<decltype(first)>>(std::move(client), std::move(first));
 }
 
 WUWE_NAMESPACE_END
 
-#endif // WUWE_AGENT_RUNNABLE_H
+#endif // WUWE_AGENT_FLOW_HPP
