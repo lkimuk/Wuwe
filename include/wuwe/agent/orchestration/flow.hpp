@@ -14,6 +14,8 @@
 
 WUWE_NAMESPACE_BEGIN
 
+struct flow_context {};
+
 template<typename Func>
 class recover_step;
 
