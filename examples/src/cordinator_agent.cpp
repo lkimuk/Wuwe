@@ -93,32 +93,43 @@ int main() {
 
   using namespace wuwe::literals::message_literals;
   auto decision = [](const std::string& input) {
-    // return wuwe::make_chat_message()
-    //        << ("system" <says>
-    //             "Analyze the user's request and determine which specialist handler should "
-    //             "process it."
-    //             "- If the request is related to booking flights or hotels, output 'booker'."
-    //             "- For all other general information questions, output 'info'."
-    //             "- If the request is unclear or doesn't fit either category, output 'unclear'.\n"
-    //             "ONLY output one word: 'booker', 'info', or 'unclear'.")
-    //        << ("user" <says> input);
+    using wuwe::says;
     return wuwe::make_message()
-           << "system"_msg(
+           << ("system" < says >
                 "Analyze the user's request and determine which specialist handler should "
                 "process it."
                 "- If the request is related to booking flights or hotels, output 'booker'."
                 "- For all other general information questions, output 'info'."
                 "- If the request is unclear or doesn't fit either category, output 'unclear'.\n"
                 "ONLY output one word: 'booker', 'info', or 'unclear'.")
-           << "user"_msg(input);
+           << ("user" < says > input);
+    // return wuwe::make_message()
+    //        << "system"_msg(
+    //             "Analyze the user's request and determine which specialist handler should "
+    //             "process it."
+    //             "- If the request is related to booking flights or hotels, output 'booker'."
+    //             "- For all other general information questions, output 'info'."
+    //             "- If the request is unclear or doesn't fit either category, output 'unclear'.\n"
+    //             "ONLY output one word: 'booker', 'info', or 'unclear'.")
+    //        << "user"_msg(input);
   };
+
+  auto handler_book = [](const wuwe::llm_response& res) { return 42; };
+  auto handler_other = [](const wuwe::llm_response& res) { return 41; };
 
   // clang-format off
   auto flow = client
-            | decision;
+            | decision
+            | wuwe::route(
+                wuwe::when(
+                  [](const wuwe::llm_response& res) { return res.content == "booker"; },
+                  handler_book),
+                wuwe::otherwise(handler_other)
+            );
 
   // clang-format on
-  flow.invoke("Book me a flight to London.");
+  auto result = flow.invoke("Book me a flight to London.");
+  wuwe::println("{}", result);
   // auto invoke = [client](const std::string& request) {
   //   auto agent = client | [request](const std::string&) { return router_prompt(request); } |
   //                [request](const wuwe::llm_response& response) {

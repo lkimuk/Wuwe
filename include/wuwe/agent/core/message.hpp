@@ -64,8 +64,7 @@ struct message_maker {
 
 inline msg_literals_detail::message_maker operator""_msg(const char* role, std::size_t length) {
   const std::string_view role_view(role, length);
-  if (auto msg_role = gmp::enum_cast<agent::core::message_role>(role_view)) {
-    (void)msg_role;
+  if (gmp::enum_cast<agent::core::message_role>(role_view)) {
     return { std::string(role_view) };
   }
 
@@ -83,6 +82,14 @@ inline llm_request operator<<(llm_request&& request, chat_message message) {
   request.messages.push_back(std::move(message));
   return request;
 }
+
+inline constexpr auto says =
+  gmp::make_named_operator([](std::string_view role, const std::string& content) -> chat_message {
+    return {
+      .role = std::string(role),
+      .content = content,
+    };
+  });
 
 WUWE_NAMESPACE_END
 

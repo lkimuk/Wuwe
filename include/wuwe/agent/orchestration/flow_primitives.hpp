@@ -208,10 +208,26 @@ private:
   std::tuple<Cases...> cases_;
 };
 
-template<typename... Cases, typename Default>
-auto route(Cases&&... cases, otherwise_step<Default> default_step) {
-  return route_step<otherwise_step<std::decay_t<Default>>, std::decay_t<Cases>...>(
-    std::move(default_step), std::forward<Cases>(cases)...);
+template<typename T>
+struct is_otherwise_step : std::false_type {};
+
+template<typename Default>
+struct is_otherwise_step<otherwise_step<Default>> : std::true_type {};
+
+template<typename T>
+inline constexpr bool is_otherwise_step_v = is_otherwise_step<T>::value;
+
+template<typename... Cases>
+auto route(Cases&&... cases) {
+  constexpr auto last_index = sizeof...(Cases) - 1;
+  static_assert(
+    is_otherwise_step_v<std::decay_t<std::tuple_element_t<last_index, std::tuple<Cases...>>>>,
+    "last argument must be otherwise_step");
+
+  auto tuple = std::make_tuple(std::forward<Cases>(cases)...);
+  return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+    return route_step(std::get<last_index>(tuple), std::get<Is>(tuple)...);
+  }(std::make_index_sequence<last_index> {});
 }
 
 template<typename Func>
