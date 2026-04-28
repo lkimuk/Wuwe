@@ -52,7 +52,8 @@ struct get_weather {
   }
 };
 
-template <> struct wuwe::tool_field_traits<get_weather, 0> {
+template<>
+struct wuwe::tool_field_traits<get_weather, 0> {
   static constexpr std::string_view description = "Target city, for example New York or Tokyo.";
 };
 
@@ -76,7 +77,7 @@ int main() {
 
   wuwe::llm_config config {
     .base_url = "https://openrouter.ai/api",
-    .model = "openai/gpt-oss-120b:free",
+    .model = "inclusionai/ling-2.6-1t:free",
     .timeout = 30000,
   };
 
