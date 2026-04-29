@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -137,6 +138,8 @@ public:
   }
 
   memory_record add(memory_record record) override {
+    std::scoped_lock lock(mutex_);
+
     const auto now = std::chrono::system_clock::now();
     if (record.id.empty()) {
       record.id = "mem-" + std::to_string(++next_id_);
@@ -147,12 +150,14 @@ public:
     record.updated_at = now;
 
     records_.push_back(record);
-    save();
+    append(record);
     return record;
   }
 
   std::optional<memory_record> get(
     const std::string& id, const memory_scope& scope) const override {
+    std::scoped_lock lock(mutex_);
+
     const auto it = std::find_if(records_.begin(), records_.end(), [&](const memory_record& record) {
       return record.id == id && scope_matches(record.scope, scope);
     });
@@ -165,6 +170,8 @@ public:
   }
 
   std::vector<memory_record> search(const memory_query& query) const override {
+    std::scoped_lock lock(mutex_);
+
     std::vector<memory_record> result;
 
     for (auto record : records_) {
@@ -203,6 +210,8 @@ public:
   }
 
   bool update(memory_record record) override {
+    std::scoped_lock lock(mutex_);
+
     const auto it = std::find_if(records_.begin(), records_.end(), [&](const memory_record& current) {
       return current.id == record.id && scope_matches(current.scope, record.scope);
     });
@@ -214,11 +223,13 @@ public:
     record.created_at = it->created_at;
     record.updated_at = std::chrono::system_clock::now();
     *it = std::move(record);
-    save();
+    rewrite();
     return true;
   }
 
   bool erase(const std::string& id, const memory_scope& scope) override {
+    std::scoped_lock lock(mutex_);
+
     const auto old_size = records_.size();
     std::erase_if(records_, [&](const memory_record& record) {
       return record.id == id && scope_matches(record.scope, scope);
@@ -228,11 +239,13 @@ public:
       return false;
     }
 
-    save();
+    rewrite();
     return true;
   }
 
   std::size_t clear(const memory_scope& scope) override {
+    std::scoped_lock lock(mutex_);
+
     const auto old_size = records_.size();
     std::erase_if(records_, [&](const memory_record& record) {
       return scope_matches(record.scope, scope);
@@ -240,7 +253,7 @@ public:
 
     const std::size_t erased = old_size - records_.size();
     if (erased != 0) {
-      save();
+      rewrite();
     }
     return erased;
   }
@@ -276,10 +289,25 @@ private:
     }
   }
 
-  void save() const {
+  void ensure_parent_directory() const {
     if (path_.has_parent_path()) {
       std::filesystem::create_directories(path_.parent_path());
     }
+  }
+
+  void append(const memory_record& record) const {
+    ensure_parent_directory();
+
+    std::ofstream output(path_, std::ios::app);
+    if (!output) {
+      throw std::runtime_error("failed to open memory file for appending: " + path_.string());
+    }
+
+    output << detail::record_to_json(record).dump() << '\n';
+  }
+
+  void rewrite() const {
+    ensure_parent_directory();
 
     const auto temp_path = path_.string() + ".tmp";
     {
@@ -301,6 +329,7 @@ private:
 
 private:
   std::filesystem::path path_;
+  mutable std::mutex mutex_;
   std::vector<memory_record> records_;
   std::size_t next_id_ { 0 };
 };

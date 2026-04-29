@@ -59,7 +59,7 @@ public:
 
   llm_response complete(llm_request request) const {
     const std::string query_text = last_user_content(request);
-    observe_request_messages(request);
+    const llm_request request_to_observe = request;
 
     if (tools_) {
       request.tools = tools_();
@@ -67,6 +67,7 @@ public:
 
     if (memory_) {
       request = memory_->augment(std::move(request), query_text);
+      observe_request_messages(request_to_observe);
     }
 
     llm_response response = client_.complete(request);

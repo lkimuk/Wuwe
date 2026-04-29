@@ -36,6 +36,27 @@ target_include_directories(${PROJECT_NAME}
 
 target_link_libraries(${PROJECT_NAME} PRIVATE cpr::cpr)
 
+option(WUWE_ENABLE_SQLITE "Enable SQLite-backed memory store when SQLite3 is available" ON)
+if(WUWE_ENABLE_SQLITE)
+    find_package(SQLite3 QUIET)
+    if(NOT SQLite3_FOUND)
+        find_package(unofficial-sqlite3 CONFIG QUIET)
+    endif()
+endif()
+
+if(WUWE_ENABLE_SQLITE AND SQLite3_FOUND)
+    target_link_libraries(${PROJECT_NAME} PUBLIC SQLite::SQLite3)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC WUWE_HAS_SQLITE=1)
+    message(STATUS "SQLite memory store enabled")
+elseif(WUWE_ENABLE_SQLITE AND unofficial-sqlite3_FOUND)
+    target_link_libraries(${PROJECT_NAME} PUBLIC unofficial::sqlite3::sqlite3)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC WUWE_HAS_SQLITE=1)
+    message(STATUS "SQLite memory store enabled")
+else()
+    target_compile_definitions(${PROJECT_NAME} PUBLIC WUWE_HAS_SQLITE=0)
+    message(STATUS "SQLite memory store disabled")
+endif()
+
 # target_compile_options(arks PRIVATE)
 # target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
 
