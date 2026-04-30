@@ -12,6 +12,7 @@
 #include <wuwe/agent/memory/file_memory_store.hpp>
 #include <wuwe/agent/memory/in_memory_store.hpp>
 #include <wuwe/agent/memory/memory_context.hpp>
+#include <wuwe/agent/memory/memory_tools.hpp>
 #include <wuwe/agent/memory/sqlite_memory_store.hpp>
 
 namespace {
@@ -66,6 +67,35 @@ public:
   }
 
   llm_request last_request;
+};
+
+class tool_call_client final : public llm_client {
+public:
+  llm_response complete(const llm_request& request) override {
+    ++calls;
+    requests.push_back(request);
+
+    if (calls == 1) {
+      return {
+        .content = "",
+        .tool_calls = {
+          {
+            .id = "call-1",
+            .name = "save_memory",
+            .arguments_json =
+              R"({"content":"User prefers terse C++20 examples.","topic":"preference"})",
+          },
+        },
+      };
+    }
+
+    return {
+      .content = "done",
+    };
+  }
+
+  int calls { 0 };
+  std::vector<llm_request> requests;
 };
 
 void test_scoped_recall_and_isolation() {
@@ -292,6 +322,101 @@ void test_sqlite_store() {
 #endif
 }
 
+void test_memory_tools_save_and_search() {
+  memory_context memory;
+  memory.set_scope(test_scope());
+  memory_tool_provider provider(memory);
+
+  const auto save_result = provider.invoke(
+    "save_memory",
+    R"({"content":"User prefers concise C++20 answers.","topic":"preference","sensitivity":"internal"})");
+  require(!save_result.error_code, "save_memory should save valid long-term memory");
+
+  const auto search_result = provider.invoke(
+    "search_memory",
+    R"({"content":"C++20 answers","topic":"preference","limit":3})");
+  require(!search_result.error_code,
+    "search_memory should search saved memory: " + search_result.content);
+  require(contains(search_result.content, "User prefers concise C++20 answers."),
+    "search_memory should return saved content");
+  require(!contains(search_result.content, "tenant-a"),
+    "search_memory should not expose internal scope fields");
+
+  const auto secret_result = provider.invoke(
+    "save_memory",
+    R"({"content":"api token is abc","sensitivity":"secret"})");
+  require(secret_result.error_code == std::errc::permission_denied,
+    "save_memory should reject secret content");
+
+  memory_context empty_scope_memory;
+  memory_tool_provider empty_scope_provider(empty_scope_memory);
+  const auto empty_scope_result = empty_scope_provider.invoke(
+    "save_memory",
+    R"({"content":"should fail"})");
+  require(static_cast<bool>(empty_scope_result.error_code),
+    "save_memory should reject invalid scope through memory policy");
+}
+
+void test_memory_tools_review_and_limit() {
+  memory_policy policy;
+  policy.max_long_term_records = 1;
+  memory_context memory(policy);
+  memory.set_scope(test_scope());
+
+  memory_tool_options options;
+  options.review_save = [](const memory_record& record, std::string& reason) {
+    if (contains(record.content, "reject")) {
+      reason = "review rejected content";
+      return false;
+    }
+    return true;
+  };
+
+  memory_tool_provider provider(memory, options);
+  const auto rejected = provider.invoke(
+    "save_memory",
+    R"({"content":"please reject this","topic":"review"})");
+  require(rejected.error_code == std::errc::permission_denied,
+    "save_memory should honor review callback");
+
+  require(!provider.invoke(
+    "save_memory",
+    R"({"content":"first retained memory","topic":"limit"})").error_code,
+    "save_memory should save first record");
+  require(!provider.invoke(
+    "save_memory",
+    R"({"content":"second retained memory","topic":"limit"})").error_code,
+    "save_memory should save second record");
+
+  const auto search_result = provider.invoke(
+    "search_memory",
+    R"({"content":"retained","topic":"limit","limit":10})");
+  require(!search_result.error_code, "search_memory should succeed with clamped limit");
+  const auto json = nlohmann::json::parse(search_result.content);
+  require(json.is_array() && json.size() == 1, "search_memory should clamp limit to policy");
+}
+
+void test_runner_memory_tool_call() {
+  memory_context memory;
+  memory.set_scope(test_scope());
+
+  auto provider = std::make_shared<memory_tool_provider>(memory);
+  tool_call_client client;
+  llm_agent_runner runner(client, provider, &memory);
+
+  const auto response = runner.complete("Remember my coding preference.");
+  require(static_cast<bool>(response), "runner with memory tools should complete");
+  require(client.calls == 2, "runner should call model again after memory tool result");
+
+  memory_query query;
+  query.scope = test_scope();
+  query.kinds = { memory_kind::long_term };
+  query.filters = { { "topic", "preference" } };
+  query.text = "terse C++20";
+  const auto records = memory.recall(query);
+  require(!records.empty(), "save_memory tool call should write long-term memory");
+}
+
 void test_runner_observes_without_injecting_current_request_twice() {
   memory_context memory;
   memory.set_scope(test_scope());
@@ -332,6 +457,9 @@ int main() {
     run("budget and ranker", test_budget_and_ranker);
     run("file store reload and ids", test_file_store_reload_and_ids);
     run("sqlite store", test_sqlite_store);
+    run("memory tools save and search", test_memory_tools_save_and_search);
+    run("memory tools review and limit", test_memory_tools_review_and_limit);
+    run("runner memory tool call", test_runner_memory_tool_call);
     run("runner observes without duplicate injection", test_runner_observes_without_injecting_current_request_twice);
   }
   catch (const std::exception& ex) {

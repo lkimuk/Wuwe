@@ -9,7 +9,8 @@ LLM tools are ordinary C++ aggregate types with:
 - either `static constexpr std::string_view description` or a default-initialized instance member
   named `description`
 - public fields used as tool parameters
-- an `invoke() const` method used to execute the tool
+- an `invoke() const` method used to execute the tool when using the default stateless
+  `tool_provider<Tools...>`
 
 Example:
 
@@ -195,6 +196,110 @@ struct weather_report {
 ```
 
 Returning `weather_report` from `invoke()` produces a JSON object for the model.
+
+## Stateful Reflected Tools
+
+The default `tool_provider<Tools...>` is designed for stateless tools:
+
+```text
+JSON arguments -> reflected Tool object -> invoke()
+```
+
+Some tools need application-owned runtime state that must not be supplied by the model. Examples
+include database handles, user/session scope, review callbacks, auth state, or memory contexts.
+Those values should not appear in the JSON schema and should not be model-fillable fields.
+
+For these tools, Wuwe supports reusing the same reflected aggregate parameter style while injecting
+runtime state from a custom provider:
+
+```text
+JSON arguments -> reflected Tool object -> invoke(context)
+provider-owned state ------------------------^
+```
+
+The tool argument type can still be an aggregate with `description` and public model-fillable
+fields:
+
+```cpp
+struct save_memory {
+  static constexpr std::string_view description =
+    "Save a durable long-term memory record.";
+
+  std::string content;
+  std::optional<std::string> topic;
+
+  llm_tool_result invoke(const memory_tool_context& context) const;
+};
+```
+
+The custom provider is responsible for:
+
+- generating the schema from the reflected argument type
+- parsing JSON arguments into the reflected argument type
+- holding private application state
+- calling `tool.invoke(context)`
+
+This keeps the model-facing parameter style consistent with ordinary reflected tools while keeping
+private state outside the schema.
+
+The built-in memory tools use this pattern through `memory_tool_provider`: `save_memory` and
+`search_memory` are reflected aggregate argument types, while `memory_context`, `memory_scope`,
+policy limits, and review callbacks are provider state.
+
+### Why Not `injected<T>` Fields Yet?
+
+Another possible design is an injected field marker:
+
+```cpp
+template<typename T>
+struct injected {
+  T value;
+};
+
+struct save_memory {
+  static constexpr std::string_view description =
+    "Save a durable long-term memory record.";
+
+  std::string content;
+  injected<memory_context*> memory;
+  injected<memory_scope> scope;
+
+  llm_tool_result invoke() const;
+};
+```
+
+This style is elegant because the tool keeps a no-argument `invoke()` and looks closer to ordinary
+stateless tools. However, it requires deeper support in the reflection system:
+
+- schema generation must skip `injected<T>`
+- JSON parsing must not expect injected fields
+- required-field checks must ignore injected fields
+- nested aggregates need clear rules for whether injected fields are allowed
+- the provider needs a general mapping from requested injected types to runtime objects
+- missing or ambiguous injected values need consistent errors
+
+For memory tools, Wuwe currently chooses `invoke(context)` instead:
+
+```text
+reflected model arguments + provider-owned context -> invoke(context)
+```
+
+The trade-off is:
+
+| Dimension | `invoke(context)` | `injected<T>` |
+|---|---|---|
+| Accuracy | Higher: model fields and private state are clearly separated | Good, but depends on every reflection path skipping injected fields correctly |
+| Elegance | Good, but context is explicit | Higher: tools can keep no-argument `invoke()` |
+| Generability | Higher: each provider defines one context type | Lower initially: needs generic injection rules |
+| Usability | Higher for safety-sensitive tools because state ownership is explicit | Good, but can feel magical without strong diagnostics |
+| Simplicity | Higher: minimal changes to existing tools | Lower: touches schema, parsing, defaults, and field filtering |
+
+The intended direction is:
+
+- Use `invoke(context)` for the first generation of stateful tools.
+- Consider `injected<T>` only after several stateful providers share the same injection needs.
+- If `injected<T>` is added later, it should be a general Tool-system feature, not a memory-only
+  special case.
 
 ## Multi-tool Usage
 

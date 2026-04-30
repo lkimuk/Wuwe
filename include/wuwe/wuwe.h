@@ -9,6 +9,7 @@
 #include <wuwe/agent/memory/file_memory_store.hpp>
 #include <wuwe/agent/memory/lexical_memory_ranker.hpp>
 #include <wuwe/agent/memory/memory_context.hpp>
+#include <wuwe/agent/memory/memory_tools.hpp>
 #include <wuwe/agent/memory/sqlite_memory_store.hpp>
 #include <wuwe/agent/orchestration/flow.hpp>
 #include <wuwe/agent/tools/tool.hpp>

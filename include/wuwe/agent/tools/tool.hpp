@@ -202,7 +202,8 @@ json build_json_value(T&& value) {
   }
 }
 
-template<tool_type T>
+template<typename T>
+  requires(std::is_aggregate_v<T> && has_any_description<T>)
 json build_object_json_schema() {
   auto properties = json::object();
   auto required = json::array();
