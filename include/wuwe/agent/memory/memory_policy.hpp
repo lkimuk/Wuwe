@@ -1,6 +1,7 @@
 #ifndef WUWE_AGENT_MEMORY_POLICY_HPP
 #define WUWE_AGENT_MEMORY_POLICY_HPP
 
+#include <chrono>
 #include <cstddef>
 #include <string>
 
@@ -16,6 +17,9 @@ struct memory_policy {
   std::size_t max_memory_tokens { 1500 };
   std::size_t estimated_chars_per_token { 4 };
   std::size_t max_record_chars { 1200 };
+  std::size_t vector_rebuild_batch_size { 32 };
+  std::chrono::seconds default_working_ttl { 0 };
+  std::chrono::seconds default_long_term_ttl { 0 };
 
   bool include_conversation { true };
   bool include_working { true };
@@ -25,6 +29,7 @@ struct memory_policy {
   bool require_scoped_recall { true };
   bool require_scope_for_long_term { true };
   bool dedupe_request_messages { true };
+  bool throw_on_vector_index_error { false };
 
   bool inject_as_system_message { true };
   std::string injection_header { "Relevant memory:" };

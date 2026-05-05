@@ -2,6 +2,64 @@
 
 Wuwe is a C++20 framework for building agents.
 
+## Memory Management
+
+Wuwe includes a memory management layer for short-term conversation memory,
+durable long-term memory, semantic recall, and auditable retention controls.
+
+Implemented components include:
+
+- In-memory, file-backed, and SQLite memory stores.
+- `memory_context` for remember/recall/augment/inspect/update/delete operations.
+- Runner integration for automatic request augmentation and message observation.
+- Built-in `save_memory` and `search_memory` tools.
+- OpenAI-compatible embeddings.
+- Optional Qdrant vector index with batch upsert and metadata filters.
+- Hybrid ranking across vector, lexical, priority, and recency scores.
+- Audit sink, privacy filter, retention TTL, expired-memory compaction, and pending reindex reconciliation.
+
+Basic use:
+
+```cpp
+#include <wuwe/agent/memory/memory_context.hpp>
+#include <wuwe/agent/memory/in_memory_store.hpp>
+
+int main() {
+  namespace memory = wuwe::agent::memory;
+
+  memory::memory_context context;
+  context.set_scope({
+    .user_id = "local-user",
+    .application_id = "my-agent",
+    .conversation_id = "session-1",
+    .agent_id = "assistant",
+  });
+
+  context.remember_long_term(
+    "The user prefers concise C++20 examples.",
+    context.scope(),
+    { { "topic", "preference" } });
+
+  memory::memory_query query;
+  query.scope = context.scope();
+  query.kinds = { memory::memory_kind::long_term };
+  query.text = "How should I answer C++ API questions?";
+
+  const auto records = context.recall(query);
+}
+```
+
+For semantic memory with Qdrant:
+
+```powershell
+$env:WUWE_QDRANT_URL="http://localhost:6333"
+ctest --test-dir build-vcpkg -C Debug --output-on-failure -R memory_tests
+.\build-vcpkg\examples\Debug\memory_vector_example.exe
+```
+
+See [Memory Management](docs/memory-management.md) and
+[Memory Deployment](docs/memory-deployment.md) for production guidance.
+
 ## Install
 
 ```bash

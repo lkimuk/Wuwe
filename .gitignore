@@ -42,3 +42,5 @@
 
 # Build directories
 build/
+build-*/
+build-vcpkg/
