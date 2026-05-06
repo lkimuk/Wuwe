@@ -1,0 +1,21 @@
+[
+  {
+    "name": "broad-patterns",
+    "query": "What are the main agentic design patterns?",
+    "expected_document_ids": ["agentic-patterns.md"],
+    "expected_terms": [
+      "Prompt Chaining Pattern",
+      "Tool Use Pattern",
+      "Knowledge Retrieval (RAG) Pattern",
+      "Multi-Agent Collaboration Pattern"
+    ],
+    "limit": 2
+  },
+  {
+    "name": "security-acl",
+    "query": "How should tenant access control be enforced?",
+    "expected_document_ids": ["security-policy.md"],
+    "expected_terms": ["Tenant isolation", "allowed roles"],
+    "limit": 6
+  }
+]

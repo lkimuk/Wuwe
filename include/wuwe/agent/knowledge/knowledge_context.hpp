@@ -67,42 +67,65 @@ public:
       }
 
       std::ostringstream line;
+      std::ostringstream prefix;
       if (policy_.include_citations) {
-        line << "\n[" << ++citation << "] ";
+        prefix << "\n[" << ++citation << "] ";
         if (!result.chunk.source_uri.empty()) {
-          line << result.chunk.source_uri;
+          prefix << result.chunk.source_uri;
         }
         else if (!result.chunk.title.empty()) {
-          line << result.chunk.title;
+          prefix << result.chunk.title;
         }
         else {
-          line << result.chunk.document_id;
+          prefix << result.chunk.document_id;
         }
         if (const auto section = result.chunk.metadata.find("section");
             section != result.chunk.metadata.end() && !section->second.empty()) {
-          line << " | " << section->second;
+          prefix << " | " << section->second;
         }
-        if (result.chunk.start_line != 0) {
-          line << " | lines " << result.chunk.start_line;
-          if (result.chunk.end_line != 0 && result.chunk.end_line != result.chunk.start_line) {
-            line << "-" << result.chunk.end_line;
+        if (const auto page = result.chunk.metadata.find("page_start");
+            page != result.chunk.metadata.end() && !page->second.empty()) {
+          prefix << " | page " << page->second;
+          if (const auto page_end = result.chunk.metadata.find("page_end");
+              page_end != result.chunk.metadata.end() && !page_end->second.empty() &&
+              page_end->second != page->second) {
+            prefix << "-" << page_end->second;
           }
         }
-        line << "\n";
+        if (result.chunk.start_line != 0) {
+          prefix << " | lines " << result.chunk.start_line;
+          if (result.chunk.end_line != 0 && result.chunk.end_line != result.chunk.start_line) {
+            prefix << "-" << result.chunk.end_line;
+          }
+        }
+        prefix << "\n";
       }
       else {
-        line << "\n- ";
+        prefix << "\n- ";
       }
-      line << content;
 
-      const std::string rendered = line.str();
-      if (rendered.size() > remaining) {
+      auto rendered_prefix = prefix.str();
+      if (rendered_prefix.size() >= remaining) {
         continue;
       }
 
+      const auto available_content = remaining - rendered_prefix.size();
+      if (content.size() > available_content) {
+        content.resize(available_content);
+        if (content.size() > 3) {
+          content.resize(content.size() - 3);
+          content += "...";
+        }
+      }
+
+      line << rendered_prefix << content;
+      const auto rendered = line.str();
       output << rendered;
-      remaining -= rendered.size();
+      remaining -= (std::min)(remaining, rendered.size());
       wrote_any = true;
+      if (remaining == 0) {
+        break;
+      }
     }
 
     if (!wrote_any) {

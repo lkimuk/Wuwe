@@ -5,11 +5,15 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include <wuwe/agent/core/message.hpp>
+#include <wuwe/agent/llm/llm_client.h>
+#include <wuwe/agent/llm/llm_types.h>
 #include <wuwe/net/default_http_client.h>
 #include <wuwe/net/http_client.h>
 
@@ -127,6 +131,82 @@ public:
 private:
   http_knowledge_query_rewriter_config config_;
   std::shared_ptr<::wuwe::http_client> http_;
+};
+
+struct llm_knowledge_query_rewriter_config {
+  std::string model;
+  std::size_t max_rewrites { 4 };
+  double temperature {};
+  std::string system_prompt {
+    "Rewrite the user's retrieval query into short alternative search queries. "
+    "Return only a JSON array of strings. Do not include explanations."
+  };
+};
+
+class llm_knowledge_query_rewriter final : public knowledge_query_rewriter {
+public:
+  llm_knowledge_query_rewriter(
+    std::shared_ptr<::wuwe::llm_client> client,
+    llm_knowledge_query_rewriter_config config = {})
+      : client_(std::move(client)), config_(std::move(config)) {
+    if (!client_) {
+      throw std::invalid_argument("llm_knowledge_query_rewriter requires llm_client");
+    }
+  }
+
+  std::vector<std::string> rewrite(const std::string& query) const override {
+    auto request =
+      ::wuwe::make_message()
+      << ("system" < ::wuwe::says > config_.system_prompt)
+      << ("user" < ::wuwe::says >
+            ("Query: " + query + "\nMax rewrites: " + std::to_string(config_.max_rewrites)));
+    request.model = config_.model;
+    request.temperature = config_.temperature;
+
+    auto response = client_->complete(request);
+    if (!response) {
+      throw std::runtime_error(
+        "llm knowledge query rewriter failed: " + response.error_code.message());
+    }
+
+    return parse_rewrites(response.content, config_.max_rewrites);
+  }
+
+private:
+  static std::vector<std::string> parse_rewrites(
+    std::string_view content,
+    std::size_t max_rewrites) {
+    auto json_start = content.find('[');
+    auto json_end = content.rfind(']');
+    if (json_start == std::string_view::npos || json_end == std::string_view::npos ||
+        json_end < json_start) {
+      return {};
+    }
+
+    const auto json_text = std::string(content.substr(json_start, json_end - json_start + 1));
+    const auto data = nlohmann::json::parse(json_text, nullptr, false);
+    if (!data.is_array()) {
+      return {};
+    }
+
+    std::vector<std::string> rewrites;
+    for (const auto& item : data) {
+      if (!item.is_string()) {
+        continue;
+      }
+      auto value = item.get<std::string>();
+      if (!value.empty()) {
+        rewrites.push_back(std::move(value));
+      }
+      if (rewrites.size() >= max_rewrites) {
+        break;
+      }
+    }
+    return rewrites;
+  }
+
+  std::shared_ptr<::wuwe::llm_client> client_;
+  llm_knowledge_query_rewriter_config config_;
 };
 
 } // namespace wuwe::agent::knowledge

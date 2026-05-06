@@ -3,7 +3,6 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
-#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -20,6 +19,7 @@
 #include <wuwe/agent/memory/openai_embedding_model.hpp>
 #include <wuwe/agent/memory/qdrant_memory_index.hpp>
 #include <wuwe/agent/memory/sqlite_memory_store.hpp>
+#include <wuwe/common/print.h>
 #include <wuwe/net/http_client.h>
 
 namespace {
@@ -1014,7 +1014,7 @@ void test_qdrant_upsert_payload_includes_embedding_metadata() {
 void test_qdrant_live_integration_when_configured() {
   const auto url = env_value("WUWE_QDRANT_URL");
   if (url.empty()) {
-    std::cout << "[SKIP] qdrant live integration requires WUWE_QDRANT_URL\n";
+    println("[SKIP] qdrant live integration requires WUWE_QDRANT_URL");
     return;
   }
 
@@ -1281,7 +1281,7 @@ void test_runner_observes_without_injecting_current_request_twice() {
 
 void run(const char* name, void (*test)()) {
   test();
-  std::cout << "[PASS] " << name << '\n';
+  println("[PASS] {}", name);
 }
 
 } // namespace
@@ -1328,7 +1328,7 @@ int main() {
     run("runner observes without duplicate injection", test_runner_observes_without_injecting_current_request_twice);
   }
   catch (const std::exception& ex) {
-    std::cerr << "[FAIL] " << ex.what() << '\n';
+    println("[FAIL] {}", ex.what());
     return 1;
   }
 

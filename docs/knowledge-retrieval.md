@@ -51,10 +51,89 @@ Optional live integrations are skipped unless configured:
 - `WUWE_QDRANT_URL` enables the Qdrant live vector-index test.
 - `WUWE_QDRANT_KNOWLEDGE_COLLECTION` overrides the Qdrant live-test collection.
 
-Remaining work is mainly deployment- and data-specific: native pgvector,
-OpenSearch, and Milvus clients beyond the HTTP adapter, a real Prometheus HTTP
-endpoint or OTLP exporter, OCR/multimodal parsing, production data migration
-tools, and large-scale real-corpus benchmarking.
+Remaining work is mainly deployment- and data-specific. Production data
+migration helpers and real-corpus benchmarking entry points now exist; larger
+remaining items are native pgvector, OpenSearch, and Milvus clients beyond the
+HTTP adapter, a real Prometheus HTTP endpoint or OTLP exporter,
+OCR/multimodal parsing, and broader real-corpus benchmark suites.
+
+## Testing The RAG Flow
+
+Start with the offline tests. These do not require Tika, Qdrant, or an LLM
+provider:
+
+```powershell
+.\build\tests\Debug\knowledge_tests.exe
+.\build\tests\Debug\memory_tests.exe
+```
+
+For a live PDF retrieval smoke test, run Qdrant and Tika, then configure the
+environment:
+
+```powershell
+$env:WUWE_QDRANT_URL="http://localhost:6333"
+$env:WUWE_TIKA_URL="http://127.0.0.1:9998"
+$env:OPENROUTER_API_KEY=[Environment]::GetEnvironmentVariable("OPENROUTER_API_KEY", "User")
+```
+
+Run retrieval without answer generation first:
+
+```powershell
+$pdf = ([Uri]'file:///C:/Users/ligx/Downloads/Agentic%20Design%20Patterns%20A%20Hands-On%20Guide%20to%20Building%20Intelligent%20Systems%20(Antonio%20Gull%C3%AD).pdf').LocalPath
+
+.\build\examples\Debug\knowledge_qdrant_rag_example.exe `
+  --docs $pdf `
+  --query "What are the main agentic design patterns described in this PDF?" `
+  --collection wuwe_pdf_test `
+  --limit 4 `
+  --candidate-limit 32 `
+  --no-answer `
+  --clear
+```
+
+Expected signs of a healthy run:
+
+```text
+docs=1 ingested=1 errors=0
+retrieved=4
+Context block:
+[1] ... document_summary ...
+```
+
+For the complete RAG path, enable query rewrite, LLM document summary, and answer
+generation:
+
+```powershell
+.\build\examples\Debug\knowledge_qdrant_rag_example.exe `
+  --docs $pdf `
+  --query "List the main agentic design patterns in this PDF." `
+  --collection wuwe_pdf_test `
+  --limit 4 `
+  --candidate-limit 32 `
+  --query-rewrite `
+  --llm-summary `
+  --answer
+```
+
+On a repeated run with the same unchanged PDF, `skipped=1` is expected because
+incremental ingest detects the existing content hash. The output should include
+`rewritten_queries`, `Generated answer`, and `LLM usage`.
+
+For local benchmark smoke tests, create a plain query file. The benchmark query
+file format is one query per line, with an optional tab-separated limit:
+
+```powershell
+@"
+RAG retrieval citations	5
+agentic design patterns	5
+tenant access control	5
+"@ | Set-Content .\rag-queries.txt
+
+.\build\examples\Debug\knowledge_benchmark_example.exe `
+  --corpus docs `
+  --query-file .\rag-queries.txt `
+  --json
+```
 
 ## Minimal Local Pipeline
 
@@ -74,6 +153,66 @@ retriever->rebuild_index();
 `ingest_incremental()` compares `content_hash` metadata and skips unchanged
 documents. When `erase_stale` is true, documents no longer present in the loaded
 set are removed from the store and index.
+
+## Upload And Ask API
+
+`knowledge_rag_service` wraps the common application workflow: load one file or
+directory, ingest it incrementally, then answer questions with cited context.
+It is intended for product surfaces such as "upload a PDF and ask about it"
+without making each caller rebuild the orchestration code:
+
+```cpp
+namespace knowledge = wuwe::agent::knowledge;
+
+auto retriever = std::make_shared<knowledge::knowledge_retriever>(
+  std::make_shared<knowledge::file_knowledge_store>("knowledge.jsonl"),
+  std::make_shared<knowledge::in_memory_knowledge_index>(),
+  embedding_model,
+  knowledge::knowledge_splitter({
+    .max_tokens = 600,
+    .overlap_tokens = 80,
+    .include_document_summary_chunk = true,
+  }));
+
+std::vector<std::shared_ptr<knowledge::knowledge_document_enricher>> enrichers {
+  std::make_shared<knowledge::llm_knowledge_document_enricher>(
+    llm_client,
+    knowledge::llm_knowledge_document_enricher_config {
+      .model = "openrouter/auto",
+    }),
+};
+
+knowledge::knowledge_rag_service rag(
+  retriever,
+  knowledge::knowledge_document_loader::make_default("http://127.0.0.1:9998"),
+  llm_client);
+
+auto upload = rag.upload_document("handbook.pdf", {
+  .metadata = { { "collection", "handbook" } },
+  .enrichers = std::move(enrichers),
+}, true);
+
+auto answer = rag.ask({
+  .query = "What are the main design patterns?",
+  .model = "openrouter/auto",
+  .policy = {
+    .max_results = 5,
+    .candidate_results = 24,
+    .surrounding_chunks_before = 1,
+    .surrounding_chunks_after = 1,
+  },
+});
+```
+
+`knowledge_upload_report` returns document counts, ingest counts, load time,
+ingest time, total time, and named stages. `knowledge_answer_report` returns the
+context block, citation results, retrieval trace, optional LLM answer, and
+retrieve/context/answer timing.
+
+Document enrichers are optional. `llm_knowledge_document_enricher` writes a
+retrieval-oriented summary into `metadata["summary"]`; when document summary
+chunks are enabled, that LLM summary is indexed together with the heuristic
+overview and extracted TOC lines.
 
 ## Context Injection
 
@@ -247,6 +386,23 @@ class, struct, namespace, function, and method-like definitions before falling
 back to size-based chunking. Code chunks are marked with
 `metadata["chunking"] = "code_symbol"`.
 
+For broad questions such as "what does this PDF cover?", enable
+`chunking_policy::include_document_summary_chunk`. The splitter prepends a
+small document-level chunk containing title/source metadata, an overview from
+the beginning of the document, and likely section or pattern lines. This gives
+the retriever an indexable overview without changing the original document
+chunks. The chunk is marked with `metadata["chunking"] = "document_summary"`.
+
+If `metadata["summary"]` exists, the summary chunk includes it under `LLM
+summary`. The splitter also extracts TOC-like pattern lines such as `Prompt
+Chaining Pattern Overview` or `Knowledge Retrieval (RAG) Pattern Overview` into
+an `Extracted pattern table of contents` block. This improves questions that ask
+for a whole-document list rather than a narrow passage.
+
+The same extracted entries are stored on the document summary chunk as
+`metadata["toc_entries"]`, encoded as a JSON array of strings. Tool callers and
+evals can read this metadata directly instead of scraping the summary text.
+
 ## Context Expansion
 
 `knowledge_policy::surrounding_chunks_before` and
@@ -260,6 +416,50 @@ inject nearby context for readability.
 `knowledge_eval.hpp` provides `evaluate_knowledge_retrieval()` for golden-query
 regression tests. It reports total cases, hits, recall@k, MRR, and per-case
 returned document IDs.
+
+Use `load_knowledge_eval_cases()` to keep regression cases in JSON:
+
+```json
+[
+  {
+    "name": "patterns",
+    "query": "main agentic design patterns",
+    "expected_document_ids": ["agentic-patterns"],
+    "expected_terms": ["Prompt Chaining", "Tool Use"],
+    "limit": 3
+  }
+]
+```
+
+`expected_document_ids` drives hit and MRR metrics. `expected_terms` checks that
+the returned chunks contain important phrases, which is useful for broad-query
+RAG regressions where the right document is not enough. Export results with
+`knowledge_eval_result_to_json()` for CI logs.
+
+## Production Migration
+
+`knowledge_migration.hpp` provides lightweight production maintenance helpers:
+
+- `audit_knowledge_store()` counts documents, chunks, orphan chunks, empty
+  content, embedding dimension mismatches, and index schema mismatches.
+- `migrate_knowledge_store()` copies source documents into a target retriever,
+  optionally clears the target first, erases stale target documents, and returns
+  source/target audit reports plus per-document ingest results.
+
+Use these helpers when moving from one store or index backend to another, or
+when validating a file-backed knowledge store before rebuilding a derived index:
+
+```cpp
+auto report = knowledge::migrate_knowledge_store(
+  source_store,
+  target_store,
+  target_retriever,
+  { .clear_target = true },
+  {
+    .expected_embedding_dimension = 1536,
+    .expected_index_schema_version = 1,
+  });
+```
 
 ## Grounding Checks
 
@@ -345,6 +545,14 @@ stores the returned text in `knowledge_document::content`. Metadata records the
 source extension, inferred content type, `parser = "tika"`, `extracted_as =
 "text"`, and `content_hash`.
 
+For PDFs, the loader also attempts a second best-effort `Accept: text/html`
+request and extracts Tika HTML page blocks when available. Multi-page HTML is
+joined with form-feed separators, which allows the splitter to record
+`page_start` and `page_end` metadata and allows context citations to include
+page ranges. If Tika does not return page-shaped HTML, the loader falls back to
+the normal text response. Set `tika_knowledge_loader_config::extract_pdf_pages =
+false` to disable the extra request.
+
 Run Tika Server out of process, for example:
 
 ```bash
@@ -377,6 +585,18 @@ The adapter sends `/vectors/upsert`, `/vectors/search`, `/vectors/delete`, and
 map that protocol to pgvector, OpenSearch, Milvus, or another managed vector
 service.
 
+Native database clients are intentionally deferred. The HTTP adapter keeps the
+core library free of database-specific client dependencies, connection-pool
+configuration, authentication plugins, and version compatibility issues. Add a
+native pgvector, OpenSearch, or Milvus client only when an application needs
+direct database connectivity rather than a gateway.
+
+OCR and multimodal parsing are also out of scope for the current core path. Tika
+covers text-bearing PDF and Office documents well; scanned PDFs, images, tables,
+and layout-aware extraction need heavier dependencies and domain-specific
+quality checks. Those should be added as optional parser plugins when a product
+actually needs scanned-document support.
+
 ## Benchmarking
 
 `benchmark_knowledge_retrieval()` runs a list of queries against a retriever and
@@ -388,6 +608,24 @@ checks before introducing larger external load tests. The
 can be scaled with `WUWE_KNOWLEDGE_BENCH_DOCS`,
 `WUWE_KNOWLEDGE_BENCH_QUERIES`, `WUWE_KNOWLEDGE_BENCH_CONCURRENCY`, and
 `WUWE_KNOWLEDGE_BENCH_JSON`.
+
+For real-corpus smoke tests, pass a directory and a query file:
+
+```powershell
+.\build-vcpkg\examples\Debug\knowledge_benchmark_example.exe `
+  --corpus docs `
+  --query-file queries.txt `
+  --concurrency 4 `
+  --json
+```
+
+The query file uses one query per line. Add an optional tab-separated limit when
+a query should use a different result count:
+
+```text
+RAG retrieval citations	5
+tenant security policy	8
+```
 
 ## Caching
 
@@ -454,3 +692,48 @@ also checked after payload restore.
 
 Set `WUWE_QDRANT_URL` to run the optional live integration test. Set
 `WUWE_QDRANT_KNOWLEDGE_COLLECTION` to override the test collection name.
+
+## Qdrant RAG Example
+
+`knowledge_qdrant_rag_example` demonstrates the end-to-end service-backed RAG
+path: load documents, optionally parse office/PDF files with Tika, embed chunks
+with an OpenAI-compatible embedding API, upsert/search Qdrant, build a cited
+context block, and expose the same query through `search_knowledge`.
+
+Configure the services:
+
+```powershell
+$env:WUWE_QDRANT_URL="http://localhost:6333"
+$env:WUWE_TIKA_URL="http://127.0.0.1:9998"
+$env:OPENROUTER_API_KEY="<api-key>"
+$env:OPENROUTER_BASE_URL="https://openrouter.ai/api"
+$env:OPENROUTER_EMBEDDING_MODEL="openai/text-embedding-3-small"
+$env:OPENROUTER_CHAT_MODEL="openrouter/auto"
+```
+
+The example also accepts `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and
+`OPENAI_EMBEDDING_MODEL` for other OpenAI-compatible embedding providers.
+
+Run it against a document directory:
+
+```powershell
+.\build-vcpkg\examples\Debug\knowledge_qdrant_rag_example.exe `
+  --docs docs `
+  --query "How should RAG answers cite retrieved material?" `
+  --collection wuwe_knowledge_rag_demo `
+  --candidate-limit 24 `
+  --clear
+```
+
+The example uses a temporary file-backed authoritative store and Qdrant as the
+derived vector index. Use `--clear` when changing embedding dimensions or when
+you want to rebuild the demo collection from scratch.
+
+By default the example retrieves a broader candidate set, reranks it with MMR
+for diversity, enables a document summary chunk for broad questions, then calls
+the configured chat model and prints a final cited answer. Pass `--query-rewrite`
+to generate additional retrieval queries with the configured chat model,
+`--llm-summary` to enrich uploaded documents with an LLM-generated summary
+before chunking, `--no-answer` to stop after retrieval/context/tool output,
+`--candidate-limit <N>` to tune first-stage recall, or `--chat-model <model>` to
+override `OPENROUTER_CHAT_MODEL`.

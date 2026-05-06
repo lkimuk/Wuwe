@@ -1,5 +1,4 @@
 #include <cstdlib>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -11,6 +10,7 @@
 #include <wuwe/agent/memory/in_memory_vector_index.hpp>
 #include <wuwe/agent/memory/memory_context.hpp>
 #include <wuwe/agent/memory/qdrant_memory_index.hpp>
+#include <wuwe/common/print.h>
 
 namespace {
 
@@ -88,11 +88,11 @@ int main() {
         .embedding_model = "deterministic-3d",
         .embedding_version = "1",
       }));
-    std::cout << "Using Qdrant vector index at " << qdrant_url << '\n';
+    wuwe::println("Using Qdrant vector index at {}", qdrant_url);
   }
   else {
     context.set_vector_index(std::make_shared<memory::in_memory_vector_index>());
-    std::cout << "Using in-memory vector index. Set WUWE_QDRANT_URL to use Qdrant.\n";
+    wuwe::println("Using in-memory vector index. Set WUWE_QDRANT_URL to use Qdrant.");
   }
 
   context.remember_long_term(
@@ -105,9 +105,11 @@ int main() {
     { { "topic", "analysis" } });
 
   const auto rebuild = context.rebuild_vector_index_detailed();
-  std::cout << "Rebuild scanned=" << rebuild.scanned
-            << " rebuilt=" << rebuild.rebuilt
-            << " errors=" << rebuild.errors.size() << '\n';
+  wuwe::println(
+    "Rebuild scanned={} rebuilt={} errors={}",
+    rebuild.scanned,
+    rebuild.rebuilt,
+    rebuild.errors.size());
 
   memory::memory_query query;
   query.scope = context.scope();
@@ -116,7 +118,6 @@ int main() {
   query.limit = 2;
 
   for (const auto& record : context.recall(query)) {
-    std::cout << "- [" << memory::to_string(record.kind) << "] "
-              << record.content << '\n';
+    wuwe::println("- [{}] {}", memory::to_string(record.kind), record.content);
   }
 }

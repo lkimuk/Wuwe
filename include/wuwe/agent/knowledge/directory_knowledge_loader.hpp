@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <wuwe/agent/knowledge/file_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/knowledge_path.hpp>
 
 namespace wuwe::agent::knowledge {
 
@@ -57,7 +58,7 @@ public:
     documents.reserve(paths.size());
     for (const auto& path : paths) {
       auto metadata = options.metadata;
-      metadata["relative_path"] = std::filesystem::relative(path, root).generic_string();
+      metadata["relative_path"] = generic_path_to_utf8(std::filesystem::relative(path, root));
 
       auto id = metadata["relative_path"];
       for (auto& ch : id) {

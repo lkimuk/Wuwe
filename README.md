@@ -60,6 +60,17 @@ ctest --test-dir build-vcpkg -C Debug --output-on-failure -R memory_tests
 See [Memory Management](docs/memory-management.md) and
 [Memory Deployment](docs/memory-deployment.md) for production guidance.
 
+## Knowledge Retrieval
+
+Wuwe also includes a standalone RAG layer for external documents. It supports
+file and directory ingestion, cited chunking, local and persistent indexes,
+Qdrant and remote-vector adapters, hybrid retrieval, reranking, caching,
+observability, grounding checks, benchmark utilities, and `search_knowledge`
+tool exposure.
+
+See [Knowledge Retrieval](docs/knowledge-retrieval.md) for current status,
+pipeline examples, deployment notes, and remaining production work.
+
 ## Install
 
 ```bash

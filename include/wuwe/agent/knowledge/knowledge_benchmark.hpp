@@ -5,7 +5,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -35,6 +38,43 @@ struct knowledge_benchmark_options {
   std::size_t concurrency { 1 };
   bool keep_latency_samples { true };
 };
+
+inline std::vector<knowledge_benchmark_case> load_knowledge_benchmark_cases(
+  const std::filesystem::path& path,
+  std::size_t default_limit = 6) {
+  std::ifstream input(path);
+  if (!input) {
+    throw std::runtime_error("failed to open knowledge benchmark query file: " + path.string());
+  }
+
+  std::vector<knowledge_benchmark_case> cases;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty() || line.starts_with('#')) {
+      continue;
+    }
+
+    auto limit = default_limit;
+    const auto tab = line.find('\t');
+    if (tab != std::string::npos) {
+      const auto limit_text = line.substr(tab + 1);
+      line.resize(tab);
+      if (!limit_text.empty()) {
+        limit = static_cast<std::size_t>(std::stoull(limit_text));
+      }
+    }
+    if (!line.empty()) {
+      cases.push_back({
+        .query = std::move(line),
+        .limit = limit,
+      });
+    }
+  }
+  return cases;
+}
 
 inline knowledge_benchmark_report benchmark_knowledge_retrieval(
   const knowledge_retriever& retriever,

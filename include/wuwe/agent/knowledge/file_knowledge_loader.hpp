@@ -14,6 +14,8 @@
 
 #include <wuwe/agent/knowledge/knowledge_record.hpp>
 #include <wuwe/agent/knowledge/knowledge_hash.hpp>
+#include <wuwe/agent/knowledge/knowledge_path.hpp>
+#include <wuwe/agent/knowledge/knowledge_text.hpp>
 
 namespace wuwe::agent::knowledge {
 
@@ -41,7 +43,7 @@ public:
 
     knowledge_document document;
     document.id = options.id.empty() ? default_id(path) : std::move(options.id);
-    document.title = options.title.empty() ? path.stem().string() : std::move(options.title);
+    document.title = options.title.empty() ? stem_to_utf8(path) : std::move(options.title);
     const auto extension = lowercase_extension(path);
     const auto raw_content = content.str();
     if (extension_is_html(extension) && options.extract_html_text) {
@@ -54,7 +56,7 @@ public:
       document.content = raw_content;
     }
     document.source_uri =
-      options.source_uri.empty() ? path.generic_string() : std::move(options.source_uri);
+      options.source_uri.empty() ? generic_path_to_utf8(path) : std::move(options.source_uri);
     document.metadata = std::move(options.metadata);
 
     if (!extension.empty()) {
@@ -73,9 +75,9 @@ public:
   }
 
   static std::string default_id(const std::filesystem::path& path) {
-    auto id = path.filename().string();
+    auto id = filename_to_utf8(path);
     if (id.empty()) {
-      id = path.string();
+      id = path_to_utf8(path);
     }
     for (auto& ch : id) {
       if (ch == '\\' || ch == '/' || ch == ' ' || ch == ':') {
@@ -153,13 +155,13 @@ private:
 
     for (std::size_t index = 0; index < html.size();) {
       if (starts_with_tag(html, index, "<script")) {
-        const auto end = find_case_insensitive(html, "</script>", index);
+        const auto end = text_detail::find_case_insensitive(html, "</script>", index);
         index = end == std::string::npos ? html.size() : end + 9;
         append_space(output);
         continue;
       }
       if (starts_with_tag(html, index, "<style")) {
-        const auto end = find_case_insensitive(html, "</style>", index);
+        const auto end = text_detail::find_case_insensitive(html, "</style>", index);
         index = end == std::string::npos ? html.size() : end + 8;
         append_space(output);
         continue;
@@ -331,18 +333,6 @@ private:
       }
     }
     return output;
-  }
-
-  static std::size_t find_case_insensitive(
-    const std::string& text,
-    std::string_view needle,
-    std::size_t offset) {
-    for (std::size_t index = offset; index + needle.size() <= text.size(); ++index) {
-      if (starts_with_tag(text, index, needle)) {
-        return index;
-      }
-    }
-    return std::string::npos;
   }
 };
 

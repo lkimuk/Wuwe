@@ -4,7 +4,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -22,14 +21,18 @@
 #include <wuwe/agent/knowledge/knowledge_benchmark.hpp>
 #include <wuwe/agent/knowledge/knowledge_cache.hpp>
 #include <wuwe/agent/knowledge/knowledge_context.hpp>
+#include <wuwe/agent/knowledge/knowledge_document_loader.hpp>
 #include <wuwe/agent/knowledge/knowledge_eval.hpp>
 #include <wuwe/agent/knowledge/knowledge_grounding.hpp>
 #include <wuwe/agent/knowledge/knowledge_metrics.hpp>
+#include <wuwe/agent/knowledge/knowledge_migration.hpp>
 #include <wuwe/agent/knowledge/knowledge_observability.hpp>
 #include <wuwe/agent/knowledge/knowledge_parser_registry.hpp>
+#include <wuwe/agent/knowledge/knowledge_path.hpp>
 #include <wuwe/agent/knowledge/knowledge_pipeline.hpp>
 #include <wuwe/agent/knowledge/knowledge_pipeline_config.hpp>
 #include <wuwe/agent/knowledge/knowledge_query_rewriter.hpp>
+#include <wuwe/agent/knowledge/knowledge_rag_service.hpp>
 #include <wuwe/agent/knowledge/knowledge_result_processor.hpp>
 #include <wuwe/agent/knowledge/knowledge_tools.hpp>
 #include <wuwe/agent/knowledge/qdrant_knowledge_index.hpp>
@@ -39,6 +42,7 @@
 #include <wuwe/agent/knowledge/tika_knowledge_loader.hpp>
 #include <wuwe/agent/memory/embedding_model.hpp>
 #include <wuwe/agent/llm/llm_types.h>
+#include <wuwe/common/print.h>
 #include <wuwe/net/http_client.h>
 
 #include <nlohmann/json.hpp>
@@ -92,6 +96,21 @@ public:
   }
 };
 
+class fake_llm_client final : public llm_client {
+public:
+  explicit fake_llm_client(std::string content) : content_(std::move(content)) {
+  }
+
+  llm_response complete(const llm_request&) override {
+    return {
+      .content = content_,
+    };
+  }
+
+private:
+  std::string content_;
+};
+
 class selectively_failing_embedding_model final : public agent::memory::embedding_model {
 public:
   std::vector<float> embed(std::string_view text) const override {
@@ -143,10 +162,16 @@ class tika_knowledge_capture_http_client final : public http_client {
 public:
   http_response send(const http_request& request) override {
     requests.push_back(request);
+    for (const auto& [key, value] : request.headers) {
+      if (key == "Accept" && value == "text/html" && !html_response_body.empty()) {
+        return { .body = html_response_body };
+      }
+    }
     return { .body = response_body };
   }
 
   std::string response_body { "Parsed document text from Tika." };
+  std::string html_response_body;
   std::vector<http_request> requests;
 };
 
@@ -209,6 +234,15 @@ std::filesystem::path unique_temp_path(std::string_view suffix) {
           std::string(suffix));
 }
 
+std::filesystem::path fixture_path(std::string_view relative) {
+  const auto path = std::filesystem::current_path() / "tests" / "fixtures" /
+                    std::filesystem::path(relative);
+  if (std::filesystem::exists(path)) {
+    return path;
+  }
+  return std::filesystem::current_path() / "fixtures" / std::filesystem::path(relative);
+}
+
 void test_splitter_chunks_with_overlap() {
   knowledge_splitter splitter({
     .max_chars = 10,
@@ -247,6 +281,145 @@ void test_splitter_respects_markdown_headings() {
   require(chunks[1].start_line == 3, "markdown chunk should record start line");
   require(contains(chunks[1].content, "RAG searches documents."),
     "section chunk should contain section body");
+}
+
+void test_splitter_skips_markdown_headings_for_tika_documents() {
+  knowledge_splitter splitter({
+    .max_chars = 200,
+    .overlap_chars = 0,
+    .respect_markdown_headings = true,
+  });
+
+  const auto chunks = splitter.split({
+    .id = "pdf",
+    .content = "# Not a real markdown heading\nTika extracted PDF text.",
+    .metadata = {
+      { "extension", ".pdf" },
+      { "parser", "tika" },
+    },
+  });
+
+  require(chunks.size() == 1, "tika documents should use normal chunking");
+  require(!chunks.front().metadata.contains("section"),
+    "tika documents should not infer markdown sections");
+}
+
+void test_splitter_adds_pdf_page_and_section_metadata() {
+  knowledge_splitter splitter({
+    .max_chars = 45,
+    .overlap_chars = 0,
+  });
+
+  const auto chunks = splitter.split({
+    .id = "pdf",
+    .content = "Chapter 1 Foundations\nfirst page content keeps going.\f"
+               "second page has more agent text for retrieval.",
+    .metadata = {
+      { "parser", "tika" },
+      { "extension", ".pdf" },
+    },
+  });
+
+  require(chunks.size() >= 2, "pdf text should be split into chunks");
+  require(chunks.front().metadata.at("section") == "Chapter 1 Foundations",
+    "pdf chunks should infer conservative section titles");
+  require(chunks.front().metadata.at("page_start") == "1",
+    "pdf chunks should record start page");
+  require(chunks.back().metadata.at("page_start") == "2",
+    "pdf chunks should record page after form-feed break");
+}
+
+void test_splitter_avoids_pdf_bibliography_items_as_sections() {
+  knowledge_splitter splitter({
+    .max_chars = 80,
+    .overlap_chars = 0,
+  });
+
+  const auto chunks = splitter.split({
+    .id = "pdf",
+    .content = "3.\t Market.us. Global Agentic AI Market Size, Trends and Forecast 2025-2034.\n"
+               "This bibliography item should not become a section title.",
+    .metadata = {
+      { "parser", "tika" },
+      { "extension", ".pdf" },
+    },
+  });
+
+  require(!chunks.empty(), "pdf bibliography fixture should produce chunks");
+  require(!chunks.front().metadata.contains("section"),
+    "bibliography references should not be inferred as PDF sections");
+}
+
+void test_splitter_can_add_document_summary_chunk() {
+  knowledge_splitter splitter({
+    .max_chars = 60,
+    .overlap_chars = 0,
+    .include_document_summary_chunk = true,
+  });
+
+  const auto chunks = splitter.split({
+    .id = "patterns",
+    .title = "Agentic Patterns",
+    .content = "Agentic systems use patterns.\n\n"
+               "1. Prompt Chaining\n"
+               "2. Tool Use\n"
+               "3. Multi-Agent Collaboration\n"
+               "The rest of the document explains implementation details.",
+    .source_uri = "docs/patterns.md",
+  });
+
+  require(chunks.size() > 1, "summary chunk should be added before normal chunks");
+  require(chunks.front().id == "patterns#summary",
+    "summary chunk should use stable summary id");
+  require(chunks.front().metadata.at("chunking") == "document_summary",
+    "summary chunk should be marked in metadata");
+  require(contains(chunks.front().content, "Prompt Chaining"),
+    "summary chunk should collect likely section lines");
+  require(contains(chunks.front().content, "Tool Use"),
+    "summary chunk should help broad pattern queries");
+}
+
+void test_splitter_summary_chunk_uses_llm_summary_and_toc() {
+  knowledge_splitter splitter({
+    .max_chars = 80,
+    .overlap_chars = 0,
+    .include_document_summary_chunk = true,
+    .document_summary_chars = 2000,
+  });
+
+  const auto chunks = splitter.split({
+    .id = "patterns",
+    .title = "Agentic Patterns",
+    .content = "Part I\n"
+               "Prompt Chaining Pattern Overview    3\n"
+               "Tool Use Pattern Overview    61\n"
+               "Knowledge Retrieval (RAG) Pattern Overview    193\n"
+               "body text",
+    .metadata = {
+      { "summary", "This guide covers prompt chaining, tool use, and RAG." },
+    },
+  });
+
+  require(contains(chunks.front().content, "LLM summary"),
+    "summary chunk should include enriched LLM summary");
+  require(contains(chunks.front().content, "Prompt Chaining Pattern"),
+    "summary chunk should include extracted TOC pattern lines");
+  require(contains(chunks.front().content, "Knowledge Retrieval (RAG) Pattern"),
+    "summary chunk should preserve RAG pattern TOC entries");
+  const auto toc_entries = nlohmann::json::parse(chunks.front().metadata.at("toc_entries"));
+  require(toc_entries.is_array() && toc_entries.size() == 3,
+    "summary chunk should expose structured TOC entries metadata");
+  require(toc_entries[0] == "Prompt Chaining Pattern",
+    "structured TOC entries should keep cleaned pattern names");
+}
+
+void test_path_to_utf8_preserves_unicode_on_windows() {
+#if defined(_WIN32)
+  const std::filesystem::path path(L"C:\\Users\\ligx\\Downloads\\Gull\u00ED.pdf");
+  const auto value = filename_to_utf8(path);
+  require(value.find("Gull") != std::string::npos, "utf8 path should keep ascii prefix");
+  require(value.find('?') == std::string::npos, "utf8 path should not replace unicode with ?");
+#endif
 }
 
 void test_splitter_prefers_paragraph_boundaries() {
@@ -465,6 +638,7 @@ void test_tika_loader_extracts_remote_parser_text() {
   tika_knowledge_loader loader({
     .base_url = "http://tika.local/",
     .timeout_ms = 12000,
+    .extract_pdf_pages = false,
   }, http);
 
   const auto document = loader.load(path, {
@@ -505,10 +679,47 @@ void test_tika_loader_extracts_remote_parser_text() {
   cleanup();
 }
 
+void test_tika_loader_extracts_pdf_page_breaks_from_html() {
+  const auto path = unique_temp_path(".pdf");
+
+  {
+    std::ofstream output(path, std::ios::binary);
+    output << "%PDF fake binary content";
+  }
+
+  const auto cleanup = [&] {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+  };
+
+  auto http = std::make_shared<tika_knowledge_capture_http_client>();
+  http->response_body = "plain fallback";
+  http->html_response_body =
+    R"(<html><body><div class="page"><p>Page 1 text</p></div><div class="page"><p>Page 2 text</p></div></body></html>)";
+
+  tika_knowledge_loader loader({
+    .base_url = "http://tika.local/",
+  }, http);
+
+  const auto document = loader.load(path);
+  require(contains(document.content, "Page 1 text") &&
+          contains(document.content, "Page 2 text") &&
+          contains(document.content, "\f"),
+    "tika loader should join HTML page divs with form-feed");
+  require(document.metadata.at("page_count") == "2",
+    "tika loader should record page count from HTML extraction");
+  require(document.metadata.at("page_extraction") == "tika-html",
+    "tika loader should record page extraction source");
+  require(http->requests.size() == 2,
+    "tika PDF loader should request text and page HTML");
+
+  cleanup();
+}
+
 void test_tika_loader_live_integration_when_configured() {
   const auto tika_url = env_value("WUWE_TIKA_URL");
   if (tika_url.empty()) {
-    std::cout << "[SKIP] tika loader live integration requires WUWE_TIKA_URL\n";
+    println("[SKIP] tika loader live integration requires WUWE_TIKA_URL");
     return;
   }
 
@@ -555,7 +766,10 @@ void test_parser_registry_selects_file_and_tika_parsers() {
   knowledge_parser_registry registry;
   registry.register_parser(std::make_shared<file_knowledge_document_parser>());
   registry.register_parser(std::make_shared<tika_knowledge_document_parser>(
-    tika_knowledge_loader({ .base_url = "http://tika.local" }, http)));
+    tika_knowledge_loader({
+      .base_url = "http://tika.local",
+      .extract_pdf_pages = false,
+    }, http)));
 
   const auto text_document = registry.parse(txt_path);
   const auto pdf_document = registry.parse(pdf_path);
@@ -565,6 +779,68 @@ void test_parser_registry_selects_file_and_tika_parsers() {
     "parser registry should use Tika parser for PDF files");
   require(http->requests.size() == 1,
     "parser registry should call Tika only for Tika-supported files");
+
+  cleanup();
+}
+
+void test_document_loader_loads_files_with_stable_metadata() {
+  const auto root = unique_temp_path("");
+  std::filesystem::create_directories(root);
+  const auto path = root / "Agent Guide.md";
+  {
+    std::ofstream(path, std::ios::binary) << "# Agent Guide\nRAG retrieval notes.";
+  }
+
+  const auto cleanup = [&] {
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+  };
+
+  auto loader = knowledge_document_loader::make_default();
+  const auto documents = loader.load(root, {
+    .metadata = { { "collection", "docs" } },
+  });
+
+  require(documents.size() == 1, "document loader should parse supported files");
+  require(documents.front().id == "Agent-Guide.md",
+    "document loader should derive stable sanitized ids");
+  require(documents.front().source_uri == "Agent Guide.md",
+    "document loader should keep readable source uri");
+  require(documents.front().metadata.at("relative_path") == "Agent Guide.md",
+    "document loader should record relative path metadata");
+  require(documents.front().metadata.at("collection") == "docs",
+    "document loader should apply caller metadata");
+
+  cleanup();
+}
+
+void test_document_loader_runs_enrichers() {
+  const auto path = unique_temp_path(".md");
+  {
+    std::ofstream output(path, std::ios::binary);
+    output << "# Agentic Patterns\nPrompt Chaining Pattern Overview";
+  }
+
+  const auto cleanup = [&] {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+  };
+
+  auto enricher = std::make_shared<llm_knowledge_document_enricher>(
+    std::make_shared<fake_llm_client>("LLM summary mentions Prompt Chaining."),
+    llm_knowledge_document_enricher_config {
+      .model = "summary-model",
+    });
+
+  const auto documents = knowledge_document_loader::make_default().load(path, {
+    .enrichers = { enricher },
+  });
+
+  require(documents.size() == 1, "document loader should load fixture file");
+  require(documents.front().metadata.at("summary") == "LLM summary mentions Prompt Chaining.",
+    "document loader should apply LLM summary enricher");
+  require(documents.front().metadata.at("summary_model") == "summary-model",
+    "document loader should record summary model");
 
   cleanup();
 }
@@ -1028,7 +1304,7 @@ void test_qdrant_knowledge_search_builds_filters_and_parses_results() {
 void test_qdrant_knowledge_live_integration_when_configured() {
   const auto url = env_value("WUWE_QDRANT_URL");
   if (url.empty()) {
-    std::cout << "[SKIP] qdrant knowledge live integration requires WUWE_QDRANT_URL\n";
+    println("[SKIP] qdrant knowledge live integration requires WUWE_QDRANT_URL");
     return;
   }
 
@@ -1617,6 +1893,35 @@ void test_query_rewriter_enables_multi_query_retrieval() {
     "retrieval trace should count rewritten queries");
 }
 
+void test_candidate_limit_applies_without_reranker() {
+  auto retriever = make_retriever({
+    .max_chars = 80,
+    .overlap_chars = 0,
+    .include_document_summary_chunk = true,
+  });
+
+  retriever->ingest({
+    .id = "patterns-doc",
+    .title = "Patterns",
+    .content = "Overview of agentic design patterns.\n"
+               "1. Prompt Chaining\n"
+               "2. Tool Use\n"
+               "3. Knowledge Retrieval\n"
+               "Long body text that creates another chunk.",
+  });
+
+  knowledge_query query;
+  query.text = "What are the main patterns?";
+  query.limit = 1;
+  query.candidate_limit = 8;
+
+  const auto report = retriever->retrieve_detailed(query);
+  require(report.trace.first_stage_count > 1,
+    "candidate limit should fetch broader candidates without reranker");
+  require(report.results.size() == 1,
+    "retriever should still return final limit without reranker");
+}
+
 void test_http_query_rewriter_calls_remote_service() {
   auto http = std::make_shared<remote_vector_capture_http_client>();
   http->response_body = R"({"rewrites":["timeout backoff","retry policy","ignored extra"]})";
@@ -1649,6 +1954,19 @@ void test_http_query_rewriter_calls_remote_service() {
     }
   }
   require(has_auth, "http query rewriter should attach bearer token");
+}
+
+void test_llm_query_rewriter_parses_json_array_response() {
+  llm_knowledge_query_rewriter rewriter(
+    std::make_shared<fake_llm_client>("Here is JSON: [\"agent patterns\", \"tool use\"]"),
+    {
+      .max_rewrites = 1,
+    });
+
+  const auto rewrites = rewriter.rewrite("What patterns are described?");
+  require(rewrites.size() == 1, "llm query rewriter should honor max rewrites");
+  require(rewrites.front() == "agent patterns",
+    "llm query rewriter should parse JSON array from response");
 }
 
 void test_mmr_reranker_promotes_diverse_results() {
@@ -2142,6 +2460,31 @@ void test_context_expands_retrieved_chunks_with_neighbors() {
     "context expansion should include following sibling chunk");
 }
 
+void test_context_truncates_oversized_chunks() {
+  auto retriever = make_retriever({
+    .max_chars = 2000,
+    .overlap_chars = 0,
+  });
+
+  retriever->ingest({
+    .id = "large-doc",
+    .title = "Large Guide",
+    .content = "RAG retrieval " + std::string(1500, 'x'),
+    .source_uri = "docs/large.md",
+  });
+
+  knowledge_context context(retriever, {
+    .max_context_chars = 240,
+    .max_results = 1,
+  });
+
+  const auto block = context.build_context_block("RAG retrieval");
+  require(!block.empty(), "context should include oversized chunks by truncating");
+  require(block.size() <= 260, "truncated context should stay near the budget");
+  require(contains(block, "docs/large.md"), "truncated context should preserve citation");
+  require(contains(block, "..."), "truncated context should mark truncated content");
+}
+
 void test_hybrid_retrieval_uses_lexical_score_and_threshold() {
   auto retriever = make_retriever({
     .max_chars = 200,
@@ -2287,6 +2630,114 @@ void test_evaluate_knowledge_retrieval_reports_recall_and_mrr() {
   require(report.cases.size() == 2, "knowledge eval should preserve case results");
 }
 
+void test_knowledge_eval_loads_cases_and_reports_terms() {
+  const auto path = unique_temp_path(".json");
+  {
+    std::ofstream output(path, std::ios::binary);
+    output << R"([
+      {
+        "name": "rag",
+        "query": "RAG retrieval",
+        "expected_document_ids": ["rag-doc"],
+        "expected_terms": ["cited documents"],
+        "limit": 1
+      }
+    ])";
+  }
+
+  const auto cleanup = [&] {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+  };
+
+  auto retriever = make_retriever({
+    .max_chars = 200,
+    .overlap_chars = 0,
+  });
+  retriever->ingest({
+    .id = "rag-doc",
+    .content = "RAG retrieval searches cited documents.",
+  });
+
+  const auto cases = load_knowledge_eval_cases(path);
+  const auto report = evaluate_knowledge_retrieval(*retriever, cases);
+  const auto json = knowledge_eval_result_to_json(report);
+
+  require(cases.size() == 1, "knowledge eval loader should load JSON cases");
+  require(report.term_hits == 1, "knowledge eval should count expected term hits");
+  require(json["cases"][0]["terms_hit"] == true,
+    "knowledge eval JSON should include per-case term result");
+
+  cleanup();
+}
+
+void test_knowledge_eval_runs_offline_fixture() {
+  auto retriever = make_retriever({
+    .max_chars = 180,
+    .overlap_chars = 0,
+    .include_document_summary_chunk = true,
+  });
+
+  const auto documents =
+    knowledge_document_loader::make_default().load(fixture_path("knowledge_eval_corpus"));
+  const auto ingest = retriever->ingest_batch(documents);
+  require(ingest.errors.empty(), "offline eval fixture should ingest without errors");
+
+  const auto cases = load_knowledge_eval_cases(fixture_path("knowledge_eval_cases.json"));
+  const auto report = evaluate_knowledge_retrieval(*retriever, cases);
+
+  require(report.total == 2, "offline eval fixture should load two cases");
+  require(report.hits == 2, "offline eval fixture should hit expected documents");
+  require(report.term_hits == 2, "offline eval fixture should hit expected terms");
+  require(report.recall_at_k == 1.0, "offline eval fixture should report full recall");
+  require(report.term_recall == 1.0, "offline eval fixture should report full term recall");
+}
+
+void test_rag_service_uploads_document_and_answers() {
+  const auto path = unique_temp_path(".md");
+  {
+    std::ofstream output(path, std::ios::binary);
+    output << "# Retrieval\nRAG retrieval searches cited documents.";
+  }
+
+  const auto cleanup = [&] {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+  };
+
+  auto retriever = make_retriever({
+    .max_chars = 200,
+    .overlap_chars = 0,
+  });
+  knowledge_rag_service service(
+    retriever,
+    knowledge_document_loader::make_default(),
+    std::make_shared<fake_llm_client>("RAG searches cited documents [1]."));
+
+  const auto upload = service.upload_document(path, {
+    .metadata = { { "collection", "service-test" } },
+  });
+  require(upload.documents == 1, "rag service should load one uploaded document");
+  require(upload.ingest.ingested == 1, "rag service should ingest uploaded document");
+  require(upload.stages.size() == 2, "rag service should report load and ingest stages");
+  require(upload.total_ms >= 0.0, "rag service should report total upload time");
+
+  knowledge_policy policy;
+  policy.max_results = 1;
+  const auto answer = service.ask({
+    .query = "RAG retrieval",
+    .policy = policy,
+  });
+  require(answer.citations.size() == 1, "rag service should return citations");
+  require(contains(answer.context_block, "[1]"),
+    "rag service should build cited context block");
+  require(answer.answer.content == "RAG searches cited documents [1].",
+    "rag service should use configured llm client");
+  require(answer.total_ms >= 0.0, "rag service should report ask timing");
+
+  cleanup();
+}
+
 void test_knowledge_benchmark_reports_latency() {
   auto retriever = make_retriever({
     .max_chars = 200,
@@ -2317,6 +2768,98 @@ void test_knowledge_benchmark_reports_latency() {
   const auto json = nlohmann::json::parse(knowledge_benchmark_report_to_json(report));
   require(json["query_count"] == 3, "benchmark JSON should include query count");
   require(json.contains("p95_ms"), "benchmark JSON should include p95");
+}
+
+void test_knowledge_benchmark_loads_query_file() {
+  const auto path = unique_temp_path(".queries");
+  {
+    std::ofstream output(path, std::ios::binary);
+    output << "# comments are ignored\n";
+    output << "RAG retrieval\t3\n";
+    output << "API contracts\n";
+  }
+
+  const auto cleanup = [&] {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+  };
+
+  const auto cases = load_knowledge_benchmark_cases(path, 5);
+  require(cases.size() == 2, "benchmark query loader should skip comments");
+  require(cases[0].query == "RAG retrieval", "benchmark query loader should parse query text");
+  require(cases[0].limit == 3, "benchmark query loader should parse tab limit");
+  require(cases[1].limit == 5, "benchmark query loader should apply default limit");
+
+  cleanup();
+}
+
+void test_knowledge_store_migration_audits_and_reindexes_target() {
+  auto source_store = std::make_shared<in_memory_knowledge_store>();
+  auto source = std::make_shared<knowledge_retriever>(
+    source_store,
+    std::make_shared<in_memory_knowledge_index>(),
+    std::make_shared<topic_embedding_model>(),
+    knowledge_splitter({
+      .max_chars = 200,
+      .overlap_chars = 0,
+    }),
+    knowledge_indexing_policy {
+      .embedding_provider = "test",
+      .embedding_model = "topic",
+      .expected_embedding_dimension = 3,
+      .index_schema_version = 2,
+    });
+
+  source->ingest({
+    .id = "rag-doc",
+    .title = "Retrieval Guide",
+    .content = "RAG retrieval migration document.",
+    .source_uri = "docs/rag.md",
+  });
+
+  const auto source_audit = audit_knowledge_store(*source_store, {
+    .expected_embedding_dimension = 3,
+    .expected_index_schema_version = 2,
+  });
+  require(source_audit.documents == 1, "store audit should count documents");
+  require(source_audit.chunks == 1, "store audit should count chunks");
+  require(source_audit.warnings.empty(), "store audit should accept matching metadata");
+
+  auto target_store = std::make_shared<in_memory_knowledge_store>();
+  auto target = std::make_shared<knowledge_retriever>(
+    target_store,
+    std::make_shared<in_memory_knowledge_index>(),
+    std::make_shared<topic_embedding_model>(),
+    knowledge_splitter({
+      .max_chars = 200,
+      .overlap_chars = 0,
+    }),
+    knowledge_indexing_policy {
+      .embedding_provider = "test",
+      .embedding_model = "topic",
+      .expected_embedding_dimension = 3,
+      .index_schema_version = 2,
+    });
+
+  const auto migration = migrate_knowledge_store(*source_store, *target_store, *target, {
+    .clear_target = true,
+  }, {
+    .expected_embedding_dimension = 3,
+    .expected_index_schema_version = 2,
+  });
+
+  require(migration.source_documents == 1, "migration should report source document count");
+  require(migration.ingest.ingested == 1, "migration should ingest source documents");
+  require(migration.target_audit.documents == 1, "migration should populate target store");
+  require(migration.target_audit.chunks == 1, "migration should populate target chunks");
+
+  knowledge_query query;
+  query.text = "RAG retrieval";
+  query.limit = 1;
+  const auto results = target->retrieve(query);
+  require(results.size() == 1, "migration should rebuild target retrieval index");
+  require(results.front().chunk.document_id == "rag-doc",
+    "migration should preserve document identity");
 }
 
 void test_knowledge_pipeline_builder_local_preset() {
@@ -2450,7 +2993,7 @@ void test_grounding_checker_validates_citations() {
 
 void run(const char* name, void (*test)()) {
   test();
-  std::cout << "[PASS] " << name << '\n';
+  println("[PASS] {}", name);
 }
 
 } // namespace
@@ -2459,6 +3002,18 @@ int main() {
   try {
     run("splitter chunks with overlap", test_splitter_chunks_with_overlap);
     run("splitter respects markdown headings", test_splitter_respects_markdown_headings);
+    run("splitter skips markdown headings for tika documents",
+      test_splitter_skips_markdown_headings_for_tika_documents);
+    run("splitter adds pdf page and section metadata",
+      test_splitter_adds_pdf_page_and_section_metadata);
+    run("splitter avoids pdf bibliography items as sections",
+      test_splitter_avoids_pdf_bibliography_items_as_sections);
+    run("splitter can add document summary chunk",
+      test_splitter_can_add_document_summary_chunk);
+    run("splitter summary chunk uses llm summary and toc",
+      test_splitter_summary_chunk_uses_llm_summary_and_toc);
+    run("path to utf8 preserves unicode on windows",
+      test_path_to_utf8_preserves_unicode_on_windows);
     run("splitter prefers paragraph boundaries", test_splitter_prefers_paragraph_boundaries);
     run("splitter supports token windows", test_splitter_supports_token_windows);
     run("splitter avoids splitting markdown code fences",
@@ -2469,10 +3024,16 @@ int main() {
     run("file loader extracts rtf text", test_file_loader_extracts_rtf_text);
     run("tika loader extracts remote parser text",
       test_tika_loader_extracts_remote_parser_text);
+    run("tika loader extracts pdf page breaks from html",
+      test_tika_loader_extracts_pdf_page_breaks_from_html);
     run("tika loader live integration when configured",
       test_tika_loader_live_integration_when_configured);
     run("parser registry selects file and tika parsers",
       test_parser_registry_selects_file_and_tika_parsers);
+    run("document loader loads files with stable metadata",
+      test_document_loader_loads_files_with_stable_metadata);
+    run("document loader runs enrichers",
+      test_document_loader_runs_enrichers);
     run("structured loader loads csv rows", test_structured_loader_loads_csv_rows);
     run("structured loader flattens json paths", test_structured_loader_flattens_json_paths);
     run("structured loader summarizes openapi json",
@@ -2511,8 +3072,12 @@ int main() {
     run("bm25 reranker promotes exact lexical match", test_bm25_reranker_promotes_exact_lexical_match);
     run("query rewriter enables multi query retrieval",
       test_query_rewriter_enables_multi_query_retrieval);
+    run("candidate limit applies without reranker",
+      test_candidate_limit_applies_without_reranker);
     run("http query rewriter calls remote service",
       test_http_query_rewriter_calls_remote_service);
+    run("llm query rewriter parses json array response",
+      test_llm_query_rewriter_parses_json_array_response);
     run("mmr reranker promotes diverse results", test_mmr_reranker_promotes_diverse_results);
     run("cross encoder reranker uses model scores",
       test_cross_encoder_reranker_uses_model_scores);
@@ -2534,6 +3099,7 @@ int main() {
       test_context_merges_adjacent_chunks_before_injection);
     run("context expands retrieved chunks with neighbors",
       test_context_expands_retrieved_chunks_with_neighbors);
+    run("context truncates oversized chunks", test_context_truncates_oversized_chunks);
     run("hybrid retrieval uses lexical score and threshold",
       test_hybrid_retrieval_uses_lexical_score_and_threshold);
     run("erase document removes results", test_erase_document_removes_results);
@@ -2541,7 +3107,16 @@ int main() {
       test_knowledge_tool_provider_searches_with_citations);
     run("evaluate knowledge retrieval reports recall and mrr",
       test_evaluate_knowledge_retrieval_reports_recall_and_mrr);
+    run("knowledge eval loads cases and reports terms",
+      test_knowledge_eval_loads_cases_and_reports_terms);
+    run("knowledge eval runs offline fixture",
+      test_knowledge_eval_runs_offline_fixture);
+    run("rag service uploads document and answers",
+      test_rag_service_uploads_document_and_answers);
     run("knowledge benchmark reports latency", test_knowledge_benchmark_reports_latency);
+    run("knowledge benchmark loads query file", test_knowledge_benchmark_loads_query_file);
+    run("knowledge store migration audits and reindexes target",
+      test_knowledge_store_migration_audits_and_reindexes_target);
     run("knowledge pipeline builder local preset", test_knowledge_pipeline_builder_local_preset);
     run("knowledge pipeline builder requires embedding model",
       test_knowledge_pipeline_builder_requires_embedding_model);
@@ -2552,7 +3127,7 @@ int main() {
     run("grounding checker validates citations", test_grounding_checker_validates_citations);
   }
   catch (const std::exception& ex) {
-    std::cerr << "[FAIL] " << ex.what() << '\n';
+    println("[FAIL] {}", ex.what());
     return 1;
   }
 

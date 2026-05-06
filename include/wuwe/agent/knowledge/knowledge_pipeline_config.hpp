@@ -37,6 +37,10 @@ inline chunking_policy chunking_policy_from_json(const nlohmann::json& json) {
     json.value("protect_markdown_code_fences", policy.protect_markdown_code_fences);
   policy.respect_code_symbols =
     json.value("respect_code_symbols", policy.respect_code_symbols);
+  policy.include_document_summary_chunk =
+    json.value("include_document_summary_chunk", policy.include_document_summary_chunk);
+  policy.document_summary_chars =
+    json.value("document_summary_chars", policy.document_summary_chars);
   return policy;
 }
 

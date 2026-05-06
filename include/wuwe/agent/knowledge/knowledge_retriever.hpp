@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <functional>
 #include <future>
@@ -24,6 +25,7 @@
 #include <wuwe/agent/knowledge/knowledge_reranker.hpp>
 #include <wuwe/agent/knowledge/knowledge_splitter.hpp>
 #include <wuwe/agent/knowledge/knowledge_store.hpp>
+#include <wuwe/agent/knowledge/knowledge_text.hpp>
 #include <wuwe/agent/memory/embedding_model.hpp>
 
 namespace wuwe::agent::knowledge {
@@ -48,6 +50,7 @@ struct knowledge_indexing_policy {
   std::string embedding_version;
   std::size_t expected_embedding_dimension {};
   std::size_t index_schema_version { 1 };
+  std::size_t embedding_batch_size { 64 };
 };
 
 struct knowledge_retrieval_trace {
@@ -178,7 +181,7 @@ public:
         texts.push_back(chunk.content);
       }
 
-      auto embeddings = embedding_model_->embed_batch(texts);
+      auto embeddings = embed_texts_in_batches(texts);
       if (embeddings.size() != chunks.size()) {
         throw std::runtime_error("knowledge embedding batch size mismatch");
       }
@@ -374,6 +377,9 @@ public:
     if (query.limit == 0) {
       query.limit = 1;
     }
+    if (query.candidate_limit == 0 && looks_like_broad_knowledge_query(query.text)) {
+      query.candidate_limit = (std::max)(query.limit * 4, std::size_t { 12 });
+    }
 
     const auto trace_id = next_trace_id();
     publish_event(trace_id, "knowledge.retrieve.start", {
@@ -418,7 +424,7 @@ public:
       report.trace.rewritten_query_count = query_texts.size() - 1;
 
       auto index_query = query;
-      if (reranker_ && query.candidate_limit > query.limit) {
+      if (query.candidate_limit > query.limit) {
         index_query.limit = query.candidate_limit;
       }
 
@@ -446,6 +452,7 @@ public:
       }
       report.trace.access_filter_ms = elapsed_ms(access_filter_start);
       report.trace.after_access_filter_count = results.size();
+      apply_document_summary_boost(query.text, results);
 
       if (reranker_) {
         const auto rerank_start = clock::now();
@@ -511,7 +518,7 @@ public:
 
     index_->clear();
     if (!chunks.empty()) {
-      auto embeddings = embedding_model_->embed_batch(texts);
+      auto embeddings = embed_texts_in_batches(texts);
       if (embeddings.size() != chunks.size()) {
         throw std::runtime_error("knowledge embedding batch size mismatch");
       }
@@ -869,6 +876,46 @@ private:
     });
   }
 
+  static bool looks_like_broad_knowledge_query(std::string_view query) {
+    const auto text = text_detail::lowercase_ascii(query);
+    return text.find("main") != std::string::npos ||
+           text.find("overview") != std::string::npos ||
+           text.find("summary") != std::string::npos ||
+           text.find("summarize") != std::string::npos ||
+           text.find("list") != std::string::npos ||
+           text.find("what are") != std::string::npos ||
+           text.find("what is") != std::string::npos ||
+           text.find("describe") != std::string::npos ||
+           text.find("cover") != std::string::npos ||
+           text.find("pattern") != std::string::npos;
+  }
+
+  static void apply_document_summary_boost(
+    std::string_view query_text,
+    std::vector<knowledge_result>& results) {
+    if (!looks_like_broad_knowledge_query(query_text)) {
+      return;
+    }
+
+    for (auto& result : results) {
+      const auto chunking = result.chunk.metadata.find("chunking");
+      if (chunking != result.chunk.metadata.end() &&
+          chunking->second == "document_summary") {
+        result.score += 1.0;
+      }
+    }
+    std::sort(results.begin(), results.end(), [](const knowledge_result& lhs,
+                                                 const knowledge_result& rhs) {
+      if (lhs.score != rhs.score) {
+        return lhs.score > rhs.score;
+      }
+      if (lhs.chunk.document_id != rhs.chunk.document_id) {
+        return lhs.chunk.document_id < rhs.chunk.document_id;
+      }
+      return lhs.chunk.start_offset < rhs.chunk.start_offset;
+    });
+  }
+
   static std::string next_trace_id() {
     static std::atomic<std::uint64_t> next_id { 0 };
     return "knowledge-trace-" + std::to_string(++next_id);
@@ -921,6 +968,38 @@ private:
     chunk.metadata["embedding_dimension"] = std::to_string(embedding.size());
     chunk.metadata["index_schema_version"] =
       std::to_string(indexing_policy_.index_schema_version);
+  }
+
+  std::vector<std::vector<float>> embed_texts_in_batches(
+    const std::vector<std::string>& texts) const {
+    if (texts.empty()) {
+      return {};
+    }
+
+    const auto batch_size =
+      indexing_policy_.embedding_batch_size == 0
+        ? texts.size()
+        : indexing_policy_.embedding_batch_size;
+
+    std::vector<std::vector<float>> embeddings;
+    embeddings.reserve(texts.size());
+    for (std::size_t offset = 0; offset < texts.size(); offset += batch_size) {
+      const auto end = (std::min)(texts.size(), offset + batch_size);
+      std::vector<std::string> batch;
+      batch.reserve(end - offset);
+      for (std::size_t index = offset; index < end; ++index) {
+        batch.push_back(texts[index]);
+      }
+
+      auto batch_embeddings = embedding_model_->embed_batch(batch);
+      if (batch_embeddings.size() != batch.size()) {
+        throw std::runtime_error("knowledge embedding batch size mismatch");
+      }
+      for (auto& embedding : batch_embeddings) {
+        embeddings.push_back(std::move(embedding));
+      }
+    }
+    return embeddings;
   }
 
   std::shared_ptr<knowledge_store> store_;
