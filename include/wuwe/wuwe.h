@@ -6,6 +6,15 @@
 #include <wuwe/agent/core/message.hpp>
 #include <wuwe/agent/llm/llm_agent_runner.h>
 #include <wuwe/agent/llm/openrouter_llm_client.h>
+#include <wuwe/agent/mcp/mcp_protocol.hpp>
+#include <wuwe/agent/mcp/mcp_async.hpp>
+#include <wuwe/agent/mcp/mcp_server.hpp>
+#include <wuwe/agent/mcp/mcp_http_transport.hpp>
+#include <wuwe/agent/mcp/mcp_lifecycle.hpp>
+#include <wuwe/agent/mcp/mcp_stdio_client.hpp>
+#include <wuwe/agent/mcp/mcp_stdio_transport.hpp>
+#include <wuwe/agent/mcp/mcp_security.hpp>
+#include <wuwe/agent/mcp/mcp_types.hpp>
 #include <wuwe/agent/knowledge/code_knowledge_loader.hpp>
 #include <wuwe/agent/knowledge/directory_knowledge_loader.hpp>
 #include <wuwe/agent/knowledge/file_knowledge_index.hpp>

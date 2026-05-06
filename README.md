@@ -71,6 +71,19 @@ tool exposure.
 See [Knowledge Retrieval](docs/knowledge-retrieval.md) for current status,
 pipeline examples, deployment notes, and remaining production work.
 
+## Model Context Protocol
+
+Wuwe includes an MCP module for exposing existing Wuwe tool providers,
+resources, roots, and prompts through JSON-RPC, `initialize`, `tools/list`,
+`tools/call`, `resources/list`, `resources/read`, `roots/list`, `prompts/list`,
+`prompts/get`, Content-Length framed stdio transport, a small stdio client, an
+application-level HTTP adapter, notifications, lifecycle tracking, async task
+helpers, sampling and elicitation request forwarding, pagination, and optional
+access/audit policy.
+
+See [MCP Module](docs/mcp.md) for API usage and
+[MCP Host Compatibility](docs/mcp-host-compatibility.md) for desktop host setup.
+
 ## Install
 
 ```bash

@@ -1,8 +1,11 @@
+include("${CMAKE_SOURCE_DIR}/cmake/wuwe-runtime.cmake")
+
 add_executable(memory_tests
     memory_tests.cpp
 )
 
 target_link_libraries(memory_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(memory_tests)
 
 add_test(NAME memory_tests COMMAND memory_tests)
 
@@ -11,5 +14,18 @@ add_executable(knowledge_tests
 )
 
 target_link_libraries(knowledge_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(knowledge_tests)
 
 add_test(NAME knowledge_tests COMMAND knowledge_tests)
+set_tests_properties(knowledge_tests PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+add_executable(mcp_tests
+    mcp_tests.cpp
+)
+
+target_link_libraries(mcp_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(mcp_tests)
+
+add_test(NAME mcp_tests COMMAND mcp_tests)

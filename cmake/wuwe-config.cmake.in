@@ -10,6 +10,14 @@ if(NOT TARGET cpr::cpr)
     include("${PACKAGE_PREFIX_DIR}/lib/cmake/cpr/cprTargets.cmake")
 endif()
 
+if(NOT TARGET SQLite::SQLite3 AND NOT TARGET unofficial::sqlite3::sqlite3)
+    find_package(SQLite3 QUIET)
+endif()
+
+if(NOT TARGET unofficial::sqlite3::sqlite3)
+    find_package(unofficial-sqlite3 CONFIG QUIET)
+endif()
+
 set_and_check(WUWE_LIB_DIR "@PACKAGE_LIB_INSTALL_DIR@")
 include("${WUWE_LIB_DIR}/cmake/wuwe-targets.cmake")
 

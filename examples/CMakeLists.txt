@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.14)
 
 project(wuwe_example)
 
-file(GLOB SOURCE_FILES src/*.cpp)
+include("${CMAKE_SOURCE_DIR}/cmake/wuwe-runtime.cmake")
+
+file(GLOB SOURCE_FILES CONFIGURE_DEPENDS src/*.cpp)
 list(LENGTH SOURCE_FILES SRC_FILES_SIZE)
 message(STATUS "Found ${SRC_FILES_SIZE} source files of examples")
 foreach(source_file ${SOURCE_FILES})
@@ -11,12 +13,5 @@ foreach(source_file ${SOURCE_FILES})
     message(STATUS " ${name}")
     add_executable(${name} "src/${name}.cpp")
     target_link_libraries(${name} PRIVATE wuwe)
-    if(BUILD_SHARED_LIBS)
-        add_custom_command(TARGET ${name} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_RUNTIME_DLLS:${name}>
-                $<TARGET_FILE_DIR:${name}>
-            COMMAND_EXPAND_LISTS
-        )
-    endif()
+    wuwe_copy_runtime_dlls(${name})
 endforeach()
