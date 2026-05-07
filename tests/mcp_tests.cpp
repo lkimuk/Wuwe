@@ -1,3 +1,7 @@
+#include <chrono>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -7,6 +11,10 @@
 #include <nlohmann/json.hpp>
 
 #include <wuwe/agent/mcp/mcp_async.hpp>
+#include <wuwe/agent/mcp/mcp_gateway.hpp>
+#include <wuwe/agent/mcp/mcp_host_runtime.hpp>
+#include <wuwe/agent/mcp/mcp_host_telemetry.hpp>
+#include <wuwe/agent/mcp/mcp_process_client.hpp>
 #include <wuwe/agent/mcp/mcp_server.hpp>
 #include <wuwe/agent/mcp/mcp_http_transport.hpp>
 #include <wuwe/agent/mcp/mcp_stdio_client.hpp>
@@ -1251,6 +1259,58 @@ void test_stdio_transport_uses_content_length_framing() {
     "stdio should not write notification responses");
 }
 
+void test_stdio_transport_supports_json_lines_framing() {
+  wuwe::tool_provider<echo_text> provider;
+  wuwe::agent::mcp::mcp_server server({ .name = "json-lines-server", .version = "1.0.0" });
+  server.add_tool_provider(provider);
+  server.add_resource(
+    { .uri = "wuwe://json-lines/readme", .name = "JSON Lines README" },
+    [] {
+      return std::vector<wuwe::agent::mcp::mcp_resource_content> {
+        wuwe::agent::mcp::mcp_resource_content::text_content(
+          "wuwe://json-lines/readme", "json-lines resource"),
+      };
+    });
+
+  std::istringstream input(
+    R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"codex-mcp-client","version":"0.128.0-alpha.1"},"capabilities":{"elicitation":{"form":{}}}}})"
+    "\n"
+    R"({"jsonrpc":"2.0","method":"notifications/initialized"})"
+    "\n"
+    R"({"jsonrpc":"2.0","id":2,"method":"tools/list"})"
+    "\n"
+    R"({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo_text","arguments":{"text":"json lines"}}})"
+    "\n"
+    R"({"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"wuwe://json-lines/readme"}})"
+    "\n");
+  std::ostringstream output;
+
+  wuwe::agent::mcp::mcp_stdio_transport transport;
+  require(transport.run(server, input, output) == 0,
+    "stdio transport should accept line-delimited JSON-RPC from hosts");
+
+  std::istringstream responses(output.str());
+  std::string line;
+  std::vector<json> parsed;
+  while (std::getline(responses, line)) {
+    if (!line.empty()) {
+      parsed.push_back(json::parse(line));
+    }
+  }
+
+  require(parsed.size() == 4,
+    "JSON Lines stdio should return one line per request with a response");
+  require(parsed[0]["result"]["serverInfo"]["name"] == "json-lines-server",
+    "JSON Lines stdio should initialize server");
+  require(parsed[1]["result"]["tools"].size() == 1,
+    "JSON Lines stdio should list tools");
+  require(parsed[2]["result"]["content"][0]["text"] == "json lines",
+    "JSON Lines stdio should call tools");
+  require(parsed[3]["result"]["contents"][0]["text"] == "json-lines resource",
+    "JSON Lines stdio should read resources");
+  require(output.str().find("Content-Length") == std::string::npos,
+    "JSON Lines stdio should respond using line-delimited JSON");
+}
 void test_stdio_transport_writes_notifications_before_response() {
   wuwe::agent::mcp::mcp_server server;
   server.add_mcp_tool(
@@ -1558,6 +1618,558 @@ void test_stdio_client_has_resource_prompt_and_ping_helpers() {
   require(methods[7] == "prompts/get", "last helper should send prompts/get");
 }
 
+void test_process_client_launches_stdio_server() {
+#ifdef WUWE_MCP_STDIO_EXAMPLE_PATH
+  wuwe::agent::mcp::mcp_process_client client({
+    .command = WUWE_MCP_STDIO_EXAMPLE_PATH,
+  });
+
+  const auto initialize = client.initialize({ .name = "wuwe-process-test", .version = "1.0" });
+  require(initialize["result"]["serverInfo"]["name"] == "wuwe-mcp-example",
+    "process client should initialize a launched stdio server");
+
+  client.notify("notifications/initialized");
+  require(client.ping()["result"].is_object(), "process client should send ping");
+
+  const auto tools = client.list_tools();
+  require(tools["result"]["tools"].size() >= 2,
+    "process client should list tools from launched server");
+
+  const auto result = client.call_tool("echo_text", { { "text", "hello process" } });
+  require(result["result"]["content"][0]["text"] == "hello process",
+    "process client should call tools on launched server");
+
+  require(client.list_resource_templates()["result"]["resourceTemplates"].size() == 1,
+    "process client should list resource templates");
+  require(client.list_roots()["result"]["roots"].is_array(),
+    "process client should list roots");
+  require(client.list_prompts()["result"]["prompts"].size() == 1,
+    "process client should list prompts");
+
+  client.stop();
+  require(!client.running(), "process client should stop launched server");
+#endif
+}
+
+void test_process_client_captures_stderr() {
+  wuwe::agent::mcp::mcp_process_client client;
+#ifdef _WIN32
+  client.start({
+    .command = "cmd.exe",
+    .args = { "/C", "echo process-stderr 1>&2" },
+  });
+#else
+  client.start({
+    .command = "sh",
+    .args = { "-c", "echo process-stderr >&2" },
+  });
+#endif
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  client.stop();
+  require(client.stderr_output().find("process-stderr") != std::string::npos,
+    "process client should capture child stderr");
+  client.clear_stderr_output();
+  require(client.stderr_output().empty(),
+    "process client should clear captured stderr");
+}
+
+void test_process_client_passes_environment_to_child() {
+  wuwe::agent::mcp::mcp_process_client client;
+#ifdef _WIN32
+  client.start({
+    .command = "cmd.exe",
+    .args = { "/C", "echo %WUWE_MCP_ENV_TEST% 1>&2" },
+    .environment = { { "WUWE_MCP_ENV_TEST", "env-value" } },
+  });
+#else
+  client.start({
+    .command = "sh",
+    .args = { "-c", "printf '%s' \"$WUWE_MCP_ENV_TEST\" >&2" },
+    .environment = { { "WUWE_MCP_ENV_TEST", "env-value" } },
+  });
+#endif
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  client.stop();
+  require(client.stderr_output().find("env-value") != std::string::npos,
+    "process client should pass environment overrides to child process");
+}
+
+void test_host_runtime_manages_multiple_process_servers() {
+#ifdef WUWE_MCP_STDIO_EXAMPLE_PATH
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  runtime.add_server({
+    .id = "alpha",
+    .command = { .command = WUWE_MCP_STDIO_EXAMPLE_PATH },
+    .client_info = { .name = "wuwe-runtime-test", .version = "1.0" },
+  });
+  runtime.add_server({
+    .id = "beta",
+    .command = { .command = WUWE_MCP_STDIO_EXAMPLE_PATH },
+    .client_info = { .name = "wuwe-runtime-test", .version = "1.0" },
+  });
+
+  require(runtime.contains("alpha") && runtime.contains("beta"),
+    "host runtime should track configured servers");
+
+  runtime.start_all();
+  require(runtime.snapshot("alpha").state == wuwe::agent::mcp::mcp_host_server_state::running,
+    "host runtime should mark started servers running");
+  require(runtime.snapshot("beta").running,
+    "host runtime snapshot should report live child process");
+
+  const auto alpha = runtime.call_tool("alpha", "echo_text", { { "text", "from alpha" } });
+  const auto beta = runtime.call_tool("beta", "echo_text", { { "text", "from beta" } });
+  require(alpha["result"]["content"][0]["text"] == "from alpha",
+    "host runtime should route tool calls to alpha");
+  require(beta["result"]["content"][0]["text"] == "from beta",
+    "host runtime should route tool calls to beta");
+  require(runtime.list_resources("alpha")["result"]["resources"].size() == 1,
+    "host runtime should expose resource helpers");
+  require(runtime.list_prompts("beta")["result"]["prompts"].size() == 1,
+    "host runtime should expose prompt helpers");
+  require(runtime.snapshots().size() == 2,
+    "host runtime should expose all server snapshots");
+  require(runtime.snapshot("alpha").request_count > 0,
+    "host runtime should count routed requests");
+
+  runtime.stop_server("alpha");
+  require(runtime.snapshot("alpha").state == wuwe::agent::mcp::mcp_host_server_state::stopped,
+    "host runtime should stop one server");
+  require(runtime.snapshot("beta").running,
+    "host runtime should leave other servers running");
+
+  runtime.stop_all();
+  require(!runtime.snapshot("beta").running,
+    "host runtime should stop all servers");
+#endif
+}
+
+void test_host_runtime_dispatches_async_requests() {
+#ifdef WUWE_MCP_STDIO_EXAMPLE_PATH
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  runtime.add_server({
+    .id = "async-a",
+    .command = { .command = WUWE_MCP_STDIO_EXAMPLE_PATH },
+    .client_info = { .name = "wuwe-async-test", .version = "1.0" },
+  });
+  runtime.add_server({
+    .id = "async-b",
+    .command = { .command = WUWE_MCP_STDIO_EXAMPLE_PATH },
+    .client_info = { .name = "wuwe-async-test", .version = "1.0" },
+  });
+  runtime.start_all();
+
+  auto first = runtime.call_tool_async("async-a", "echo_text", { { "text", "async one" } });
+  auto second = runtime.call_tool_async("async-b", "echo_text", { { "text", "async two" } });
+  auto third = runtime.list_tools_async("async-a");
+
+  require(first.get()["result"]["content"][0]["text"] == "async one",
+    "host runtime should dispatch async tool call to first server");
+  require(second.get()["result"]["content"][0]["text"] == "async two",
+    "host runtime should dispatch async tool call to second server");
+  require(!third.get()["result"]["tools"].empty(),
+    "host runtime should dispatch async list_tools");
+  require(runtime.snapshot("async-a").request_count >= 2,
+    "host runtime should count async requests");
+
+  runtime.stop_all();
+#endif
+}
+
+void test_host_runtime_records_telemetry_events() {
+#ifdef WUWE_MCP_STDIO_EXAMPLE_PATH
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  std::vector<wuwe::agent::mcp::mcp_host_event> sink_events;
+  runtime.set_event_sink([&sink_events](const wuwe::agent::mcp::mcp_host_event& event) {
+    sink_events.push_back(event);
+  });
+
+  runtime.add_server({
+    .id = "telemetry",
+    .command = { .command = WUWE_MCP_STDIO_EXAMPLE_PATH },
+    .client_info = { .name = "wuwe-telemetry-test", .version = "1.0" },
+  });
+  runtime.start_server("telemetry");
+  runtime.call_tool("telemetry", "echo_text", { { "text", "event stream" } });
+  require(runtime.health_check("telemetry"),
+    "host runtime telemetry test server should pass health check");
+  runtime.stop_server("telemetry");
+
+  const auto events = runtime.events();
+  require(events.size() == sink_events.size(),
+    "host runtime should send recorded events to sink");
+  require(!events.empty() && events.front().sequence == 1,
+    "host runtime events should be sequenced");
+  require(std::find_if(events.begin(), events.end(), [](const auto& event) {
+            return event.type == wuwe::agent::mcp::mcp_host_event_type::server_started &&
+                   event.server_id == "telemetry";
+          }) != events.end(),
+    "host runtime should record server started event");
+  require(std::find_if(events.begin(), events.end(), [](const auto& event) {
+            return event.type == wuwe::agent::mcp::mcp_host_event_type::request_succeeded &&
+                   event.method == "tools/call";
+          }) != events.end(),
+    "host runtime should record successful request event");
+  require(std::find_if(events.begin(), events.end(), [](const auto& event) {
+            return event.type == wuwe::agent::mcp::mcp_host_event_type::health_check_succeeded;
+          }) != events.end(),
+    "host runtime should record health check event");
+  require(wuwe::agent::mcp::to_string(
+            wuwe::agent::mcp::mcp_host_event_type::request_succeeded) == "request_succeeded",
+    "host runtime should stringify event types");
+
+  runtime.clear_events();
+  require(runtime.events().empty(), "host runtime should clear telemetry events");
+#endif
+}
+
+void test_host_runtime_exports_telemetry_events() {
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("wuwe-mcp-telemetry-" + std::to_string(
+                       std::chrono::steady_clock::now().time_since_epoch().count()) + ".jsonl");
+
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  auto memory_sink = std::make_shared<wuwe::agent::mcp::in_memory_mcp_host_event_sink>();
+  wuwe::agent::mcp::attach_mcp_host_event_sink(runtime, memory_sink);
+
+  runtime.add_server({
+    .id = "telemetry-export",
+    .command = { .command = "wuwe-definitely-missing-mcp-server" },
+  });
+
+  const auto memory_events = memory_sink->events();
+  require(memory_events.size() == 1,
+    "host telemetry memory sink should receive runtime events");
+  const auto as_json = wuwe::agent::mcp::mcp_host_event_to_json(memory_events.front());
+  require(as_json["type"] == "server_added" && as_json["serverId"] == "telemetry-export",
+    "host telemetry should serialize event type and server id");
+  require(as_json["timestampUnixMillis"].is_number_integer(),
+    "host telemetry should serialize event timestamp");
+
+  auto jsonl_sink = std::make_shared<wuwe::agent::mcp::jsonl_mcp_host_event_sink>(path);
+  wuwe::agent::mcp::attach_mcp_host_event_sink(runtime, jsonl_sink);
+  runtime.remove_server("telemetry-export");
+
+  {
+    std::ifstream input(path);
+    std::string line;
+    std::getline(input, line);
+    const auto parsed = json::parse(line);
+    require(parsed["type"] == "server_removed" && parsed["serverId"] == "telemetry-export",
+      "host telemetry JSONL sink should write one JSON event per line");
+  }
+
+  runtime.set_event_sink({});
+  jsonl_sink.reset();
+  std::filesystem::remove(path);
+
+  wuwe::agent::mcp::prometheus_mcp_host_event_sink prometheus;
+  prometheus.publish(memory_events.front());
+  require(prometheus.scrape().find("wuwe_mcp_host_events_total") != std::string::npos,
+    "host telemetry Prometheus sink should expose event counters");
+
+  wuwe::agent::mcp::otel_mcp_host_event_sink otel;
+  otel.publish(memory_events.front());
+  require(otel.spans().size() == 1 && otel.spans().front().name == "server_added",
+    "host telemetry OTel sink should expose event spans");
+
+  auto fanout = std::make_shared<wuwe::agent::mcp::fanout_mcp_host_event_sink>();
+  auto fanout_memory = std::make_shared<wuwe::agent::mcp::in_memory_mcp_host_event_sink>();
+  fanout->add_sink(fanout_memory);
+  fanout->add_sink(std::make_shared<wuwe::agent::mcp::prometheus_mcp_host_event_sink>());
+  fanout->publish(memory_events.front());
+  require(fanout_memory->events().size() == 1,
+    "host telemetry fanout sink should publish to child sinks");
+}
+
+void test_mcp_gateway_aggregates_runtime_servers() {
+#ifdef WUWE_MCP_STDIO_EXAMPLE_PATH
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  runtime.add_server({
+    .id = "gw",
+    .command = { .command = WUWE_MCP_STDIO_EXAMPLE_PATH },
+    .client_info = { .name = "wuwe-gateway-test", .version = "1.0" },
+  });
+  runtime.start_all();
+
+  wuwe::agent::mcp::mcp_server gateway_server({
+    .name = "gateway-test",
+    .version = "1.0",
+  });
+  wuwe::agent::mcp::mcp_gateway gateway;
+  gateway.populate_server(gateway_server, runtime);
+
+  const auto tools_response = json::parse(*gateway_server.handle_message(R"({
+    "jsonrpc":"2.0",
+    "id":1,
+    "method":"tools/list",
+    "params":{}
+  })"));
+  const auto tools = tools_response["result"]["tools"];
+  require(std::find_if(tools.begin(), tools.end(), [](const auto& tool) {
+            return tool["name"] == "gw__echo_text";
+          }) != tools.end(),
+    "MCP gateway should expose downstream tools with server prefix");
+
+  const auto call_response = json::parse(*gateway_server.handle_message(R"({
+    "jsonrpc":"2.0",
+    "id":2,
+    "method":"tools/call",
+    "params":{"name":"gw__echo_text","arguments":{"text":"through gateway"}}
+  })"));
+  require(call_response["result"]["content"][0]["text"] == "through gateway",
+    "MCP gateway should route tool calls to downstream server");
+
+  const auto resources_response = json::parse(*gateway_server.handle_message(R"({
+    "jsonrpc":"2.0",
+    "id":3,
+    "method":"resources/list",
+    "params":{}
+  })"));
+  require(!resources_response["result"]["resources"].empty(),
+    "MCP gateway should expose downstream resources");
+  const auto resource_uri = resources_response["result"]["resources"][0]["uri"].get<std::string>();
+  const auto read_response = json::parse(*gateway_server.handle_message(json {
+    { "jsonrpc", "2.0" },
+    { "id", 4 },
+    { "method", "resources/read" },
+    { "params", { { "uri", resource_uri } } },
+  }.dump()));
+  require(!read_response["result"]["contents"].empty(),
+    "MCP gateway should route resource reads to downstream server");
+
+  const auto prompts_response = json::parse(*gateway_server.handle_message(R"({
+    "jsonrpc":"2.0",
+    "id":5,
+    "method":"prompts/list",
+    "params":{}
+  })"));
+  require(!prompts_response["result"]["prompts"].empty() &&
+          prompts_response["result"]["prompts"][0]["name"].get<std::string>().find("gw__") == 0,
+    "MCP gateway should expose downstream prompts with server prefix");
+
+  runtime.stop_all();
+#endif
+}
+
+void test_host_runtime_loads_common_json_config_shapes() {
+  const auto vscode_configs = wuwe::agent::mcp::mcp_host_server_configs_from_json(json {
+    { "servers", {
+      { "wuwe", {
+        { "type", "stdio" },
+        { "command", "server.exe" },
+        { "args", json::array({ "--mode", "test" }) },
+        { "cwd", "D:\\workspace" },
+        { "env", { { "WUWE_ENV", "enabled" } } },
+        { "clientInfo", { { "name", "config-host" }, { "version", "2.0" } } },
+        { "capabilities", { { "roots", { { "listChanged", true } } } } },
+      } },
+    } },
+  });
+  require(vscode_configs.size() == 1, "host runtime should parse VS Code servers config");
+  require(vscode_configs[0].id == "wuwe", "host runtime should use server object key as id");
+  require(vscode_configs[0].command.command == "server.exe",
+    "host runtime should parse command");
+  require(vscode_configs[0].command.args.size() == 2,
+    "host runtime should parse args");
+  require(vscode_configs[0].command.working_directory == "D:\\workspace",
+    "host runtime should parse cwd");
+  require(vscode_configs[0].command.environment.at("WUWE_ENV") == "enabled",
+    "host runtime should parse env");
+  require(vscode_configs[0].client_info.name == "config-host",
+    "host runtime should parse clientInfo");
+  require(vscode_configs[0].capabilities["roots"]["listChanged"].get<bool>(),
+    "host runtime should parse capabilities");
+
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  runtime.add_servers_from_json(json {
+    { "mcpServers", {
+      { "claude-shape", {
+        { "command", "server.exe" },
+        { "args", json::array() },
+        { "workingDirectory", "D:\\workspace2" },
+        { "autoInitialize", false },
+        { "restartOnFailure", true },
+        { "maxRestarts", 3 },
+      } },
+    } },
+  });
+  require(runtime.contains("claude-shape"),
+    "host runtime should add Claude/Cursor style mcpServers config");
+  require(runtime.snapshot("claude-shape").command.working_directory == "D:\\workspace2",
+    "host runtime should parse workingDirectory");
+  require(runtime.snapshot("claude-shape").restart_count == 0,
+    "host runtime should initialize restart counter");
+  const auto configs = wuwe::agent::mcp::mcp_host_server_configs_from_json(json {
+    { "mcpServers", {
+      { "restart-shape", {
+        { "command", "server.exe" },
+        { "restartOnFailure", true },
+        { "maxRestarts", 3 },
+        { "restartBackoffMillis", 25 },
+        { "maxRestartBackoffMillis", 100 },
+        { "circuitBreakerFailureThreshold", 4 },
+        { "circuitBreakerCooldownMillis", 250 },
+      } },
+    } },
+  });
+  require(configs[0].restart_on_failure && configs[0].max_restart_attempts == 3,
+    "host runtime should parse restart policy");
+  require(configs[0].restart_backoff == std::chrono::milliseconds(25) &&
+          configs[0].max_restart_backoff == std::chrono::milliseconds(100),
+    "host runtime should parse restart backoff policy");
+  require(configs[0].circuit_breaker_failure_threshold == 4 &&
+          configs[0].circuit_breaker_cooldown == std::chrono::milliseconds(250),
+    "host runtime should parse circuit breaker policy");
+}
+
+void test_host_runtime_loads_config_files_and_discovers_workspace_paths() {
+  const auto root = std::filesystem::temp_directory_path() /
+                    ("wuwe-mcp-config-test-" + std::to_string(
+                       std::chrono::steady_clock::now().time_since_epoch().count()));
+  const auto vscode_dir = root / ".vscode";
+  std::filesystem::create_directories(vscode_dir);
+  const auto config_path = vscode_dir / "mcp.json";
+  {
+    std::ofstream config(config_path);
+    config << R"({
+      "servers": {
+        "file-server": {
+          "type": "stdio",
+          "command": "server.exe",
+          "args": ["--from-file"],
+          "autoInitialize": false
+        }
+      }
+    })";
+  }
+
+  const auto paths = wuwe::agent::mcp::mcp_host_default_config_paths(root);
+  require(!paths.empty() && paths.front() == config_path,
+    "host runtime should discover workspace VS Code MCP config path first");
+
+  const auto configs = wuwe::agent::mcp::mcp_host_server_configs_from_file(config_path);
+  require(configs.size() == 1 && configs[0].id == "file-server",
+    "host runtime should parse MCP config files");
+  require(configs[0].command.args.size() == 1 && configs[0].command.args[0] == "--from-file",
+    "host runtime should parse file config args");
+
+  const auto user_paths = wuwe::agent::mcp::mcp_host_user_config_paths(root, root / "AppData");
+#ifdef _WIN32
+  require(std::find(user_paths.begin(), user_paths.end(),
+            root / "AppData" / "Claude" / "claude_desktop_config.json") != user_paths.end(),
+    "host runtime should discover Windows user-level Claude MCP config candidates");
+  require(std::find(user_paths.begin(), user_paths.end(),
+            root / "AppData" / "Cursor" / "User" / "mcp.json") != user_paths.end(),
+    "host runtime should discover Windows user-level Cursor MCP config candidates");
+#else
+  require(std::find(user_paths.begin(), user_paths.end(),
+            root / "Library" / "Application Support" / "Claude" /
+              "claude_desktop_config.json") != user_paths.end(),
+    "host runtime should discover macOS user-level Claude MCP config candidates");
+  require(std::find(user_paths.begin(), user_paths.end(),
+            root / ".continue" / "config.json") != user_paths.end(),
+    "host runtime should discover home-level MCP config candidates");
+#endif
+
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  require(runtime.add_servers_from_file(config_path) == 1,
+    "host runtime should add server configs from file");
+  require(runtime.contains("file-server"),
+    "host runtime should track file-loaded server config");
+
+  std::filesystem::remove_all(root);
+}
+
+void test_host_runtime_restarts_failed_process_server() {
+#ifdef WUWE_MCP_STDIO_EXAMPLE_PATH
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  runtime.add_server({
+    .id = "restartable",
+    .command = { .command = WUWE_MCP_STDIO_EXAMPLE_PATH },
+    .client_info = { .name = "wuwe-restart-test", .version = "1.0" },
+    .restart_on_failure = true,
+    .max_restart_attempts = 2,
+  });
+
+  runtime.start_server("restartable");
+  require(runtime.health_check("restartable"),
+    "host runtime health check should pass for running server");
+
+  runtime.client("restartable").stop();
+  const auto result = runtime.call_tool("restartable", "echo_text", { { "text", "after restart" } });
+  require(result["result"]["content"][0]["text"] == "after restart",
+    "host runtime should restart failed server and retry request");
+  require(runtime.snapshot("restartable").restart_count == 1,
+    "host runtime should record restart count");
+  require(runtime.snapshot("restartable").failure_count == 1,
+    "host runtime should record failed request count");
+  require(runtime.snapshot("restartable").request_count >= 1,
+    "host runtime should record attempted requests");
+  require(runtime.snapshot("restartable").state == wuwe::agent::mcp::mcp_host_server_state::running,
+    "host runtime should return to running after restart");
+
+  runtime.client("restartable").stop();
+  require(runtime.health_check("restartable"),
+    "host runtime health check should restart stopped child when policy allows");
+  require(runtime.snapshot("restartable").restart_count == 2,
+    "host runtime should record health-check restart");
+  require(runtime.snapshot("restartable").health_check_count == 2,
+    "host runtime should record health checks");
+
+  runtime.stop_all();
+#endif
+}
+
+void test_host_runtime_applies_backoff_and_circuit_breaker() {
+  wuwe::agent::mcp::mcp_host_runtime runtime;
+  runtime.add_server({
+    .id = "unstable",
+    .command = { .command = "wuwe-definitely-missing-mcp-server" },
+    .restart_on_failure = true,
+    .max_restart_attempts = 3,
+    .restart_backoff = std::chrono::milliseconds(500),
+    .max_restart_backoff = std::chrono::milliseconds(500),
+    .circuit_breaker_failure_threshold = 2,
+    .circuit_breaker_cooldown = std::chrono::milliseconds(1000),
+  });
+
+  bool first_failed = false;
+  try {
+    runtime.start_server("unstable");
+  }
+  catch (const std::exception&) {
+    first_failed = true;
+  }
+  require(first_failed, "host runtime should surface failed process start");
+  auto snapshot = runtime.snapshot("unstable");
+  require(snapshot.failure_count == 1 && snapshot.consecutive_failure_count == 1,
+    "host runtime should count consecutive failures");
+  require(!snapshot.restart_available && snapshot.restart_backoff_remaining.count() > 0,
+    "host runtime should block restart while backoff is active");
+
+  bool second_failed = false;
+  try {
+    runtime.start_server("unstable");
+  }
+  catch (const std::exception&) {
+    second_failed = true;
+  }
+  require(second_failed, "host runtime should keep surfacing failed starts");
+  snapshot = runtime.snapshot("unstable");
+  require(snapshot.state == wuwe::agent::mcp::mcp_host_server_state::circuit_open,
+    "host runtime should open circuit breaker after repeated failures");
+  require(snapshot.circuit_breaker_open && !snapshot.restart_available,
+    "host runtime should block restart while circuit breaker is open");
+  require(wuwe::agent::mcp::to_string(snapshot.state) == "circuit_open",
+    "host runtime should stringify circuit-open state");
+  const auto events = runtime.events();
+  require(std::find_if(events.begin(), events.end(), [](const auto& event) {
+            return event.type == wuwe::agent::mcp::mcp_host_event_type::circuit_opened;
+          }) != events.end(),
+    "host runtime should record circuit-open events");
+}
+
 void test_http_transport_adapts_jsonrpc_requests_and_sse_notifications() {
   wuwe::agent::mcp::mcp_server server;
   server.add_mcp_tool(
@@ -1677,6 +2289,7 @@ int main() {
     test_roots_list_supports_pagination_and_client_helper();
     test_async_task_registry_tracks_completion_progress_cancel_and_timeout();
     test_stdio_transport_uses_content_length_framing();
+    test_stdio_transport_supports_json_lines_framing();
     test_stdio_transport_writes_notifications_before_response();
     test_stdio_transport_writes_client_requests_before_response();
     test_stdio_transport_host_compatibility_transcript();
@@ -1687,6 +2300,18 @@ int main() {
     test_stdio_client_sends_requests_and_collects_notifications();
     test_stdio_client_sends_notifications_without_waiting();
     test_stdio_client_has_resource_prompt_and_ping_helpers();
+    test_process_client_launches_stdio_server();
+    test_process_client_captures_stderr();
+    test_process_client_passes_environment_to_child();
+    test_host_runtime_manages_multiple_process_servers();
+    test_host_runtime_dispatches_async_requests();
+    test_host_runtime_records_telemetry_events();
+    test_host_runtime_exports_telemetry_events();
+    test_mcp_gateway_aggregates_runtime_servers();
+    test_host_runtime_loads_common_json_config_shapes();
+    test_host_runtime_loads_config_files_and_discovers_workspace_paths();
+    test_host_runtime_restarts_failed_process_server();
+    test_host_runtime_applies_backoff_and_circuit_breaker();
     test_http_transport_adapts_jsonrpc_requests_and_sse_notifications();
     test_http_transport_exposes_outbound_client_requests();
   }

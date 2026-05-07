@@ -32,6 +32,10 @@ Implemented in v1:
 - Optional cursor pagination for list methods through `set_list_page_size()`.
 - Basic stdio MCP client for sending framed requests and notifications over
   caller-provided streams.
+- External process stdio client for launching and talking to child MCP servers,
+  including working-directory/env overrides and stderr capture.
+- Lightweight host runtime for registering and managing multiple child stdio
+  MCP servers, with config loading and candidate config path discovery.
 - Resource subscribe/unsubscribe plus resource/tool/prompt listChanged
   notifications.
 - HTTP adapter for application-owned HTTP servers, with emitted notifications
@@ -63,6 +67,18 @@ Completed work:
 - Application-owned HTTP adapter with JSON-RPC responses, notification-only
   handling, HTTP status mapping, and SSE event payload generation.
 - Small synchronous stdio client for caller-owned streams.
+- Small synchronous process client for launching external stdio MCP servers.
+- Multi-server host runtime with server registration, start/stop, per-server
+  request routing, async dispatch, per-server request serialization,
+  auto-initialization, snapshots, health checks, restart policy, stderr capture,
+  restart backoff, circuit breaker protection, request/failure/health counters,
+  restart counters, structured runtime events, JSONL/Prometheus/OpenTelemetry-
+  style telemetry export, and error state tracking.
+- MCP aggregation gateway for projecting multiple downstream runtime servers as
+  a single `mcp_server` surface with prefixed tools, resources, and prompts.
+- Host config loading from JSON files, `env` override parsing, workspace
+  discovery helpers for `.vscode/mcp.json` and `.cursor/mcp.json`, and
+  user-level candidate config path discovery for common desktop hosts.
 - Access policy, tenant/scope metadata, audit sink integration, sensitive
   argument redaction, and host-injected authentication context.
 - Request lifecycle registry with state, params, error, timeout, progress token,
@@ -88,14 +104,13 @@ Next tasks:
   [MCP Host Compatibility](mcp-host-compatibility.md).
 - Run the same host validation against Cursor, Claude Desktop, and Continue
   when those hosts are installed and available.
-- Decide whether Wuwe should stay focused on MCP server/library support or also
-  become a full MCP host/runtime.
-- If Wuwe should become a host/runtime, add child process management for
-  launching and supervising external MCP servers.
-- If Wuwe should expose MCP over the network directly, add a built-in HTTP/SSE
-  listener; otherwise keep the existing application-owned HTTP adapter.
-- If Wuwe should own identity verification, add OAuth/JWT/JWKS validation;
-  otherwise continue injecting authenticated identity through `mcp_auth_context`.
+- Decide the product shape for a first-party host UI/control plane.
+- Decide whether Wuwe should own a production HTTP/SSE listener, including TLS,
+  threading, lifecycle, and deployment model; otherwise keep the existing
+  application-owned HTTP adapter.
+- Decide whether Wuwe should own OAuth/JWT/JWKS verification and select the
+  crypto/JWKS dependency and identity-provider policy; otherwise continue
+  injecting authenticated identity through `mcp_auth_context`.
 - Add real host regression notes whenever a host changes behavior or requires a
   host-specific configuration shape.
 
@@ -493,6 +508,212 @@ auto prompt = client.get_prompt("echo_prompt", { { "topic", "tools" } });
 Notifications received while waiting for a response are stored in
 `client.notifications()`.
 
+## Process Client
+
+`mcp_process_client` launches an external Content-Length framed stdio MCP server
+and exposes the same synchronous request helpers as the stream client. It is the
+smallest Wuwe-owned host/runtime building block: useful for local tools,
+integration tests, and applications that want Wuwe to own the child process
+instead of wiring streams themselves.
+
+```cpp
+wuwe::agent::mcp::mcp_process_client client({
+  .command = "D:\\Miles Li\\Wuwe\\build\\examples\\Debug\\mcp_stdio_example.exe",
+  .args = {},
+});
+
+auto initialized = client.initialize({ .name = "my-host", .version = "1.0.0" });
+client.notify("notifications/initialized");
+auto tools = client.list_tools();
+auto result = client.call_tool("echo_text", { { "text", "hello" } });
+client.stop();
+```
+
+The process client currently manages one child process per client instance. It
+supports working-directory and environment overrides, stderr collection, and
+Content-Length framed request/response IO. Restart policy, config discovery, and
+multi-server orchestration live in `mcp_host_runtime`.
+
+## Host Runtime
+
+`mcp_host_runtime` manages multiple named child stdio MCP servers. It keeps the
+server configuration, starts and stops processes, auto-runs the MCP handshake,
+routes requests by server id, and exposes snapshots for basic lifecycle
+inspection:
+
+```cpp
+wuwe::agent::mcp::mcp_host_runtime runtime;
+runtime.add_server({
+  .id = "wuwe",
+  .command = {
+    .command = "D:\\Miles Li\\Wuwe\\build\\examples\\Debug\\mcp_stdio_example.exe",
+    .environment = { { "WUWE_MCP_MODE", "desktop" } },
+  },
+});
+runtime.add_server({
+  .id = "wuwe-rag",
+  .command = {
+    .command = "D:\\Miles Li\\Wuwe\\build\\examples\\Debug\\knowledge_mcp_example.exe",
+  },
+});
+
+runtime.start_all();
+auto tools = runtime.list_tools("wuwe");
+auto result = runtime.call_tool("wuwe", "echo_text", { { "text", "hello" } });
+auto future = runtime.call_tool_async("wuwe", "echo_text", { { "text", "async hello" } });
+auto healthy = runtime.health_check("wuwe");
+auto state = runtime.snapshot("wuwe");
+auto stderr_log = state.stderr_output;
+auto restart_ready = state.restart_available;
+auto events = runtime.events();
+auto async_result = future.get();
+runtime.stop_all();
+```
+
+The runtime keeps a simple synchronous core and also exposes `std::future`
+helpers for host-managed async dispatch. Requests to the same child stdio server
+are serialized to preserve frame order, while requests to different servers can
+run concurrently. Production host shells that need richer telemetry, auth, or
+transport listeners can build those policies around this layer.
+
+Restart behavior is configurable per server. `restartOnFailure` and
+`maxRestarts` enable bounded restarts. `restartBackoffMillis` and
+`maxRestartBackoffMillis` add exponential delay between repeated failures.
+`circuitBreakerFailureThreshold` and `circuitBreakerCooldownMillis` can stop a
+flapping server from being restarted continuously. Snapshots expose
+`consecutive_failure_count`, `restart_available`, `restart_backoff_remaining`,
+`circuit_breaker_open`, and `circuit_breaker_remaining` so host UIs can show
+operators exactly why a server is or is not restartable.
+
+Runtime telemetry is also available as a structured event stream. Applications
+can read the in-memory event buffer or attach a sink to forward events to their
+own logging, metrics, or tracing system:
+
+```cpp
+runtime.set_event_sink([](const wuwe::agent::mcp::mcp_host_event& event) {
+  auto type = wuwe::agent::mcp::to_string(event.type);
+  auto server = event.server_id;
+  auto method = event.method;
+});
+
+for (const auto& event : runtime.events()) {
+  auto state = wuwe::agent::mcp::to_string(event.state);
+}
+
+runtime.clear_events();
+```
+
+Events cover server add/remove/start/stop, requests, notifications, health
+checks, restart attempts, restart blocks, failures, and circuit-breaker openings.
+
+For a ready-made exporter, attach a sink:
+
+```cpp
+auto memory_sink =
+  std::make_shared<wuwe::agent::mcp::in_memory_mcp_host_event_sink>();
+auto jsonl_sink =
+  std::make_shared<wuwe::agent::mcp::jsonl_mcp_host_event_sink>("mcp-host-events.jsonl");
+auto prometheus_sink =
+  std::make_shared<wuwe::agent::mcp::prometheus_mcp_host_event_sink>();
+auto otel_sink =
+  std::make_shared<wuwe::agent::mcp::otel_mcp_host_event_sink>();
+
+auto fanout = std::make_shared<wuwe::agent::mcp::fanout_mcp_host_event_sink>();
+fanout->add_sink(memory_sink);
+fanout->add_sink(jsonl_sink);
+fanout->add_sink(prometheus_sink);
+fanout->add_sink(otel_sink);
+wuwe::agent::mcp::attach_mcp_host_event_sink(runtime, fanout);
+
+auto scrape_text = prometheus_sink->scrape();
+auto spans = otel_sink->spans();
+```
+
+`mcp_host_event_to_json()` serializes events with sequence, timestamp, type,
+server id, method, state, error, elapsed time, and metadata fields. The JSONL
+sink writes one event per line for log shipping or offline analysis. The
+Prometheus sink exposes event counters and elapsed-time sums in scrape text. The
+OpenTelemetry-style sink records spans that can be mapped into an application's
+real tracing exporter.
+
+## Aggregation Gateway
+
+`mcp_gateway` projects all running servers in a `mcp_host_runtime` as one local
+`mcp_server`. Tools, resources, and prompts are prefixed with the downstream
+server id to keep names stable and collision-free:
+
+```cpp
+wuwe::agent::mcp::mcp_host_runtime runtime;
+runtime.add_servers_from_file("D:\\Miles Li\\Wuwe\\.vscode\\mcp.json");
+runtime.start_all();
+
+wuwe::agent::mcp::mcp_server gateway_server({
+  .name = "wuwe-gateway",
+  .version = "1.0.0",
+});
+wuwe::agent::mcp::mcp_gateway gateway;
+gateway.populate_server(gateway_server, runtime);
+```
+
+A downstream `echo_text` tool from server `docs` becomes `docs__echo_text`.
+Calling that gateway tool routes to `runtime.call_tool("docs", "echo_text",
+arguments)`. Resources and prompts are routed the same way.
+
+The runtime can also load common JSON shapes used by desktop MCP hosts:
+
+```cpp
+runtime.add_servers_from_json({
+  { "servers", {
+    { "wuwe", {
+      { "type", "stdio" },
+      { "command", "D:\\Miles Li\\Wuwe\\build\\examples\\Debug\\mcp_stdio_example.exe" },
+      { "args", json::array() },
+      { "env", { { "WUWE_MCP_MODE", "desktop" } } },
+      { "restartOnFailure", true },
+      { "maxRestarts", 5 },
+      { "restartBackoffMillis", 250 },
+      { "maxRestartBackoffMillis", 5000 },
+      { "circuitBreakerFailureThreshold", 3 },
+      { "circuitBreakerCooldownMillis", 30000 },
+    } },
+  } },
+});
+
+runtime.add_servers_from_json({
+  { "mcpServers", {
+    { "wuwe", {
+      { "command", "D:\\Miles Li\\Wuwe\\build\\examples\\Debug\\mcp_stdio_example.exe" },
+      { "args", json::array() },
+    } },
+  } },
+});
+```
+
+The parser accepts `servers` and `mcpServers`, `command`, `args`, `env`, `cwd` or
+`workingDirectory`, optional `clientInfo`, optional `capabilities`, optional
+`restartOnFailure`, optional `maxRestarts`, optional `restartBackoffMillis`,
+optional `maxRestartBackoffMillis`, optional `circuitBreakerFailureThreshold`,
+optional `circuitBreakerCooldownMillis`, and stdio-only `type`.
+
+Load config from a file or discover project-local and user-level candidate
+config paths:
+
+```cpp
+runtime.add_servers_from_file("D:\\Miles Li\\Wuwe\\.vscode\\mcp.json");
+
+for (const auto& path : wuwe::agent::mcp::mcp_host_default_config_paths("D:\\Miles Li\\Wuwe")) {
+  if (std::filesystem::exists(path)) {
+    runtime.add_servers_from_file(path);
+  }
+}
+
+for (const auto& path : wuwe::agent::mcp::mcp_host_user_config_paths()) {
+  if (std::filesystem::exists(path)) {
+    runtime.add_servers_from_file(path);
+  }
+}
+```
+
 ## HTTP Adapter
 
 `mcp_http_transport` adapts an application-owned HTTP endpoint to `mcp_server`.
@@ -603,6 +824,10 @@ Transports and clients:
 - `mcp_stdio_transport::run()` serves caller-provided streams.
 - `mcp_stdio_transport::run_lines()` is only for line-delimited debug harnesses.
 - `mcp_stdio_client` sends framed requests over caller-owned streams.
+- `mcp_process_client` launches a child stdio MCP server and sends framed
+  requests to it.
+- `mcp_host_runtime` manages multiple named child stdio MCP servers and routes
+  requests by server id.
 - `mcp_http_transport::handle()` adapts application HTTP requests without
   owning a listener.
 
@@ -618,10 +843,19 @@ Operational helpers:
 
 Current boundaries:
 
-- No built-in HTTP listener or child process management yet.
+- No built-in production HTTP listener yet; applications can use
+  `mcp_http_transport` behind their own listener, TLS, and lifecycle model.
+- Child process support now includes a lightweight multi-server runtime, common
+  JSON config parsing, project-local and user-level candidate config discovery,
+  env overrides, health checks, bounded restart policy, restart backoff, and
+  circuit breaker protection, snapshots, structured runtime events,
+  JSONL/Prometheus/OpenTelemetry-style telemetry export, and aggregation
+  gateway support. It does not yet include a first-party UI/control plane.
 - Sampling and elicitation are exposed as protocol requests; concrete model
   choice and UI rendering remain host responsibilities.
-- No OAuth identity integration yet.
+- No built-in OAuth/JWT/JWKS verifier yet; authenticated identity can be injected
+  through `mcp_auth_context` while the crypto and identity-provider policy are
+  selected by the embedding application.
 - Cancellation is cooperative; synchronous callbacks must check
   `is_cancelled()` themselves, and async callbacks should check their
   `mcp_async_cancel_token`.

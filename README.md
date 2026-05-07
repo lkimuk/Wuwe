@@ -77,7 +77,13 @@ Wuwe includes an MCP module for exposing existing Wuwe tool providers,
 resources, roots, and prompts through JSON-RPC, `initialize`, `tools/list`,
 `tools/call`, `resources/list`, `resources/read`, `roots/list`, `prompts/list`,
 `prompts/get`, Content-Length framed stdio transport, a small stdio client, an
-application-level HTTP adapter, notifications, lifecycle tracking, async task
+external process stdio client, a lightweight multi-server host runtime with
+stderr capture, async dispatch, health checks, bounded restart policy, and basic
+telemetry, structured runtime events, JSONL/Prometheus/OpenTelemetry-style
+telemetry export, MCP aggregation gateway, restart backoff and circuit breaker
+protection, an application-level HTTP adapter,
+project-local and user-level MCP config discovery, config-driven child process environment overrides,
+notifications, lifecycle tracking, async task
 helpers, sampling and elicitation request forwarding, pagination, and optional
 access/audit policy.
 

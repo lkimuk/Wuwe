@@ -2,12 +2,12 @@
   "servers": {
     "wuwe": {
       "type": "stdio",
-      "command": "${workspaceFolder}\\build\\examples\\Debug\\mcp_stdio_example.exe",
+      "command": "${workspaceFolder}\\build-mcp\\examples\\Debug\\mcp_stdio_example.exe",
       "args": []
     },
     "wuwe-rag": {
       "type": "stdio",
-      "command": "${workspaceFolder}\\build\\examples\\Debug\\knowledge_mcp_example.exe",
+      "command": "${workspaceFolder}\\build-mcp\\examples\\Debug\\knowledge_mcp_example.exe",
       "args": []
     }
   }

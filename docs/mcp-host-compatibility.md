@@ -1,7 +1,7 @@
 # MCP Host Compatibility
 
 This guide is for validating `mcp_stdio_example` with real MCP hosts. The
-example uses Content-Length framed stdio and exposes:
+example accepts both Content-Length framed stdio and newline-delimited JSON-RPC (JSON Lines) stdio, then replies using the same framing style as the incoming request. It exposes:
 
 - Tools: `echo_text`, `preview_image`
 - Resources: `wuwe://example/readme`
@@ -18,7 +18,7 @@ cmake --build build --config Debug --target mcp_stdio_example mcp_tests
 .\build\tests\Debug\mcp_tests.exe
 ```
 
-The unit suite includes a framed stdio compatibility transcript that exercises
+The unit suite includes framed and JSON Lines stdio compatibility coverage that exercises
 the same handshake and operations listed below. Real host validation is tracked
 separately so compatibility claims stay tied to a concrete host/version.
 
@@ -41,7 +41,7 @@ that in-memory tests cannot see, including Windows text-mode CRLF translation.
 | Local framed stdio transcript | repository test | 2026-05-06 | Pass | Covered by `mcp_tests`. Exercises initialize, tools, rich content, resources, prompts, and Content-Length framing. |
 | Local process stdio transcript | Debug executable | 2026-05-06 | Pass | `tools/mcp-host-transcript.ps1` passed against `build\examples\Debug\mcp_stdio_example.exe`. |
 | Local process stdio transcript | Release executable | 2026-05-06 | Pass | `tools/mcp-host-transcript.ps1 -ServerPath build\examples\Release\mcp_stdio_example.exe` passed. |
-| VS Code | Installed, GUI not exercised | 2026-05-06 | Config prepared | Workspace config is available at `.vscode/mcp.json`; open VS Code and confirm the `wuwe` and `wuwe-rag` servers in the MCP UI. |
+| VS Code / Codex MCP client | openai.chatgpt-26.429.30905, codex-mcp-client 0.128.0-alpha.1 | 2026-05-07 | Pass | Verified JSON Lines initialize, resources/list, resources/read, resourceTemplates/list, and RAG `search_knowledge` against `wuwe` and `wuwe-rag`. |
 | Claude Desktop | Not run | Not run | Pending | Run the host config below and record the observed version. |
 | Cursor | Not run | Not run | Pending | Run the host config below and record the observed version. |
 | Continue | Not run | Not run | Pending | Run the host config below and record the observed version. |
@@ -75,12 +75,12 @@ VS Code workspace configuration is checked in at `.vscode/mcp.json`:
   "servers": {
     "wuwe": {
       "type": "stdio",
-      "command": "${workspaceFolder}\\build\\examples\\Debug\\mcp_stdio_example.exe",
+      "command": "${workspaceFolder}\\build-mcp\\examples\\Debug\\mcp_stdio_example.exe",
       "args": []
     },
     "wuwe-rag": {
       "type": "stdio",
-      "command": "${workspaceFolder}\\build\\examples\\Debug\\knowledge_mcp_example.exe",
+      "command": "${workspaceFolder}\\build-mcp\\examples\\Debug\\knowledge_mcp_example.exe",
       "args": []
     }
   }
@@ -94,7 +94,7 @@ Use the absolute path returned by `Resolve-Path`:
 {
   "mcpServers": {
     "wuwe": {
-      "command": "D:\\Miles Li\\Wuwe\\build\\examples\\Debug\\mcp_stdio_example.exe",
+      "command": "D:\\MilesLi\\Wuwe\\build-mcp\\examples\\Debug\\mcp_stdio_example.exe",
       "args": []
     }
   }
@@ -127,8 +127,7 @@ For RAG-specific smoke testing, use `knowledge_mcp_example.exe` instead of
 
 ## Manual Smoke Messages
 
-If the host has a raw MCP inspector, use these JSON-RPC messages. The host tool
-should handle Content-Length framing for you.
+If the host has a raw MCP inspector, use these JSON-RPC messages. The host tool may send either Content-Length framed messages or one JSON-RPC object per line.
 
 Initialize:
 
@@ -201,9 +200,7 @@ Rich content:
 
 - Use an absolute executable path. Relative paths are interpreted differently by
   different hosts.
-- Do not pipe line-delimited JSON into `mcp_stdio_example`; the real example
-  expects Content-Length framed stdio. `run_lines()` exists only for tests and
-  custom debug harnesses.
+- `mcp_stdio_example` accepts Content-Length framed messages and JSON Lines. If one framing style fails in a host, capture the raw stdin/stdout transcript before changing server logic.
 - Make sure the example does not print normal log lines to stdout. Stdout is the
   MCP protocol stream.
 - If a host cannot display image content, verify that the raw response contains

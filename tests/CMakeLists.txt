@@ -27,5 +27,9 @@ add_executable(mcp_tests
 
 target_link_libraries(mcp_tests PRIVATE wuwe)
 wuwe_copy_runtime_dlls(mcp_tests)
+add_dependencies(mcp_tests mcp_stdio_example)
+target_compile_definitions(mcp_tests PRIVATE
+    WUWE_MCP_STDIO_EXAMPLE_PATH="$<TARGET_FILE:mcp_stdio_example>"
+)
 
 add_test(NAME mcp_tests COMMAND mcp_tests)

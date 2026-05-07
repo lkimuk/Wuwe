@@ -1,6 +1,7 @@
 #ifndef WUWE_AGENT_MCP_STDIO_TRANSPORT_HPP
 #define WUWE_AGENT_MCP_STDIO_TRANSPORT_HPP
 
+#include <cstdio>
 #include <iostream>
 #include <istream>
 #include <optional>
@@ -8,7 +9,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <cstdio>
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -21,6 +21,16 @@ namespace wuwe::agent::mcp {
 
 class mcp_stdio_transport {
 public:
+  enum class message_framing {
+    content_length,
+    json_lines,
+  };
+
+  struct stdio_message {
+    std::string body;
+    message_framing framing { message_framing::content_length };
+  };
+
   int run_stdio(mcp_server& server) const {
     configure_stdio_binary();
     return run(server, std::cin, std::cout);
@@ -28,14 +38,15 @@ public:
 
   int run(mcp_server& server, std::istream& input, std::ostream& output) const {
     while (true) {
-      auto message = read_framed_message(input);
+      auto message = read_message(input);
       if (!message) {
         break;
       }
 
-      const auto exchange = server.handle_message_exchange(*message);
-      write_exchange(exchange, [&output](const std::string& message) {
-        write_framed_message(output, message);
+      const auto framing = message->framing;
+      const auto exchange = server.handle_message_exchange(message->body);
+      write_exchange(exchange, [&output, framing](const std::string& message) {
+        write_message(output, message, framing);
       });
     }
     return 0;
@@ -63,7 +74,24 @@ public:
     output.flush();
   }
 
-  static std::optional<std::string> read_framed_message(std::istream& input) {
+  static void write_line_message(std::ostream& output, std::string_view message) {
+    output.write(message.data(), static_cast<std::streamsize>(message.size()));
+    output << '\n';
+    output.flush();
+  }
+
+  static void write_message(
+    std::ostream& output,
+    std::string_view message,
+    message_framing framing) {
+    if (framing == message_framing::json_lines) {
+      write_line_message(output, message);
+      return;
+    }
+    write_framed_message(output, message);
+  }
+
+  static std::optional<stdio_message> read_message(std::istream& input) {
     std::string line;
     std::optional<std::size_t> content_length;
 
@@ -72,8 +100,16 @@ public:
         line.pop_back();
       }
 
-      if (line.empty()) {
+      const auto trimmed = trim(line);
+      if (trimmed.empty()) {
         break;
+      }
+
+      if (trimmed.front() == '{' || trimmed.front() == '[') {
+        return stdio_message {
+          .body = std::move(line),
+          .framing = message_framing::json_lines,
+        };
       }
 
       const auto separator = line.find(':');
@@ -100,7 +136,18 @@ public:
     if (input.gcount() != static_cast<std::streamsize>(body.size())) {
       return std::nullopt;
     }
-    return body;
+    return stdio_message {
+      .body = std::move(body),
+      .framing = message_framing::content_length,
+    };
+  }
+
+  static std::optional<std::string> read_framed_message(std::istream& input) {
+    auto message = read_message(input);
+    if (!message || message->framing != message_framing::content_length) {
+      return std::nullopt;
+    }
+    return std::move(message->body);
   }
 
 private:
