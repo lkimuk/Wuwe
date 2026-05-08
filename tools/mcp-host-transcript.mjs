@@ -151,9 +151,15 @@ function main() {
     maxBuffer: 1024 * 1024,
     windowsHide: true,
   });
-  if (result.status !== 0) {
-    throw new Error(`MCP server exited with code ${result.status}: ${result.stderr.toString("utf8")}`);
+  if (result.error) {
+    throw new Error(`failed to spawn MCP server ${serverPath}: ${result.error.message}`);
   }
+  if (result.status !== 0) {
+    const stderr = result.stderr ? result.stderr.toString("utf8") : "";
+    throw new Error(`MCP server exited with code ${result.status}: ${stderr}`);
+  }
+  assert(result.stdout !== undefined && result.stdout !== null,
+      "MCP server did not produce a stdout pipe");
   const messages = parseFrames(result.stdout);
 
   console.log("Validating initialize");
@@ -203,7 +209,7 @@ function main() {
   assert(prompt.result.messages[0].content.text.includes("host compatibility"),
       "prompts/get should return the requested topic");
 
-  const stderr = result.stderr.toString("utf8").trim();
+  const stderr = result.stderr ? result.stderr.toString("utf8").trim() : "";
   if (stderr.length > 0) {
     console.warn(stderr);
   }

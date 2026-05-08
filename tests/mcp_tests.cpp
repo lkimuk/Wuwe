@@ -9,11 +9,13 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <httplib/httplib.h>
 
 #include <wuwe/agent/mcp/mcp_async.hpp>
 #include <wuwe/agent/mcp/mcp_gateway.hpp>
 #include <wuwe/agent/mcp/mcp_host_runtime.hpp>
 #include <wuwe/agent/mcp/mcp_host_telemetry.hpp>
+#include <wuwe/agent/mcp/mcp_http_listener.hpp>
 #include <wuwe/agent/mcp/mcp_process_client.hpp>
 #include <wuwe/agent/mcp/mcp_server.hpp>
 #include <wuwe/agent/mcp/mcp_http_transport.hpp>
@@ -2023,6 +2025,56 @@ void test_host_runtime_loads_common_json_config_shapes() {
     "host runtime should parse circuit breaker policy");
 }
 
+void test_host_runtime_reports_config_diagnostics() {
+  const auto diagnostics = wuwe::agent::mcp::mcp_host_config_diagnostics_from_json(json {
+    { "servers", {
+      { "broken", {
+        { "type", "http" },
+        { "command", "" },
+        { "args", json::array({ "--ok", 42 }) },
+        { "env", { { "WUWE_ENV", false } } },
+        { "clientInfo", { { "name", 12 } } },
+        { "capabilities", json::array() },
+        { "autoInitialize", "yes" },
+        { "maxRestarts", -1 },
+      } },
+    } },
+  });
+
+  require(diagnostics.size() >= 8,
+    "host runtime should report multiple config diagnostics without throwing");
+  require(std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.path == "$.servers.broken.type" &&
+                   diagnostic.severity ==
+                     wuwe::agent::mcp::mcp_host_config_diagnostic_severity::error;
+          }),
+    "host runtime should diagnose unsupported server type");
+  require(std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.path == "$.servers.broken.command" &&
+                   diagnostic.message.find("must not be empty") != std::string::npos;
+          }),
+    "host runtime should diagnose empty commands");
+  require(std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.path == "$.servers.broken.args[1]";
+          }),
+    "host runtime should diagnose non-string args entries");
+  require(wuwe::agent::mcp::to_string(
+            wuwe::agent::mcp::mcp_host_config_diagnostic_severity::warning) == "warning",
+    "host runtime should stringify config diagnostic severity");
+
+  const auto clean = wuwe::agent::mcp::mcp_host_config_diagnostics_from_json(json {
+    { "mcpServers", {
+      { "wuwe", {
+        { "command", "server.exe" },
+        { "args", json::array() },
+        { "restartOnFailure", true },
+        { "maxRestarts", 3 },
+      } },
+    } },
+  });
+  require(clean.empty(), "host runtime should not report diagnostics for a valid config");
+}
+
 void test_host_runtime_loads_config_files_and_discovers_workspace_paths() {
   const auto root = std::filesystem::temp_directory_path() /
                     ("wuwe-mcp-config-test-" + std::to_string(
@@ -2251,6 +2303,66 @@ void test_http_transport_exposes_outbound_client_requests() {
     "HTTP transport should expose sampling request payload");
 }
 
+void test_http_listener_serves_mcp_and_health_endpoints() {
+  wuwe::tool_provider<echo_text> provider;
+  wuwe::agent::mcp::mcp_server server;
+  server.add_tool_provider(provider);
+
+  wuwe::agent::mcp::mcp_http_listener listener(server);
+  require(listener.start(), "HTTP listener should start on localhost");
+
+  httplib::Client client("127.0.0.1", listener.bound_port());
+  const auto health = client.Get("/healthz");
+  require(health && health->status == 200,
+    "HTTP listener should expose a health endpoint");
+
+  const auto response = client.Post(
+    "/mcp",
+    R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})",
+    "application/json");
+  require(response && response->status == 200,
+    "HTTP listener should serve JSON-RPC requests");
+  const auto body = json::parse(response->body);
+  require(body["result"]["tools"][0]["name"] == "echo_text",
+    "HTTP listener should route requests through the MCP server");
+
+  listener.stop();
+}
+
+void test_http_listener_rejects_unauthorized_requests() {
+  wuwe::agent::mcp::mcp_server server;
+  wuwe::agent::mcp::mcp_http_listener listener(server, {
+    .authorize = [](const wuwe::agent::mcp::mcp_http_request& request) {
+      for (const auto& [name, value] : request.headers) {
+        if (name == "Authorization" && value == "Bearer test-token") {
+          return true;
+        }
+      }
+      return false;
+    },
+  });
+  require(listener.start(), "HTTP listener with auth should start on localhost");
+
+  httplib::Client client("127.0.0.1", listener.bound_port());
+  const auto rejected = client.Post(
+    "/mcp",
+    R"({"jsonrpc":"2.0","id":1,"method":"ping"})",
+    "application/json");
+  require(rejected && rejected->status == 401,
+    "HTTP listener should reject unauthorized requests");
+
+  httplib::Headers headers { { "Authorization", "Bearer test-token" } };
+  const auto accepted = client.Post(
+    "/mcp",
+    headers,
+    R"({"jsonrpc":"2.0","id":1,"method":"ping"})",
+    "application/json");
+  require(accepted && accepted->status == 200,
+    "HTTP listener should allow authorized requests");
+
+  listener.stop();
+}
+
 } // namespace
 
 int main() {
@@ -2309,11 +2421,14 @@ int main() {
     test_host_runtime_exports_telemetry_events();
     test_mcp_gateway_aggregates_runtime_servers();
     test_host_runtime_loads_common_json_config_shapes();
+    test_host_runtime_reports_config_diagnostics();
     test_host_runtime_loads_config_files_and_discovers_workspace_paths();
     test_host_runtime_restarts_failed_process_server();
     test_host_runtime_applies_backoff_and_circuit_breaker();
     test_http_transport_adapts_jsonrpc_requests_and_sse_notifications();
     test_http_transport_exposes_outbound_client_requests();
+    test_http_listener_serves_mcp_and_health_endpoints();
+    test_http_listener_rejects_unauthorized_requests();
   }
   catch (const std::exception& ex) {
     wuwe::println("mcp_tests failed: {}", ex.what());

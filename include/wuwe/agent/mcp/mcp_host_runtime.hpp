@@ -60,6 +60,17 @@ struct mcp_host_server_snapshot {
   std::string stderr_output;
 };
 
+enum class mcp_host_config_diagnostic_severity {
+  error,
+  warning,
+};
+
+struct mcp_host_config_diagnostic {
+  mcp_host_config_diagnostic_severity severity { mcp_host_config_diagnostic_severity::error };
+  std::string path;
+  std::string message;
+};
+
 enum class mcp_host_event_type {
   server_added,
   server_removed,
@@ -180,9 +191,14 @@ private:
 };
 
 std::string to_string(mcp_host_server_state state);
+std::string to_string(mcp_host_config_diagnostic_severity severity);
 std::string to_string(mcp_host_event_type type);
 std::vector<mcp_host_server_config> mcp_host_server_configs_from_json(const json& config_json);
 std::vector<mcp_host_server_config> mcp_host_server_configs_from_file(
+  const std::filesystem::path& path);
+std::vector<mcp_host_config_diagnostic> mcp_host_config_diagnostics_from_json(
+  const json& config_json);
+std::vector<mcp_host_config_diagnostic> mcp_host_config_diagnostics_from_file(
   const std::filesystem::path& path);
 std::vector<std::filesystem::path> mcp_host_user_config_paths(
   const std::filesystem::path& home = {},

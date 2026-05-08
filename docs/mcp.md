@@ -202,6 +202,8 @@ cmake --build build --config Debug --target mcp_tests mcp_stdio_example
 
 For real desktop host setup and validation, see
 [MCP Host Compatibility](mcp-host-compatibility.md).
+For the product-grade v1 scope and validation summary, see
+[MCP v1 Release Notes](mcp-v1-release-notes.md).
 
 The default stdio transport uses MCP-style `Content-Length` framing:
 
@@ -695,6 +697,32 @@ The parser accepts `servers` and `mcpServers`, `command`, `args`, `env`, `cwd` o
 optional `maxRestartBackoffMillis`, optional `circuitBreakerFailureThreshold`,
 optional `circuitBreakerCooldownMillis`, and stdio-only `type`.
 
+Use diagnostics before adding a user-provided config to a runtime when the host
+application wants actionable setup errors without starting child processes:
+
+```cpp
+const auto diagnostics =
+  wuwe::agent::mcp::mcp_host_config_diagnostics_from_file(".vscode/mcp.json");
+
+for (const auto& diagnostic : diagnostics) {
+  std::cerr << wuwe::agent::mcp::to_string(diagnostic.severity)
+            << " " << diagnostic.path << ": "
+            << diagnostic.message << "\n";
+}
+
+if (std::none_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic) {
+      return diagnostic.severity ==
+        wuwe::agent::mcp::mcp_host_config_diagnostic_severity::error;
+    })) {
+  runtime.add_servers_from_file(".vscode/mcp.json");
+}
+```
+
+Diagnostics report common schema issues such as missing or empty `command`,
+unsupported non-stdio `type`, non-array `args`, non-string `env` values,
+malformed `clientInfo`, malformed `capabilities`, and invalid restart policy
+fields.
+
 Load config from a file or discover project-local and user-level candidate
 config paths:
 
@@ -739,6 +767,42 @@ errors stay in the JSON-RPC response body.
 only requests return status `202`. Server notifications emitted while handling a
 request are available in `response.sse_events` as preformatted SSE event strings;
 use `response.sse_body()` when a framework expects a single SSE response body.
+
+A production HTTP/SSE listener would sit one layer above this adapter. It is
+useful when Wuwe itself must be the network service: binding a port, accepting
+remote MCP clients, enforcing TLS and request limits, handling CORS and reverse
+proxy headers, streaming SSE to long-lived clients, surfacing health endpoints,
+and owning shutdown/threading behavior. Framework users that already have an
+HTTP service normally do not need Wuwe to own that layer; they can keep using
+`mcp_http_transport` inside their existing server.
+
+`mcp_http_listener` is the optional built-in listener for local or embedded
+deployments that want an endpoint without wiring an application web framework.
+It uses the checked-in `cpp-httplib` header, binds to `127.0.0.1` by default,
+routes `POST /mcp` through `mcp_http_transport`, exposes `GET /healthz`, supports
+an authorization callback, supports optional CORS headers, and enforces a
+configurable request body limit:
+
+```cpp
+wuwe::agent::mcp::mcp_http_listener listener(server, {
+  .host = "127.0.0.1",
+  .port = 8765,
+  .authorize = [](const wuwe::agent::mcp::mcp_http_request& request) {
+    return std::any_of(request.headers.begin(), request.headers.end(), [](const auto& header) {
+      return header.first == "Authorization" && header.second == "Bearer local-dev-token";
+    });
+  },
+});
+
+if (!listener.start()) {
+  throw std::runtime_error("failed to start MCP HTTP listener");
+}
+```
+
+The listener intentionally stays small: it does not own TLS certificates, OAuth
+or JWKS verification, reverse-proxy policy, or a full streaming event hub. Use a
+reverse proxy or an application-owned HTTP service for those production network
+concerns.
 
 ## Access Policy
 
@@ -830,6 +894,8 @@ Transports and clients:
   requests by server id.
 - `mcp_http_transport::handle()` adapts application HTTP requests without
   owning a listener.
+- `mcp_http_listener` optionally owns a small local HTTP listener for `POST
+  /mcp` and `GET /healthz`, using `cpp-httplib` and the existing HTTP adapter.
 
 Operational helpers:
 
@@ -843,8 +909,10 @@ Operational helpers:
 
 Current boundaries:
 
-- No built-in production HTTP listener yet; applications can use
-  `mcp_http_transport` behind their own listener, TLS, and lifecycle model.
+- The built-in HTTP listener is intentionally small. Use
+  `mcp_http_transport` behind an application server or reverse proxy when the
+  deployment needs TLS ownership, OAuth/JWT/JWKS verification, advanced CORS,
+  rate limiting, or a full streaming event hub.
 - Child process support now includes a lightweight multi-server runtime, common
   JSON config parsing, project-local and user-level candidate config discovery,
   env overrides, health checks, bounded restart policy, restart backoff, and

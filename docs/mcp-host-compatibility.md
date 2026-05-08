@@ -21,6 +21,10 @@ cmake --build build --config Debug --target mcp_stdio_example mcp_tests
 The unit suite includes framed and JSON Lines stdio compatibility coverage that exercises
 the same handshake and operations listed below. Real host validation is tracked
 separately so compatibility claims stay tied to a concrete host/version.
+Hosts marked `Pending` are intentionally not claimed as verified; the local
+transcript covers protocol behavior, while a real desktop client run covers
+host-specific config paths, process environment, UI visibility, and feature
+support differences.
 
 For a host-like stdio transcript outside the unit test process, run:
 

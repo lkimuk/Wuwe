@@ -81,6 +81,98 @@ std::chrono::milliseconds remaining_until(std::chrono::steady_clock::time_point 
   return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
 }
 
+std::string json_path(std::string root, std::string_view key) {
+  if (!root.empty() && root.back() != '.') {
+    root += ".";
+  }
+  root += key;
+  return root;
+}
+
+void add_config_diagnostic(
+  std::vector<mcp_host_config_diagnostic>& diagnostics,
+  mcp_host_config_diagnostic_severity severity,
+  std::string path,
+  std::string message) {
+  diagnostics.push_back({
+    .severity = severity,
+    .path = std::move(path),
+    .message = std::move(message),
+  });
+}
+
+bool require_object(
+  std::vector<mcp_host_config_diagnostic>& diagnostics,
+  const json& value,
+  const std::string& path,
+  std::string_view label) {
+  if (value.is_object()) {
+    return true;
+  }
+  add_config_diagnostic(
+    diagnostics,
+    mcp_host_config_diagnostic_severity::error,
+    path,
+    std::string(label) + " must be an object");
+  return false;
+}
+
+bool require_string(
+  std::vector<mcp_host_config_diagnostic>& diagnostics,
+  const json& value,
+  const std::string& path,
+  std::string_view label) {
+  if (value.is_string()) {
+    return true;
+  }
+  add_config_diagnostic(
+    diagnostics,
+    mcp_host_config_diagnostic_severity::error,
+    path,
+    std::string(label) + " must be a string");
+  return false;
+}
+
+void validate_optional_bool(
+  std::vector<mcp_host_config_diagnostic>& diagnostics,
+  const json& value,
+  std::string_view key,
+  const std::string& server_path) {
+  if (value.contains(key) && !value.at(key).is_boolean()) {
+    add_config_diagnostic(
+      diagnostics,
+      mcp_host_config_diagnostic_severity::error,
+      json_path(server_path, key),
+      std::string(key) + " must be a boolean");
+  }
+}
+
+void validate_optional_non_negative_integer(
+  std::vector<mcp_host_config_diagnostic>& diagnostics,
+  const json& value,
+  std::string_view key,
+  const std::string& server_path) {
+  if (!value.contains(key)) {
+    return;
+  }
+  const auto& field = value.at(key);
+  if (!field.is_number_integer()) {
+    add_config_diagnostic(
+      diagnostics,
+      mcp_host_config_diagnostic_severity::error,
+      json_path(server_path, key),
+      std::string(key) + " must be an integer");
+    return;
+  }
+  if (field.get<long long>() < 0) {
+    add_config_diagnostic(
+      diagnostics,
+      mcp_host_config_diagnostic_severity::error,
+      json_path(server_path, key),
+      std::string(key) + " must not be negative");
+  }
+}
+
 } // namespace
 
 void mcp_host_runtime::set_event_sink(event_sink sink) {
@@ -632,6 +724,16 @@ std::string to_string(mcp_host_server_state state) {
   return "unknown";
 }
 
+std::string to_string(mcp_host_config_diagnostic_severity severity) {
+  switch (severity) {
+    case mcp_host_config_diagnostic_severity::error:
+      return "error";
+    case mcp_host_config_diagnostic_severity::warning:
+      return "warning";
+  }
+  return "unknown";
+}
+
 std::string to_string(mcp_host_event_type type) {
   switch (type) {
     case mcp_host_event_type::server_added:
@@ -772,6 +874,173 @@ std::vector<mcp_host_server_config> mcp_host_server_configs_from_file(
   }
   catch (const std::exception& ex) {
     throw std::runtime_error("failed to parse MCP host config " + path.string() + ": " + ex.what());
+  }
+}
+
+std::vector<mcp_host_config_diagnostic> mcp_host_config_diagnostics_from_json(
+  const json& config_json) {
+  std::vector<mcp_host_config_diagnostic> diagnostics;
+  if (!require_object(diagnostics, config_json, "$", "MCP host config")) {
+    return diagnostics;
+  }
+
+  const json* servers = nullptr;
+  std::string servers_path;
+  if (config_json.contains("servers")) {
+    servers = &config_json.at("servers");
+    servers_path = "$.servers";
+  }
+  if (config_json.contains("mcpServers")) {
+    if (servers) {
+      add_config_diagnostic(
+        diagnostics,
+        mcp_host_config_diagnostic_severity::warning,
+        "$",
+        "config contains both 'servers' and 'mcpServers'; 'servers' is used first");
+    }
+    else {
+      servers = &config_json.at("mcpServers");
+      servers_path = "$.mcpServers";
+    }
+  }
+  if (!servers) {
+    add_config_diagnostic(
+      diagnostics,
+      mcp_host_config_diagnostic_severity::error,
+      "$",
+      "MCP host config must contain 'servers' or 'mcpServers'");
+    return diagnostics;
+  }
+  if (!require_object(diagnostics, *servers, servers_path, "MCP host config servers")) {
+    return diagnostics;
+  }
+  if (servers->empty()) {
+    add_config_diagnostic(
+      diagnostics,
+      mcp_host_config_diagnostic_severity::warning,
+      servers_path,
+      "MCP host config does not define any servers");
+  }
+
+  for (auto it = servers->begin(); it != servers->end(); ++it) {
+    const auto server_path = json_path(servers_path, it.key());
+    if (!require_object(diagnostics, it.value(), server_path, "MCP host server config")) {
+      continue;
+    }
+    const auto& value = it.value();
+    if (value.contains("type") &&
+        (!value["type"].is_string() || value["type"].get<std::string>() != "stdio")) {
+      add_config_diagnostic(
+        diagnostics,
+        mcp_host_config_diagnostic_severity::error,
+        json_path(server_path, "type"),
+        "MCP host runtime only supports stdio servers");
+    }
+    if (!value.contains("command")) {
+      add_config_diagnostic(
+        diagnostics,
+        mcp_host_config_diagnostic_severity::error,
+        json_path(server_path, "command"),
+        "MCP host server command is required");
+    }
+    else if (require_string(diagnostics, value["command"], json_path(server_path, "command"),
+               "MCP host server command") &&
+             value["command"].get<std::string>().empty()) {
+      add_config_diagnostic(
+        diagnostics,
+        mcp_host_config_diagnostic_severity::error,
+        json_path(server_path, "command"),
+        "MCP host server command must not be empty");
+    }
+    if (value.contains("args")) {
+      if (!value["args"].is_array()) {
+        add_config_diagnostic(
+          diagnostics,
+          mcp_host_config_diagnostic_severity::error,
+          json_path(server_path, "args"),
+          "MCP host server args must be an array");
+      }
+      else {
+        for (std::size_t index = 0; index < value["args"].size(); ++index) {
+          if (!value["args"][index].is_string()) {
+            add_config_diagnostic(
+              diagnostics,
+              mcp_host_config_diagnostic_severity::error,
+              json_path(server_path, "args") + "[" + std::to_string(index) + "]",
+              "MCP host server args entries must be strings");
+          }
+        }
+      }
+    }
+    if (value.contains("env")) {
+      if (require_object(diagnostics, value["env"], json_path(server_path, "env"),
+            "MCP host server env")) {
+        for (auto env_it = value["env"].begin(); env_it != value["env"].end(); ++env_it) {
+          if (!env_it.value().is_string()) {
+            add_config_diagnostic(
+              diagnostics,
+              mcp_host_config_diagnostic_severity::error,
+              json_path(json_path(server_path, "env"), env_it.key()),
+              "MCP host server env entries must be strings");
+          }
+        }
+      }
+    }
+    if (value.contains("clientInfo") &&
+        require_object(diagnostics, value["clientInfo"], json_path(server_path, "clientInfo"),
+          "MCP host server clientInfo")) {
+      if (value["clientInfo"].contains("name")) {
+        require_string(diagnostics, value["clientInfo"]["name"],
+          json_path(json_path(server_path, "clientInfo"), "name"), "clientInfo.name");
+      }
+      if (value["clientInfo"].contains("version")) {
+        require_string(diagnostics, value["clientInfo"]["version"],
+          json_path(json_path(server_path, "clientInfo"), "version"), "clientInfo.version");
+      }
+    }
+    if (value.contains("capabilities")) {
+      require_object(diagnostics, value["capabilities"], json_path(server_path, "capabilities"),
+        "MCP host server capabilities");
+    }
+    validate_optional_bool(diagnostics, value, "autoInitialize", server_path);
+    validate_optional_bool(diagnostics, value, "sendInitializedNotification", server_path);
+    validate_optional_bool(diagnostics, value, "restartOnFailure", server_path);
+    validate_optional_non_negative_integer(diagnostics, value, "maxRestarts", server_path);
+    validate_optional_non_negative_integer(diagnostics, value, "restartBackoffMillis", server_path);
+    validate_optional_non_negative_integer(
+      diagnostics, value, "maxRestartBackoffMillis", server_path);
+    validate_optional_non_negative_integer(
+      diagnostics, value, "circuitBreakerFailureThreshold", server_path);
+    validate_optional_non_negative_integer(
+      diagnostics, value, "circuitBreakerCooldownMillis", server_path);
+  }
+  return diagnostics;
+}
+
+std::vector<mcp_host_config_diagnostic> mcp_host_config_diagnostics_from_file(
+  const std::filesystem::path& path) {
+  std::ifstream input(path);
+  if (!input) {
+    return {
+      {
+        .severity = mcp_host_config_diagnostic_severity::error,
+        .path = path.string(),
+        .message = "failed to open MCP host config",
+      },
+    };
+  }
+
+  try {
+    return mcp_host_config_diagnostics_from_json(json::parse(input));
+  }
+  catch (const std::exception& ex) {
+    return {
+      {
+        .severity = mcp_host_config_diagnostic_severity::error,
+        .path = path.string(),
+        .message = std::string("failed to parse MCP host config: ") + ex.what(),
+      },
+    };
   }
 }
 
