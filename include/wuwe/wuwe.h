@@ -58,6 +58,7 @@
 #include <wuwe/agent/memory/memory_tools.hpp>
 #include <wuwe/agent/memory/sqlite_memory_store.hpp>
 #include <wuwe/agent/orchestration/flow.hpp>
+#include <wuwe/agent/planning/planning.hpp>
 #include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/print.h>
 

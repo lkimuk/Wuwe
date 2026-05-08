@@ -71,6 +71,24 @@ tool exposure.
 See [Knowledge Retrieval](docs/knowledge-retrieval.md) for current status,
 pipeline examples, deployment notes, and remaining production work.
 
+## Planning
+
+Wuwe includes a modular Planning layer for goal-driven task decomposition and
+execution control. It provides static and LLM-backed planners, tool-aware plan
+generation, plan validation, function and tool executors, retry policy,
+replanning hooks, observer events, JSON serialization for checkpoints,
+checkpoint resume, single-run step budgets, cancellation checks, approval gates,
+plan stores, trace events, parallel ready-step execution, timeout marking,
+typed JSON I/O, artifacts, agent handoff executors, policy hooks, and optional
+memory recording. Planning lives independently from flow, runner, memory, MCP,
+and RAG modules, so existing behavior is unchanged unless an application
+explicitly creates a `plan_runner`. The Planning core is complete for embedded
+agent runtimes; deployment-platform work such as distributed workers, leases,
+database-backed stores, external approval systems, and telemetry exporters is
+tracked in the Planning roadmap.
+
+See [Planning](docs/planning.md) for API boundaries and extension points.
+
 ## Model Context Protocol
 
 Wuwe includes an MCP module for exposing existing Wuwe tool providers,
