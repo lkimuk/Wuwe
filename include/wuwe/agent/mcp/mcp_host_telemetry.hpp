@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <wuwe/agent/core/observability.hpp>
 #include <wuwe/agent/mcp/mcp_host_runtime.hpp>
 
 namespace wuwe::agent::mcp {
@@ -44,6 +45,23 @@ public:
   virtual void publish(const mcp_host_event& event) = 0;
 };
 
+inline observability::agent_event mcp_host_event_to_agent_event(const mcp_host_event& event) {
+  return {
+    .module = "mcp",
+    .name = to_string(event.type),
+    .trace_id = "mcp-host-" + std::to_string(event.sequence),
+    .subject_id = event.server_id,
+    .timestamp = event.timestamp,
+    .elapsed = event.elapsed,
+    .attributes = {
+      { "mcp.server_id", event.server_id },
+      { "mcp.method", event.method },
+      { "mcp.state", to_string(event.state) },
+      { "mcp.error", event.error },
+    },
+  };
+}
+
 class in_memory_mcp_host_event_sink final : public mcp_host_event_sink {
 public:
   void publish(const mcp_host_event& event) override {
@@ -64,6 +82,22 @@ public:
 private:
   mutable std::mutex mutex_;
   std::vector<mcp_host_event> events_;
+};
+
+class agent_mcp_host_event_sink final : public mcp_host_event_sink {
+public:
+  explicit agent_mcp_host_event_sink(std::shared_ptr<observability::event_sink> sink)
+      : sink_(std::move(sink)) {
+  }
+
+  void publish(const mcp_host_event& event) override {
+    if (sink_) {
+      sink_->publish(mcp_host_event_to_agent_event(event));
+    }
+  }
+
+private:
+  std::shared_ptr<observability::event_sink> sink_;
 };
 
 class jsonl_mcp_host_event_sink final : public mcp_host_event_sink {

@@ -1,5 +1,9 @@
 # Planning
 
+Use `<wuwe/agent/planning/planning.hpp>` as the module entry header.
+
+![Wuwe Planning Runtime Architecture](assets/planning-architecture.svg)
+
 The Planning module adds a goal-driven control loop without changing existing
 flow, runner, tool, memory, MCP, or RAG behavior. Applications opt in by
 creating a `wuwe::agent::planning::plan_runner`.
@@ -14,7 +18,8 @@ The public surface is intentionally grouped into four layers:
 | `planner.hpp` | Plan creation | Static and LLM-backed planning. |
 | `plan_executor.hpp` | Step execution | Function and tool-provider based step execution. |
 | `plan_executor.hpp` | Agent handoff | `agent_plan_executor` and `composite_plan_executor` route steps to registered agents or tools. |
-| `plan_runner.hpp` | Runtime loop | `plan_runner`, plus grouped runtime helpers for services, graph scheduling, and step state application. |
+| `plan_reflection.hpp` | Reflection bridge | Optional step-result quality gate that maps Reflection actions back into Planning status. |
+| `plan_runner.hpp` | Runtime loop | `plan_runner`, plus grouped runtime helpers for services, graph scheduling, step state, and recovery policy. |
 | `plan_store.hpp` | Persistence | In-memory and JSON file stores for checkpointable plans. |
 
 ## Components
@@ -31,6 +36,13 @@ The public surface is intentionally grouped into four layers:
 | `agent_plan_executor` | Executes steps assigned to registered named agents. |
 | `composite_plan_executor` | Dispatches agent steps to an agent executor and tool steps to a tool executor. |
 | `plan_runner` | Control loop for selecting ready steps, executing them, retrying, replanning, observing, and returning final output. |
+| `plan_reflection_gate` | Optional adapter from `reflection_runner` results into step pass, retry, replan, block, or revised output. |
+| `plan_reflection_options` | Configures the Reflection runner, rubric, reflection scope, and custom request builder. |
+| `plan_reflection_scope` | Decides whether completed, failed, or blocked steps should be reflected. |
+| `plan_reflection_request_factory` | Builds the default or caller-provided `reflection_request` for a plan step. |
+| `plan_reflection_metadata` | Owns reflection metadata keys, writes results to steps, and parses the stored action. |
+| `plan_reflection_action_applier` | Applies Reflection actions back to `plan_step` status, output, and error. |
+| `plan_step_recovery_policy` | Centralizes retry and replan decisions after execution and reflection. |
 | `plan_policy` | Runner policy for retries, iteration limits, parallelism, timeouts, single-run step budget, replanning, resume behavior, and failure behavior. |
 | `plan_observer` | Runner event callback for tracing or UI progress. |
 | `plan_trace_sink` | Structured runtime trace callback with plan id, step id, iteration, and elapsed time. |
@@ -100,6 +112,92 @@ auto result = runner.run({
 
 For tool steps, `input` must be a serialized JSON object, such as
 `{"query":"memory policy"}`. Invalid JSON is rejected before the executor runs.
+
+## Reflection Closed Loop
+
+Planning can optionally run Reflection after a step produces a result. This is
+off by default. When enabled, the runner sends the step result to a
+`reflection_runner` before the step is observed as final.
+
+```cpp
+#include <wuwe/agent/planning/planning.hpp>
+#include <wuwe/agent/reflection/reflection.hpp>
+
+namespace planning = wuwe::agent::planning;
+namespace reflection = wuwe::agent::reflection;
+
+auto reflector = std::make_shared<reflection::llm_reflector>(client);
+auto quality = std::make_shared<reflection::reflection_runner>(
+  reflection::reflection_runner_options {
+    .reflector = reflector,
+  });
+
+planning::plan_runner runner({
+  .planner = planner,
+  .executor = executor,
+  .policy = {
+    .max_step_attempts = 2,
+    .allow_replanning = true,
+  },
+  .reflection = {
+    .runner = quality,
+    .rubric = {
+      .criteria = {
+        {
+          .name = "correctness",
+          .description = "The step result satisfies the plan goal and step instruction.",
+          .weight = 1.0,
+          .pass_threshold = 0.8,
+        },
+      },
+      .pass_threshold = 0.8,
+    },
+  },
+});
+```
+
+Action mapping:
+
+- `pass`: keep the step completed and continue
+- `revise`: replace `step.output` with `revised_output` when provided; otherwise mark the step failed
+- `retry`: mark the step failed so retry policy can rerun it
+- `replan`: mark the step failed and call `planner::revise_plan()` when replanning is allowed
+- `block` / `escalate`: mark the step blocked and stop automatic progress unless the caller chooses to continue
+
+The gate writes reflection metadata back onto the step:
+
+```text
+reflection_passed
+reflection_score
+reflection_action
+reflection_issue_count
+reflection_issue
+```
+
+`reflection_issue` is removed after a later successful reflection result, so
+metadata does not keep a stale issue from an earlier failed attempt.
+
+For advanced use, `plan_reflection_options::request_builder` can build the
+exact `reflection_request` from the step, current plan, and observation. This
+keeps the bridge thin: Reflection remains independent, and Planning only
+consumes the final action.
+
+Internal grouping:
+
+```text
+plan_runner
+  -> plan_reflection_gate
+       -> plan_reflection_scope
+       -> plan_reflection_request_factory
+       -> reflection_runner
+       -> plan_reflection_metadata
+       -> plan_reflection_action_applier
+  -> plan_step_recovery_policy
+```
+
+The runner itself does not inspect raw `"reflection_action"` strings. It asks
+`plan_step_recovery_policy`, which reads the typed action through
+`plan_reflection_metadata`.
 
 ## Plan Validation
 
@@ -229,12 +327,20 @@ Current core coverage:
 - function, tool, agent, and composite executors
 - dependency scheduling and opt-in parallel ready-step execution
 - retry, replanning, cancellation, step budget, step timeout, and run timeout
+- optional Reflection gate for retry, revise, replan, block, and escalation
 - checkpoint serialization and `resume()`
 - `in_memory_plan_store` and JSON `file_plan_store`
 - approval gates and approval provider hook
 - policy hook for allow, deny, or require approval
 - typed JSON input/output and artifact passing
 - observer events, trace sink, run metrics, and optional memory recording
+- `step_reflected` event when a step result passes through the Reflection gate
+
+Current observability is limited to callbacks and metadata. `plan_observer`
+emits lifecycle events, `plan_trace_sink` receives structured trace events, and
+Reflection-gated steps record `reflection_*` metadata. There is not yet a
+built-in log exporter, redaction policy, correlation id system, or metrics
+backend.
 
 ## Non-Goals
 

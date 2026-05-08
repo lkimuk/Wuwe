@@ -14,6 +14,7 @@
 #include <wuwe/agent/memory/memory_context.hpp>
 #include <wuwe/agent/planning/plan.hpp>
 #include <wuwe/agent/planning/plan_executor.hpp>
+#include <wuwe/agent/planning/plan_reflection.hpp>
 #include <wuwe/agent/planning/plan_store.hpp>
 #include <wuwe/agent/planning/planner.hpp>
 
@@ -26,6 +27,7 @@ enum class plan_event_type {
   step_completed,
   step_failed,
   step_blocked,
+  step_reflected,
   step_approval_required,
   plan_revised,
   plan_cancelled,
@@ -232,6 +234,35 @@ public:
   }
 };
 
+class plan_step_recovery_policy {
+public:
+  explicit plan_step_recovery_policy(const plan_policy& policy) : policy_(policy) {
+  }
+
+  bool should_retry(const plan_step& step) const {
+    if (!failed_or_blocked(step) || step.attempts >= policy_.max_step_attempts) {
+      return false;
+    }
+    const auto action = plan_reflection_metadata::action_for(step);
+    return !action || *action == agent::reflection::reflection_action::retry;
+  }
+
+  bool should_replan(const plan_step& step) const {
+    if (!policy_.allow_replanning || !failed_or_blocked(step)) {
+      return false;
+    }
+    const auto action = plan_reflection_metadata::action_for(step);
+    return !action || *action == agent::reflection::reflection_action::replan;
+  }
+
+private:
+  static bool failed_or_blocked(const plan_step& step) {
+    return step.status == plan_step_status::failed || step.status == plan_step_status::blocked;
+  }
+
+  const plan_policy& policy_;
+};
+
 struct plan_runner_options {
   std::shared_ptr<planner> planner;
   std::shared_ptr<plan_executor> executor;
@@ -242,6 +273,7 @@ struct plan_runner_options {
   plan_validation_options validation;
   std::function<plan_policy_check(const plan_step&, const plan&)> policy_check;
   std::function<plan_approval_result(const plan_step&, const plan&)> approval_provider;
+  plan_reflection_options reflection;
   std::function<bool()> should_cancel;
   plan_observer observer;
   plan_trace_sink trace_sink;
@@ -395,14 +427,12 @@ private:
           continue;
         }
 
-        if ((step->status == plan_step_status::failed || step->status == plan_step_status::blocked) &&
-            step->attempts < options_.policy.max_step_attempts) {
+        if (recovery_policy().should_retry(*step)) {
           step->status = plan_step_status::pending;
           continue;
         }
 
-        if ((step->status == plan_step_status::failed || step->status == plan_step_status::blocked) &&
-            options_.policy.allow_replanning) {
+        if (recovery_policy().should_replan(*step)) {
           result.value = options_.planner->revise_plan(result.value, observation);
           validate_or_throw(result.value, validation_for(request));
           emit({ .type = plan_event_type::plan_revised, .current_plan = &result.value });
@@ -538,6 +568,7 @@ private:
 
       auto& step = value.steps[item.index];
       apply_step_result(value, step, std::move(result));
+      reflect_step_result(value, step, run_result, run_started);
       observations.push_back(observe_finished_step(value, step, run_result, run_started));
     }
 
@@ -592,6 +623,26 @@ private:
 
   static void apply_step_result(plan& value, plan_step& step, plan_step_result result) {
     plan_step_state::apply_result(value, step, std::move(result));
+  }
+
+  void reflect_step_result(
+    plan& value,
+    plan_step& step,
+    plan_run_result& run_result,
+    std::chrono::steady_clock::time_point run_started) const {
+    const auto reflected = plan_reflection_gate(options_.reflection).review(value, step);
+    if (!reflected) {
+      return;
+    }
+
+    const auto observation = plan_reflection_gate::observation_from(step, value.id);
+    emit({
+      .type = plan_event_type::step_reflected,
+      .current_plan = &value,
+      .step = &step,
+      .observation = observation,
+    });
+    trace(plan_event_type::step_reflected, value, &step, run_result.iterations, elapsed_since(run_started));
   }
 
   static void hydrate_step_input(plan& value, plan_step& step) {
@@ -684,6 +735,10 @@ private:
 
   plan_runtime_services services() const {
     return plan_runtime_services(options_.store, options_.memory, options_.observer, options_.trace_sink);
+  }
+
+  plan_step_recovery_policy recovery_policy() const {
+    return plan_step_recovery_policy(options_.policy);
   }
 
   plan_runner_options options_;

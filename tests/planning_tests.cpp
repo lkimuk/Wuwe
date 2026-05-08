@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <wuwe/agent/planning/planning.hpp>
+#include <wuwe/agent/reflection/reflection.hpp>
 
 namespace {
 
@@ -93,6 +94,62 @@ public:
   }
 
   bool revised {};
+};
+
+class reflection_replanning_planner final : public planner {
+public:
+  plan create_plan(const planning_request& request) override {
+    return {
+      .id = "reflection-replan",
+      .goal = request.goal,
+      .steps = {
+        {
+          .id = "weak-answer",
+          .title = "Weak answer",
+        },
+      },
+    };
+  }
+
+  plan revise_plan(const plan& current, const planning_observation& observation) override {
+    revised = true;
+    require(observation.metadata.at("reflection_action") == "replan",
+      "reflection observation requests replanning");
+    return {
+      .id = current.id,
+      .goal = current.goal,
+      .steps = {
+        {
+          .id = "replacement",
+          .title = "Replacement",
+        },
+      },
+    };
+  }
+
+  bool revised {};
+};
+
+class fixed_reflector final : public agent::reflection::reflector {
+public:
+  explicit fixed_reflector(
+    agent::reflection::reflection_result result,
+    bool pass_replacement = false)
+      : result_(std::move(result)), pass_replacement_(pass_replacement) {
+  }
+
+  agent::reflection::reflection_result reflect(
+    const agent::reflection::reflection_request& request) override {
+    last_request = request;
+    if (pass_replacement_ && request.original_input.find("replacement") != std::string::npos) {
+      return agent::reflection::reflection_result::pass();
+    }
+    return result_;
+  }
+
+  agent::reflection::reflection_result result_;
+  agent::reflection::reflection_request last_request;
+  bool pass_replacement_ {};
 };
 
 class fake_llm_client final : public llm_client {
@@ -224,6 +281,102 @@ void blocked_step_can_replan() {
   require(result.value.steps.front().id == "replacement", "revised step is used");
   require(result.final_output == "{\"ok\":true}", "revised step output is returned");
   require(!events.empty(), "observer received events");
+}
+
+void reflection_gate_can_retry_step_output() {
+  namespace reflection = wuwe::agent::reflection;
+
+  auto planner = std::make_shared<static_planner>(std::vector<plan_step> {
+    {
+      .id = "answer",
+      .title = "Answer",
+    },
+  });
+  int calls = 0;
+  auto executor = std::make_shared<function_plan_executor>(
+    [&](const plan_step&, const plan_execution_context&) {
+      ++calls;
+      return plan_step_result::completed(calls == 1 ? "thin" : "good answer");
+    });
+  auto reflector = std::make_shared<reflection::rule_reflector>(reflection::rule_reflector_options {
+    .required_substrings = { "good" },
+  });
+  auto reflection_runner = std::make_shared<reflection::reflection_runner>(reflection::reflection_runner_options {
+    .reflector = reflector,
+  });
+  std::vector<plan_event_type> events;
+
+  plan_runner runner({
+    .planner = planner,
+    .executor = executor,
+    .policy = {
+      .max_step_attempts = 2,
+    },
+    .reflection = {
+      .runner = reflection_runner,
+    },
+    .observer = [&](const plan_event& event) {
+      events.push_back(event.type);
+    },
+  });
+
+  const auto result = runner.run({ .goal = "retry low-quality output" });
+  require(result.completed, "reflection retry plan completes");
+  require(calls == 2, "reflection retry reruns executor");
+  require(result.final_output == "good answer", "retried output becomes final output");
+  require(result.value.steps.front().metadata.at("reflection_action") == "pass",
+    "final reflection pass is recorded");
+  require(result.value.steps.front().metadata.at("reflection_issue_count") == "0",
+    "final reflection issue count is updated");
+  require(!result.value.steps.front().metadata.contains("reflection_issue"),
+    "stale reflection issue metadata is cleared");
+  require(std::count(events.begin(), events.end(), plan_event_type::step_reflected) == 2,
+    "reflection event is emitted for each attempt");
+}
+
+void reflection_gate_can_trigger_replanning() {
+  namespace reflection = wuwe::agent::reflection;
+
+  auto planner = std::make_shared<reflection_replanning_planner>();
+  auto executor = std::make_shared<function_plan_executor>(
+    [](const plan_step& step, const plan_execution_context&) {
+      if (step.id == "weak-answer") {
+        return plan_step_result::completed("cannot satisfy goal");
+      }
+      return plan_step_result::completed("replacement answer");
+    });
+  auto reflector = std::make_shared<fixed_reflector>(reflection::reflection_result::fail(
+    reflection::reflection_action::replan,
+    {
+      .severity = reflection::reflection_severity::error,
+      .code = "wrong_path",
+      .message = "The step result shows this plan path cannot satisfy the goal.",
+    },
+    0.2),
+    true);
+  auto reflection_runner = std::make_shared<reflection::reflection_runner>(reflection::reflection_runner_options {
+    .reflector = reflector,
+  });
+
+  plan_runner runner({
+    .planner = planner,
+    .executor = executor,
+    .policy = {
+      .max_iterations = 4,
+      .allow_replanning = true,
+    },
+    .reflection = {
+      .runner = reflection_runner,
+      .reflect_completed_steps = true,
+    },
+  });
+
+  const auto result = runner.run({ .goal = "recover through reflection" });
+  require(result.completed, "reflection replan plan completes after replacement passes");
+  require(planner->revised, "reflection replan calls planner revise_plan");
+  require(result.value.steps.front().id == "replacement", "replanned step replaces original");
+  require(reflector->last_request.subject_type == "plan_step_result",
+    "planning reflection builds a step-result request");
 }
 
 void invalid_plans_are_rejected_before_execution() {
@@ -677,6 +830,8 @@ int main() {
   tool_executor_invokes_provider();
   failed_step_can_retry();
   blocked_step_can_replan();
+  reflection_gate_can_retry_step_output();
+  reflection_gate_can_trigger_replanning();
   invalid_plans_are_rejected_before_execution();
   llm_planner_extracts_json_and_uses_tool_catalog();
   llm_planner_rejects_unknown_tools();

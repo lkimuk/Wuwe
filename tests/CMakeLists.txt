@@ -30,6 +30,15 @@ wuwe_copy_runtime_dlls(planning_tests)
 
 add_test(NAME planning_tests COMMAND planning_tests)
 
+add_executable(reflection_tests
+    reflection_tests.cpp
+)
+
+target_link_libraries(reflection_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(reflection_tests)
+
+add_test(NAME reflection_tests COMMAND reflection_tests)
+
 add_executable(mcp_tests
     mcp_tests.cpp
 )

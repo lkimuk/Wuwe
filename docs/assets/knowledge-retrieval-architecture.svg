@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">Wuwe Knowledge Retrieval Architecture</title>
+  <desc id="desc">Architecture diagram for Wuwe RAG and Knowledge Retrieval.</desc>
+  <style>
+    .bg { fill: #f7f8fb; }
+    .title { fill: #172033; font: 700 34px Arial, sans-serif; }
+    .subtitle { fill: #5a6478; font: 16px Arial, sans-serif; }
+    .lane { fill: #ffffff; stroke: #d8deea; stroke-width: 2; rx: 20; }
+    .lane-title { fill: #263149; font: 700 18px Arial, sans-serif; }
+    .box { fill: #ffffff; stroke: #c5cee0; stroke-width: 2; rx: 14; }
+    .core { fill: #eef5ff; stroke: #7ba7e8; }
+    .store { fill: #f1fbf5; stroke: #7cc795; }
+    .policy { fill: #fff7e8; stroke: #e2aa47; }
+    .obs { fill: #f5efff; stroke: #a282db; }
+    .label { fill: #1e293b; font: 700 15px Arial, sans-serif; }
+    .small { fill: #536078; font: 13px Arial, sans-serif; }
+    .arrow { stroke: #7b8498; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#7b8498"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1440" height="820"/>
+  <text x="72" y="62" class="title">Wuwe Knowledge Retrieval</text>
+  <text x="72" y="91" class="subtitle">Document loading, chunking, indexing, retrieval, rerank, grounding, and RAG service flow.</text>
+
+  <rect x="60" y="126" width="300" height="580" class="lane"/>
+  <text x="86" y="166" class="lane-title">Ingestion</text>
+  <rect x="88" y="194" width="244" height="82" class="box"/>
+  <text x="112" y="225" class="label">Loaders</text>
+  <text x="112" y="249" class="small">Files, directories, HTML, JSON</text>
+  <rect x="88" y="304" width="244" height="82" class="box"/>
+  <text x="112" y="335" class="label">Parsers</text>
+  <text x="112" y="359" class="small">Registry, Tika, source parsers</text>
+  <rect x="88" y="414" width="244" height="82" class="box"/>
+  <text x="112" y="445" class="label">Chunkers</text>
+  <text x="112" y="469" class="small">Token, markdown, code-aware</text>
+  <rect x="88" y="524" width="244" height="82" class="store"/>
+  <text x="112" y="555" class="label">Knowledge Store</text>
+  <text x="112" y="579" class="small">Documents, chunks, metadata</text>
+
+  <rect x="410" y="126" width="330" height="580" class="lane"/>
+  <text x="436" y="166" class="lane-title">Index Layer</text>
+  <rect x="442" y="210" width="266" height="92" class="store"/>
+  <text x="468" y="244" class="label">Embedding Adapter</text>
+  <text x="468" y="269" class="small">Local or remote vector provider</text>
+  <rect x="442" y="344" width="266" height="92" class="store"/>
+  <text x="468" y="378" class="label">Knowledge Index</text>
+  <text x="468" y="403" class="small">In-memory, SQLite, Qdrant, remote</text>
+  <rect x="442" y="478" width="266" height="92" class="policy"/>
+  <text x="468" y="512" class="label">Lifecycle Tasks</text>
+  <text x="468" y="537" class="small">Incremental ingest, rebuild, stale delete</text>
+
+  <rect x="790" y="126" width="330" height="580" class="lane"/>
+  <text x="816" y="166" class="lane-title">Retrieval Pipeline</text>
+  <rect x="822" y="184" width="266" height="76" class="core"/>
+  <text x="848" y="214" class="label">Query Rewrite</text>
+  <text x="848" y="238" class="small">Single or multi-query expansion</text>
+  <rect x="822" y="290" width="266" height="76" class="core"/>
+  <text x="848" y="320" class="label">Search</text>
+  <text x="848" y="344" class="small">Vector, lexical, hybrid, filters</text>
+  <rect x="822" y="396" width="266" height="76" class="core"/>
+  <text x="848" y="426" class="label">Rerank</text>
+  <text x="848" y="450" class="small">BM25, MMR, cross-encoder, cache</text>
+  <rect x="822" y="502" width="266" height="76" class="core"/>
+  <text x="848" y="532" class="label">Grounding</text>
+  <text x="848" y="556" class="small">Citations, context injection, tool result</text>
+
+  <rect x="1170" y="126" width="210" height="580" class="lane"/>
+  <text x="1196" y="166" class="lane-title">Consumers</text>
+  <rect x="1196" y="204" width="158" height="76" class="box"/>
+  <text x="1216" y="235" class="label">LLM Request</text>
+  <text x="1216" y="258" class="small">Cited context</text>
+  <rect x="1196" y="318" width="158" height="76" class="box"/>
+  <text x="1216" y="349" class="label">Tool Use</text>
+  <text x="1216" y="372" class="small">search_knowledge</text>
+  <rect x="1196" y="432" width="158" height="76" class="box"/>
+  <text x="1216" y="463" class="label">MCP</text>
+  <text x="1216" y="486" class="small">External clients</text>
+  <rect x="1196" y="546" width="158" height="76" class="obs"/>
+  <text x="1216" y="577" class="label">Observability</text>
+  <text x="1216" y="600" class="small">Events, metrics</text>
+
+  <path d="M210 276 L210 304" class="arrow"/>
+  <path d="M210 386 L210 414" class="arrow"/>
+  <path d="M210 496 L210 524" class="arrow"/>
+  <path d="M332 565 C376 565 398 524 442 524" class="arrow"/>
+  <path d="M708 390 L822 328" class="arrow"/>
+  <path d="M955 260 L955 290" class="arrow"/>
+  <path d="M955 366 L955 396" class="arrow"/>
+  <path d="M955 472 L955 502" class="arrow"/>
+  <path d="M1088 540 L1196 242" class="arrow"/>
+  <path d="M1088 540 L1196 356" class="arrow"/>
+  <path d="M1088 540 L1196 470" class="arrow"/>
+  <path d="M1088 540 L1196 584" class="arrow"/>
+</svg>

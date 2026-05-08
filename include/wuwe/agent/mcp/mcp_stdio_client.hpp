@@ -48,7 +48,7 @@ public:
     }
 
     return request("initialize", {
-      { "protocolVersion", default_protocol_version },
+      { "protocolVersion", std::string(default_protocol_version) },
       { "clientInfo", std::move(client_info) },
       { "capabilities", std::move(capabilities) },
     });

@@ -1,10 +1,3 @@
-#include <wuwe/agent/mcp/mcp_async.hpp>
-#include <wuwe/agent/mcp/mcp_host_runtime.hpp>
-#include <wuwe/agent/mcp/mcp_host_telemetry.hpp>
-#include <wuwe/agent/mcp/mcp_gateway.hpp>
-#include <wuwe/agent/mcp/mcp_http_listener.hpp>
-#include <wuwe/agent/mcp/mcp_process_client.hpp>
-#include <wuwe/agent/mcp/mcp_server.hpp>
 #include <wuwe/wuwe.h>
 
 int main() {

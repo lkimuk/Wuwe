@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">Wuwe Planning Runtime Architecture</title>
+  <desc id="desc">Architecture diagram for Wuwe Planning runtime.</desc>
+  <style>
+    .bg { fill: #f7f8fb; }
+    .title { fill: #172033; font: 700 34px Arial, sans-serif; }
+    .subtitle { fill: #5a6478; font: 16px Arial, sans-serif; }
+    .lane { fill: #ffffff; stroke: #d8deea; stroke-width: 2; rx: 20; }
+    .lane-title { fill: #263149; font: 700 18px Arial, sans-serif; }
+    .box { fill: #ffffff; stroke: #c5cee0; stroke-width: 2; rx: 14; }
+    .contract { fill: #eef5ff; stroke: #7ba7e8; }
+    .runtime { fill: #f1fbf5; stroke: #7cc795; }
+    .control { fill: #fff7e8; stroke: #e2aa47; }
+    .quality { fill: #f5efff; stroke: #a282db; }
+    .label { fill: #1e293b; font: 700 15px Arial, sans-serif; }
+    .small { fill: #536078; font: 13px Arial, sans-serif; }
+    .arrow { stroke: #7b8498; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#7b8498"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1440" height="820"/>
+  <text x="72" y="62" class="title">Wuwe Planning Runtime</text>
+  <text x="72" y="91" class="subtitle">Goal decomposition, plan contracts, step execution, retry, replan, checkpoint, approval, and trace.</text>
+
+  <rect x="60" y="126" width="300" height="580" class="lane"/>
+  <text x="86" y="166" class="lane-title">Plan Creation</text>
+  <rect x="88" y="206" width="244" height="82" class="box"/>
+  <text x="112" y="237" class="label">User Goal</text>
+  <text x="112" y="261" class="small">Task, context, constraints</text>
+  <rect x="88" y="326" width="244" height="82" class="contract"/>
+  <text x="112" y="357" class="label">Planner</text>
+  <text x="112" y="381" class="small">Static or LLM-backed generator</text>
+  <rect x="88" y="446" width="244" height="82" class="contract"/>
+  <text x="112" y="477" class="label">Plan Contract</text>
+  <text x="112" y="501" class="small">Steps, dependencies, policy, IO</text>
+
+  <rect x="410" y="126" width="360" height="580" class="lane"/>
+  <text x="436" y="166" class="lane-title">Runtime Loop</text>
+  <rect x="442" y="190" width="296" height="78" class="runtime"/>
+  <text x="468" y="221" class="label">Plan Runner</text>
+  <text x="468" y="245" class="small">Owns lifecycle, status, final output</text>
+  <rect x="442" y="300" width="296" height="78" class="runtime"/>
+  <text x="468" y="331" class="label">Graph Scheduler</text>
+  <text x="468" y="355" class="small">Ready steps, dependencies, parallel limits</text>
+  <rect x="442" y="410" width="296" height="78" class="control"/>
+  <text x="468" y="441" class="label">Approval and Policy</text>
+  <text x="468" y="465" class="small">Human gate, retry budget, timeout</text>
+  <rect x="442" y="520" width="296" height="78" class="control"/>
+  <text x="468" y="551" class="label">Recovery</text>
+  <text x="468" y="575" class="small">Retry, replan, block, cancel</text>
+
+  <rect x="820" y="126" width="300" height="580" class="lane"/>
+  <text x="846" y="166" class="lane-title">Execution</text>
+  <rect x="850" y="204" width="240" height="76" class="box"/>
+  <text x="874" y="234" class="label">Executors</text>
+  <text x="874" y="258" class="small">Function, tool, agent, composite</text>
+  <rect x="850" y="320" width="240" height="76" class="box"/>
+  <text x="874" y="350" class="label">Step State</text>
+  <text x="874" y="374" class="small">Output, error, artifacts, metadata</text>
+  <rect x="850" y="436" width="240" height="76" class="quality"/>
+  <text x="874" y="466" class="label">Reflection Gate</text>
+  <text x="874" y="490" class="small">Pass, revise, retry, replan, block</text>
+  <rect x="850" y="552" width="240" height="76" class="runtime"/>
+  <text x="874" y="582" class="label">Checkpoint Store</text>
+  <text x="874" y="606" class="small">In-memory or JSON file persistence</text>
+
+  <rect x="1170" y="126" width="210" height="580" class="lane"/>
+  <text x="1196" y="166" class="lane-title">Integrations</text>
+  <rect x="1196" y="208" width="158" height="72" class="box"/>
+  <text x="1218" y="238" class="label">Tool Use</text>
+  <text x="1218" y="260" class="small">llm_tool_provider</text>
+  <rect x="1196" y="318" width="158" height="72" class="box"/>
+  <text x="1218" y="348" class="label">MCP</text>
+  <text x="1218" y="370" class="small">External tools</text>
+  <rect x="1196" y="428" width="158" height="72" class="box"/>
+  <text x="1218" y="458" class="label">RAG</text>
+  <text x="1218" y="480" class="small">Knowledge steps</text>
+  <rect x="1196" y="538" width="158" height="72" class="quality"/>
+  <text x="1218" y="568" class="label">Trace</text>
+  <text x="1218" y="590" class="small">Events, spans, decisions</text>
+
+  <path d="M210 288 L210 326" class="arrow"/>
+  <path d="M210 408 L210 446" class="arrow"/>
+  <path d="M332 488 C380 488 394 229 442 229" class="arrow"/>
+  <path d="M590 268 L590 300" class="arrow"/>
+  <path d="M590 378 L590 410" class="arrow"/>
+  <path d="M590 488 L590 520" class="arrow"/>
+  <path d="M738 339 L850 242" class="arrow"/>
+  <path d="M970 280 L970 320" class="arrow"/>
+  <path d="M970 396 L970 436" class="arrow"/>
+  <path d="M970 512 L970 552" class="arrow"/>
+  <path d="M850 474 C794 474 794 559 738 559" class="arrow"/>
+  <path d="M1090 242 L1196 244" class="arrow"/>
+  <path d="M1090 242 L1196 354" class="arrow"/>
+  <path d="M1090 242 L1196 464" class="arrow"/>
+  <path d="M1090 590 L1196 574" class="arrow"/>
+</svg>

@@ -79,15 +79,46 @@ generation, plan validation, function and tool executors, retry policy,
 replanning hooks, observer events, JSON serialization for checkpoints,
 checkpoint resume, single-run step budgets, cancellation checks, approval gates,
 plan stores, trace events, parallel ready-step execution, timeout marking,
-typed JSON I/O, artifacts, agent handoff executors, policy hooks, and optional
-memory recording. Planning lives independently from flow, runner, memory, MCP,
-and RAG modules, so existing behavior is unchanged unless an application
-explicitly creates a `plan_runner`. The Planning core is complete for embedded
-agent runtimes; deployment-platform work such as distributed workers, leases,
+typed JSON I/O, artifacts, agent handoff executors, policy hooks, optional
+memory recording, and an optional Reflection gate for retry/revise/replan/block
+closed loops. Planning lives independently from flow, runner, memory, MCP, and
+RAG modules, so existing behavior is unchanged unless an application explicitly
+creates a `plan_runner`. The Planning core is complete for embedded agent
+runtimes; deployment-platform work such as distributed workers, leases,
 database-backed stores, external approval systems, and telemetry exporters is
 tracked in the Planning roadmap.
 
 See [Planning](docs/planning.md) for API boundaries and extension points.
+
+## Observability
+
+Wuwe includes a small shared observability contract in
+`<wuwe/agent/core/observability.hpp>`. Modules can publish normalized
+`agent_event` records to in-memory, fanout, or JSONL sinks. Knowledge Retrieval
+and MCP host telemetry currently provide adapters into this shared sink while
+keeping their module-specific event types.
+
+## Reflection
+
+Wuwe includes a Reflection layer for evaluating existing outputs, tool results,
+plan step results, RAG answers, and final answers against structured rubrics.
+It provides deterministic rule checks, LLM-backed reflection, composite
+reflection, policy action mapping, runner events, JSON codecs, and in-memory or
+file-backed reflection history. Reflection is independent from Planning, but
+Planning can now consume its action recommendations through `plan_reflection_gate`
+for retry, revise, replan, block, or escalation flows.
+
+The real LLM example is `reflection_example`:
+
+```powershell
+$env:OPENROUTER_API_KEY = "your_api_key"
+$env:OPENROUTER_CHAT_MODEL = "openai/gpt-oss-120b:free"
+cmake --build build-mcp --config Debug --target reflection_example
+.\build-mcp\examples\Debug\reflection_example.exe
+```
+
+See [Reflection](docs/reflection.md) for API boundaries, current observability,
+and future adapters.
 
 ## Model Context Protocol
 

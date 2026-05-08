@@ -18,6 +18,7 @@
 
 #include <wuwe/agent/mcp/mcp_protocol.hpp>
 #include <wuwe/agent/mcp/mcp_lifecycle.hpp>
+#include <wuwe/agent/mcp/mcp_pagination.hpp>
 #include <wuwe/agent/mcp/mcp_security.hpp>
 #include <wuwe/agent/mcp/mcp_types.hpp>
 #include <wuwe/agent/tools/tool.hpp>
@@ -573,7 +574,7 @@ private:
 
   json initialize_result() const {
     return {
-      { "protocolVersion", default_protocol_version },
+      { "protocolVersion", std::string(default_protocol_version) },
       { "capabilities", {
           { "tools", { { "listChanged", true } } },
           { "resources", { { "subscribe", true }, { "listChanged", true } } },
@@ -997,43 +998,8 @@ private:
     return output;
   }
 
-  json paginate_list_result(const char* key, json items, const json& params) const {
-    if (list_page_size_ == 0 || items.size() <= list_page_size_) {
-      return { { key, std::move(items) } };
-    }
-
-    const auto start = cursor_offset(params);
-    json page = json::array();
-    std::size_t index = start;
-    while (index < items.size() && page.size() < list_page_size_) {
-      page.push_back(std::move(items[index]));
-      ++index;
-    }
-
-    json result { { key, std::move(page) } };
-    if (index < items.size()) {
-      result["nextCursor"] = std::to_string(index);
-    }
-    return result;
-  }
-
-  static std::size_t cursor_offset(const json& params) {
-    if (!params.is_object()) {
-      return 0;
-    }
-    const auto cursor = params.find("cursor");
-    if (cursor == params.end() || !cursor->is_string()) {
-      return 0;
-    }
-
-    std::size_t result = 0;
-    for (const auto ch : cursor->get<std::string>()) {
-      if (ch < '0' || ch > '9') {
-        return 0;
-      }
-      result = result * 10 + static_cast<std::size_t>(ch - '0');
-    }
-    return result;
+  json paginate_list_result(std::string_view key, json items, const json& params) const {
+    return mcp_list_paginator(list_page_size_).page(key, std::move(items), params);
   }
 
   static std::optional<std::string> resource_uri_param(const json&, const json& params) {

@@ -3,6 +3,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -10,7 +11,7 @@ namespace wuwe::agent::mcp {
 
 using json = nlohmann::json;
 
-inline constexpr const char* default_protocol_version = "2024-11-05";
+inline constexpr std::string_view default_protocol_version = "2024-11-05";
 
 enum class mcp_error_code : int {
   parse_error = -32700,

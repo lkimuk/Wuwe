@@ -1,5 +1,15 @@
 # Knowledge Retrieval
 
+Use `<wuwe/agent/knowledge/knowledge.hpp>` as the module entry header when you
+want the full RAG / Knowledge Retrieval surface. Individual headers remain
+available for smaller compile units.
+
+Async task state and progress contracts live in `knowledge_task.hpp`.
+Knowledge events can also be bridged into the shared
+`wuwe::agent::observability::event_sink` through `agent_knowledge_event_sink`.
+
+![Wuwe Knowledge Retrieval Architecture](assets/knowledge-retrieval-architecture.svg)
+
 `wuwe::agent::knowledge` provides a standalone retrieval layer for external
 documents. It is organized around a local production workflow:
 

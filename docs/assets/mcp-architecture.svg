@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">Wuwe MCP Runtime Architecture</title>
+  <desc id="desc">Architecture diagram showing MCP clients, transports, server registry, protocol handlers, security policy, lifecycle, host runtime, and telemetry.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { fill: #142033; font-family: "Segoe UI", Arial, sans-serif; font-size: 30px; font-weight: 760; }
+      .label-lg { fill: #10203c; font-family: "Segoe UI", Arial, sans-serif; font-size: 24px; font-weight: 780; }
+      .label { fill: #172033; font-family: "Segoe UI", Arial, sans-serif; font-size: 17px; font-weight: 720; }
+      .small { fill: #4f5d72; font-family: "Segoe UI", Arial, sans-serif; font-size: 13.5px; }
+      .code { fill: #2b3446; font-family: Consolas, "Courier New", monospace; font-size: 13px; }
+      .shell { fill: #ffffff; stroke: #d8dfeb; stroke-width: 1.5; }
+      .runtime { fill: #edf4ff; stroke: #2e6cdf; stroke-width: 3; }
+      .store { fill: #ecf9f1; stroke: #2c9b60; stroke-width: 2.2; }
+      .control { fill: #fff3f3; stroke: #dc7474; stroke-width: 2; }
+      .output { fill: #fff7e7; stroke: #d89122; stroke-width: 2; }
+      .subtle { fill: #f3f5f9; stroke: #cfd7e6; stroke-width: 1.4; }
+      .main-arrow { stroke: #2e6cdf; stroke-width: 4.2; fill: none; marker-end: url(#arrow-main); }
+      .thin { stroke: #93a0b5; stroke-width: 1.9; fill: none; marker-end: url(#arrow-thin); }
+      .control-line { stroke: #dc7474; stroke-width: 2; fill: none; marker-end: url(#arrow-control); }
+    </style>
+    <marker id="arrow-main" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#2e6cdf"/></marker>
+    <marker id="arrow-thin" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#93a0b5"/></marker>
+    <marker id="arrow-control" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#dc7474"/></marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%"><feDropShadow dx="0" dy="9" stdDeviation="11" flood-color="#1f2a44" flood-opacity=".12"/></filter>
+  </defs>
+  <rect class="bg" width="1440" height="820"/>
+  <text class="title" x="72" y="60">Wuwe MCP Runtime</text>
+  <rect class="shell" x="64" y="110" width="1312" height="560" rx="24"/>
+
+  <rect class="subtle" x="96" y="170" width="230" height="138" rx="16"/>
+  <text class="label" x="126" y="208">MCP Clients</text>
+  <text class="small" x="126" y="238">Codex / Desktop Host</text>
+  <text class="small" x="126" y="262">JSON-RPC requests</text>
+  <text class="code" x="126" y="286">tools/list · tools/call</text>
+
+  <rect class="runtime" x="410" y="145" width="510" height="305" rx="24" filter="url(#shadow)"/>
+  <text class="label-lg" x="452" y="190">mcp_server</text>
+  <text class="small" x="454" y="220">protocol router and registry facade</text>
+
+  <rect class="subtle" x="448" y="258" width="128" height="72" rx="14"/>
+  <text class="label" x="474" y="289">Tools</text>
+  <text class="code" x="474" y="312">call</text>
+  <rect class="subtle" x="606" y="258" width="146" height="72" rx="14"/>
+  <text class="label" x="628" y="289">Resources</text>
+  <text class="code" x="628" y="312">read</text>
+  <rect class="subtle" x="782" y="258" width="104" height="72" rx="14"/>
+  <text class="label" x="802" y="289">Prompts</text>
+  <text class="code" x="802" y="312">get</text>
+
+  <rect class="store" x="450" y="358" width="194" height="58" rx="14"/>
+  <text class="label" x="474" y="392">Request Lifecycle</text>
+  <rect class="store" x="674" y="358" width="190" height="58" rx="14"/>
+  <text class="label" x="704" y="392">Pagination</text>
+
+  <rect class="subtle" x="96" y="410" width="230" height="122" rx="16"/>
+  <text class="label" x="126" y="448">Transports</text>
+  <text class="small" x="126" y="477">stdio · process · HTTP</text>
+  <text class="small" x="126" y="501">Content-Length / SSE</text>
+
+  <rect class="control" x="995" y="155" width="270" height="134" rx="18"/>
+  <text class="label" x="1030" y="195">Security</text>
+  <text class="small" x="1030" y="224">auth context</text>
+  <text class="small" x="1030" y="248">access policy · audit sink</text>
+
+  <rect class="output" x="995" y="335" width="270" height="142" rx="18"/>
+  <text class="label" x="1030" y="375">Host Runtime</text>
+  <text class="small" x="1030" y="404">multi-server lifecycle</text>
+  <text class="small" x="1030" y="428">restart policy · health check</text>
+  <text class="code" x="1030" y="452">mcp_host_runtime</text>
+
+  <rect class="subtle" x="410" y="525" width="510" height="92" rx="18"/>
+  <text class="label" x="452" y="562">Sampling / Elicitation / Notifications</text>
+  <text class="small" x="452" y="592">forward client requests and emit progress, logs, and list-change notifications</text>
+
+  <rect class="store" x="995" y="535" width="270" height="82" rx="18"/>
+  <text class="label" x="1030" y="570">Observability</text>
+  <text class="small" x="1030" y="598">module telemetry + agent_event sink</text>
+
+  <path class="main-arrow" d="M326 240 L400 240"/>
+  <path class="main-arrow" d="M326 470 L400 350"/>
+  <path class="thin" d="M920 220 L985 220"/>
+  <path class="thin" d="M920 390 L985 390"/>
+  <path class="thin" d="M665 450 L665 515"/>
+  <path class="control-line" d="M1130 289 L1130 326"/>
+  <path class="thin" d="M1130 477 L1130 526"/>
+</svg>

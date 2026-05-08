@@ -90,7 +90,7 @@ void test_initialize_records_client_info_and_capabilities() {
     }
   })"));
 
-  require(response["result"]["protocolVersion"] == wuwe::agent::mcp::default_protocol_version,
+  require(response["result"]["protocolVersion"] == std::string(wuwe::agent::mcp::default_protocol_version),
     "initialize should return server protocol version");
   require(server.client_info().name == "test-host",
     "initialize should record client name");

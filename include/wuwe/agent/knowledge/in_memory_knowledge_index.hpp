@@ -2,15 +2,13 @@
 #define WUWE_AGENT_KNOWLEDGE_IN_MEMORY_KNOWLEDGE_INDEX_HPP
 
 #include <algorithm>
-#include <cctype>
 #include <mutex>
-#include <sstream>
 #include <string>
-#include <unordered_set>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include <wuwe/agent/core/text_search.hpp>
 #include <wuwe/agent/knowledge/knowledge_index.hpp>
 #include <wuwe/agent/memory/vector_memory_index.hpp>
 
@@ -18,45 +16,13 @@ namespace wuwe::agent::knowledge {
 
 namespace detail {
 
-inline std::unordered_set<std::string> tokenize_knowledge_text(const std::string& text) {
-  std::unordered_set<std::string> result;
-  std::string current;
-  for (const unsigned char ch : text) {
-    if (std::isalnum(ch)) {
-      current.push_back(static_cast<char>(std::tolower(ch)));
-    }
-    else if (!current.empty()) {
-      result.insert(std::move(current));
-      current.clear();
-    }
-  }
-  if (!current.empty()) {
-    result.insert(std::move(current));
-  }
-  return result;
-}
-
 inline double lexical_knowledge_score(const std::string& query, const knowledge_chunk& chunk) {
   if (query.empty()) {
     return 0.0;
   }
-
-  const auto query_tokens = tokenize_knowledge_text(query);
-  if (query_tokens.empty()) {
-    return 0.0;
-  }
-
-  const auto content_tokens = tokenize_knowledge_text(
+  return ::wuwe::agent::text::token_overlap_ratio(
+    query,
     chunk.title + " " + chunk.content + " " + chunk.source_uri);
-
-  std::size_t matches = 0;
-  for (const auto& token : query_tokens) {
-    if (content_tokens.contains(token)) {
-      ++matches;
-    }
-  }
-
-  return static_cast<double>(matches) / static_cast<double>(query_tokens.size());
 }
 
 } // namespace detail

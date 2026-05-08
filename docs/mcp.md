@@ -1,5 +1,16 @@
 # MCP Module
 
+Use `<wuwe/agent/mcp/mcp.hpp>` as the module entry header when you want the full
+Model Context Protocol surface. Individual headers remain available for smaller
+compile units.
+
+MCP host telemetry can publish to the shared
+`wuwe::agent::observability::event_sink` through `agent_mcp_host_event_sink`.
+List pagination lives in `mcp_pagination.hpp`, keeping the server runtime focused
+on protocol handling.
+
+![Wuwe MCP Runtime Architecture](assets/mcp-architecture.svg)
+
 `wuwe::agent::mcp` exposes Wuwe tools through a small Model Context Protocol
 server surface. The module is intentionally independent from memory and RAG:
 anything that implements the existing provider shape can be registered.

@@ -1,5 +1,13 @@
 # Memory Management
 
+Use `<wuwe/agent/memory/memory.hpp>` as the module entry header when you want
+the full Memory Management surface. Individual headers remain available for
+smaller compile units.
+
+Lifecycle and audit result types live in `memory_lifecycle.hpp`; `memory_context`
+keeps the runtime API and delegates those shared contracts to the smaller
+header.
+
 本文档说明 Wuwe Agent Framework 当前的 Memory Management 能力、API 边界和生产使用方式。部署细节见 [memory-deployment.md](memory-deployment.md)。
 
 ## 架构图

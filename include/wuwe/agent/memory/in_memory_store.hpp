@@ -3,67 +3,31 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cctype>
 #include <mutex>
-#include <sstream>
 #include <string>
-#include <unordered_set>
 #include <utility>
 
+#include <wuwe/agent/core/text_search.hpp>
 #include <wuwe/agent/memory/memory_store.hpp>
 
 namespace wuwe::agent::memory {
 
 namespace detail {
 
-inline std::string lower_copy(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
-}
-
-inline std::unordered_set<std::string> tokenize(const std::string& text) {
-  std::unordered_set<std::string> result;
-  std::string current;
-
-  for (const unsigned char c : text) {
-    if (std::isalnum(c)) {
-      current.push_back(static_cast<char>(std::tolower(c)));
-    }
-    else if (!current.empty()) {
-      result.insert(std::move(current));
-      current.clear();
-    }
-  }
-
-  if (!current.empty()) {
-    result.insert(std::move(current));
-  }
-
-  return result;
-}
-
 inline double lexical_score(const std::string& query, const memory_record& record) {
   if (query.empty()) {
     return record.score;
   }
 
-  const std::string query_lower = lower_copy(query);
-  const std::string content_lower = lower_copy(record.content + " " + record.summary);
+  const auto content = record.content + " " + record.summary;
 
   double score = record.score;
-  if (content_lower.find(query_lower) != std::string::npos) {
+  if (::wuwe::agent::text::contains_ascii_case_insensitive(content, query)) {
     score += 10.0;
   }
 
-  const auto query_tokens = tokenize(query);
-  const auto content_tokens = tokenize(record.content + " " + record.summary);
-  for (const auto& token : query_tokens) {
-    if (content_tokens.contains(token)) {
-      score += 1.0;
-    }
-  }
+  score += ::wuwe::agent::text::ascii_token_set(query)
+             .count_matches(::wuwe::agent::text::ascii_token_set(content));
 
   return score;
 }

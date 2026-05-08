@@ -1,0 +1,44 @@
+#ifndef WUWE_AGENT_KNOWLEDGE_HPP
+#define WUWE_AGENT_KNOWLEDGE_HPP
+
+#include <wuwe/agent/knowledge/code_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/directory_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/file_knowledge_index.hpp>
+#include <wuwe/agent/knowledge/file_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/file_knowledge_store.hpp>
+#include <wuwe/agent/knowledge/in_memory_knowledge_index.hpp>
+#include <wuwe/agent/knowledge/in_memory_knowledge_store.hpp>
+#include <wuwe/agent/knowledge/knowledge_benchmark.hpp>
+#include <wuwe/agent/knowledge/knowledge_cache.hpp>
+#include <wuwe/agent/knowledge/knowledge_context.hpp>
+#include <wuwe/agent/knowledge/knowledge_document_enricher.hpp>
+#include <wuwe/agent/knowledge/knowledge_document_loader.hpp>
+#include <wuwe/agent/knowledge/knowledge_eval.hpp>
+#include <wuwe/agent/knowledge/knowledge_grounding.hpp>
+#include <wuwe/agent/knowledge/knowledge_hash.hpp>
+#include <wuwe/agent/knowledge/knowledge_index.hpp>
+#include <wuwe/agent/knowledge/knowledge_metrics.hpp>
+#include <wuwe/agent/knowledge/knowledge_migration.hpp>
+#include <wuwe/agent/knowledge/knowledge_observability.hpp>
+#include <wuwe/agent/knowledge/knowledge_parser_registry.hpp>
+#include <wuwe/agent/knowledge/knowledge_path.hpp>
+#include <wuwe/agent/knowledge/knowledge_pipeline.hpp>
+#include <wuwe/agent/knowledge/knowledge_pipeline_config.hpp>
+#include <wuwe/agent/knowledge/knowledge_query_rewriter.hpp>
+#include <wuwe/agent/knowledge/knowledge_rag_service.hpp>
+#include <wuwe/agent/knowledge/knowledge_record.hpp>
+#include <wuwe/agent/knowledge/knowledge_reranker.hpp>
+#include <wuwe/agent/knowledge/knowledge_result_processor.hpp>
+#include <wuwe/agent/knowledge/knowledge_retriever.hpp>
+#include <wuwe/agent/knowledge/knowledge_splitter.hpp>
+#include <wuwe/agent/knowledge/knowledge_store.hpp>
+#include <wuwe/agent/knowledge/knowledge_task.hpp>
+#include <wuwe/agent/knowledge/knowledge_text.hpp>
+#include <wuwe/agent/knowledge/knowledge_tools.hpp>
+#include <wuwe/agent/knowledge/qdrant_knowledge_index.hpp>
+#include <wuwe/agent/knowledge/remote_vector_knowledge_index.hpp>
+#include <wuwe/agent/knowledge/sqlite_knowledge_index.hpp>
+#include <wuwe/agent/knowledge/structured_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/tika_knowledge_loader.hpp>
+
+#endif // WUWE_AGENT_KNOWLEDGE_HPP
