@@ -16,6 +16,7 @@
 #include <wuwe/agent/knowledge/knowledge_eval.hpp>
 #include <wuwe/agent/knowledge/knowledge_grounding.hpp>
 #include <wuwe/agent/knowledge/knowledge_hash.hpp>
+#include <wuwe/agent/knowledge/knowledge_html.hpp>
 #include <wuwe/agent/knowledge/knowledge_index.hpp>
 #include <wuwe/agent/knowledge/knowledge_metrics.hpp>
 #include <wuwe/agent/knowledge/knowledge_migration.hpp>
@@ -40,5 +41,6 @@
 #include <wuwe/agent/knowledge/sqlite_knowledge_index.hpp>
 #include <wuwe/agent/knowledge/structured_knowledge_loader.hpp>
 #include <wuwe/agent/knowledge/tika_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/url_knowledge_loader.hpp>
 
 #endif // WUWE_AGENT_KNOWLEDGE_HPP

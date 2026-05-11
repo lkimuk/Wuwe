@@ -14,6 +14,7 @@
 
 #include <wuwe/agent/knowledge/knowledge_record.hpp>
 #include <wuwe/agent/knowledge/knowledge_hash.hpp>
+#include <wuwe/agent/knowledge/knowledge_html.hpp>
 #include <wuwe/agent/knowledge/knowledge_path.hpp>
 #include <wuwe/agent/knowledge/knowledge_text.hpp>
 
@@ -47,7 +48,7 @@ public:
     const auto extension = lowercase_extension(path);
     const auto raw_content = content.str();
     if (extension_is_html(extension) && options.extract_html_text) {
-      document.content = html_to_text(raw_content);
+      document.content = html_text_extractor::to_text(raw_content);
     }
     else if (extension_is_rtf(extension) && options.extract_rtf_text) {
       document.content = rtf_to_text(raw_content);
@@ -102,96 +103,6 @@ private:
 
   static bool extension_is_rtf(const std::string& extension) {
     return extension == ".rtf";
-  }
-
-  static bool starts_with_tag(
-    const std::string& text,
-    std::size_t offset,
-    std::string_view tag) {
-    if (offset + tag.size() > text.size()) {
-      return false;
-    }
-    for (std::size_t index = 0; index < tag.size(); ++index) {
-      const auto lhs = static_cast<unsigned char>(text[offset + index]);
-      const auto rhs = static_cast<unsigned char>(tag[index]);
-      if (std::tolower(lhs) != std::tolower(rhs)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  static std::string decode_html_entity(std::string_view entity) {
-    if (entity == "amp") {
-      return "&";
-    }
-    if (entity == "lt") {
-      return "<";
-    }
-    if (entity == "gt") {
-      return ">";
-    }
-    if (entity == "quot") {
-      return "\"";
-    }
-    if (entity == "apos") {
-      return "'";
-    }
-    if (entity == "nbsp") {
-      return " ";
-    }
-    return "&" + std::string(entity) + ";";
-  }
-
-  static void append_space(std::string& output) {
-    if (!output.empty() && output.back() != ' ' && output.back() != '\n') {
-      output.push_back(' ');
-    }
-  }
-
-  static std::string html_to_text(const std::string& html) {
-    std::string output;
-    output.reserve(html.size());
-
-    for (std::size_t index = 0; index < html.size();) {
-      if (starts_with_tag(html, index, "<script")) {
-        const auto end = text_detail::find_case_insensitive(html, "</script>", index);
-        index = end == std::string::npos ? html.size() : end + 9;
-        append_space(output);
-        continue;
-      }
-      if (starts_with_tag(html, index, "<style")) {
-        const auto end = text_detail::find_case_insensitive(html, "</style>", index);
-        index = end == std::string::npos ? html.size() : end + 8;
-        append_space(output);
-        continue;
-      }
-
-      if (html[index] == '<') {
-        const auto end = html.find('>', index + 1);
-        index = end == std::string::npos ? html.size() : end + 1;
-        append_space(output);
-        continue;
-      }
-
-      if (html[index] == '&') {
-        const auto end = html.find(';', index + 1);
-        if (end != std::string::npos && end - index <= 12) {
-          output += decode_html_entity(std::string_view(html).substr(index + 1, end - index - 1));
-          index = end + 1;
-          continue;
-        }
-      }
-
-      if (std::isspace(static_cast<unsigned char>(html[index]))) {
-        append_space(output);
-      }
-      else {
-        output.push_back(html[index]);
-      }
-      ++index;
-    }
-    return output;
   }
 
   static int hex_value(char ch) {

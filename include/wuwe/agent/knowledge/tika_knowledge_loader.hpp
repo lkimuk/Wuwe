@@ -14,6 +14,7 @@
 
 #include <wuwe/agent/knowledge/file_knowledge_loader.hpp>
 #include <wuwe/agent/knowledge/knowledge_hash.hpp>
+#include <wuwe/agent/knowledge/knowledge_html.hpp>
 #include <wuwe/agent/knowledge/knowledge_path.hpp>
 #include <wuwe/agent/knowledge/knowledge_record.hpp>
 #include <wuwe/agent/knowledge/knowledge_text.hpp>
@@ -80,7 +81,7 @@ public:
         "tika knowledge loader failed to parse file: " + response.error_code.message());
     }
 
-    std::string content = sanitize_utf8(response.body);
+    std::string content = utf8_sanitizer::sanitize(response.body);
     std::map<std::string, std::string> parsed_metadata;
     if (extension == ".pdf" && config_.extract_pdf_pages) {
       const auto paged = parse_pdf_pages(body, content_type);
@@ -208,7 +209,7 @@ private:
       if (div_end == std::string::npos) {
         break;
       }
-      auto text = html_to_text(html.substr(tag_end + 1, div_end - tag_end - 1));
+      auto text = html_text_extractor::to_text(html.substr(tag_end + 1, div_end - tag_end - 1));
       if (!text_detail::trim_copy(text).empty()) {
         pages.push_back(std::move(text));
       }
@@ -227,108 +228,9 @@ private:
       output << pages[index];
     }
     return {
-      .content = sanitize_utf8(output.str()),
+      .content = utf8_sanitizer::sanitize(output.str()),
       .page_count = pages.size(),
     };
-  }
-
-  static std::string html_to_text(std::string html) {
-    html = text_detail::decode_common_html_entities(html);
-
-    std::ostringstream output;
-    bool previous_space = false;
-    for (std::size_t index = 0; index < html.size(); ++index) {
-      const auto ch = html[index];
-      if (ch == '<') {
-        const auto tag_end = html.find('>', index);
-        if (tag_end == std::string::npos) {
-          break;
-        }
-        const auto tag = text_detail::lowercase_ascii(html.substr(index, tag_end - index + 1));
-        if (tag.find("<br") == 0 || tag.find("</p") == 0 || tag.find("</div") == 0) {
-          output << '\n';
-          previous_space = false;
-        }
-        else if (!previous_space) {
-          output << ' ';
-          previous_space = true;
-        }
-        index = tag_end;
-        continue;
-      }
-      if (ch == '\r') {
-        continue;
-      }
-      if (ch == '\n') {
-        output << '\n';
-        previous_space = false;
-        continue;
-      }
-      if (std::isspace(static_cast<unsigned char>(ch))) {
-        if (!previous_space) {
-          output << ' ';
-          previous_space = true;
-        }
-        continue;
-      }
-      output << ch;
-      previous_space = false;
-    }
-    return output.str();
-  }
-
-  static std::string sanitize_utf8(const std::string& text) {
-    std::string output;
-    output.reserve(text.size());
-
-    for (std::size_t index = 0; index < text.size();) {
-      const auto byte = static_cast<unsigned char>(text[index]);
-      if (byte < 0x80) {
-        output.push_back(text[index++]);
-        continue;
-      }
-
-      std::size_t length = 0;
-      if ((byte & 0xE0) == 0xC0) {
-        length = 2;
-      }
-      else if ((byte & 0xF0) == 0xE0) {
-        length = 3;
-      }
-      else if ((byte & 0xF8) == 0xF0) {
-        length = 4;
-      }
-      else {
-        output.push_back('?');
-        ++index;
-        continue;
-      }
-
-      if (index + length > text.size()) {
-        output.push_back('?');
-        break;
-      }
-
-      bool valid = true;
-      for (std::size_t offset = 1; offset < length; ++offset) {
-        const auto continuation = static_cast<unsigned char>(text[index + offset]);
-        if ((continuation & 0xC0) != 0x80) {
-          valid = false;
-          break;
-        }
-      }
-
-      if (!valid) {
-        output.push_back('?');
-        ++index;
-        continue;
-      }
-
-      output.append(text, index, length);
-      index += length;
-    }
-
-    return output;
   }
 
   std::string endpoint() const {

@@ -33,6 +33,8 @@ struct llm_client_config {
   int timeout { 30000 };
   int max_retries { 2 };
   int retry_backoff_ms { 600 };
+  std::string referer_url { "https://github.com/lkimuk/gmp" };
+  std::string app_title { "Wuwe" };
 };
 
 using llm_config = llm_client_config;

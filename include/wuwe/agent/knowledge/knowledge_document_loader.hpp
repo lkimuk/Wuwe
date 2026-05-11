@@ -12,6 +12,7 @@
 #include <wuwe/agent/knowledge/knowledge_parser_registry.hpp>
 #include <wuwe/agent/knowledge/knowledge_path.hpp>
 #include <wuwe/agent/knowledge/knowledge_document_enricher.hpp>
+#include <wuwe/agent/knowledge/url_knowledge_loader.hpp>
 
 namespace wuwe::agent::knowledge {
 
@@ -31,8 +32,10 @@ inline std::string sanitize_document_id(std::string value) {
 
 class knowledge_document_loader {
 public:
-  explicit knowledge_document_loader(knowledge_parser_registry registry)
-      : registry_(std::move(registry)) {
+  explicit knowledge_document_loader(
+    knowledge_parser_registry registry,
+    std::shared_ptr<url_knowledge_loader> url_loader = std::make_shared<url_knowledge_loader>())
+      : registry_(std::move(registry)), url_loader_(std::move(url_loader)) {
   }
 
   static knowledge_document_loader make_default(std::string tika_url = {}) {
@@ -51,6 +54,11 @@ public:
   std::vector<knowledge_document> load(
     const std::filesystem::path& root,
     knowledge_document_load_options options = {}) const {
+    const auto root_text = generic_path_to_utf8(root);
+    if (url_knowledge_loader::is_supported_url(root_text)) {
+      return load_url(root_text, std::move(options));
+    }
+
     if (!std::filesystem::exists(root)) {
       throw std::runtime_error("knowledge path does not exist: " + path_to_utf8(root));
     }
@@ -96,7 +104,26 @@ public:
   }
 
 private:
+  std::vector<knowledge_document> load_url(
+    const std::string& url,
+    knowledge_document_load_options options) const {
+    if (!url_loader_) {
+      throw std::runtime_error("knowledge document loader has no URL loader configured");
+    }
+
+    auto document = url_loader_->load(url, {
+      .metadata = options.metadata,
+    });
+    for (const auto& enricher : options.enrichers) {
+      if (enricher) {
+        enricher->enrich(document);
+      }
+    }
+    return { std::move(document) };
+  }
+
   knowledge_parser_registry registry_;
+  std::shared_ptr<url_knowledge_loader> url_loader_;
 };
 
 } // namespace wuwe::agent::knowledge

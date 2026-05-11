@@ -40,6 +40,7 @@
 #include <wuwe/agent/knowledge/sqlite_knowledge_index.hpp>
 #include <wuwe/agent/knowledge/structured_knowledge_loader.hpp>
 #include <wuwe/agent/knowledge/tika_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/url_knowledge_loader.hpp>
 #include <wuwe/agent/memory/embedding_model.hpp>
 #include <wuwe/agent/llm/llm_types.h>
 #include <wuwe/common/print.h>
@@ -175,6 +176,21 @@ public:
   std::vector<http_request> requests;
 };
 
+class url_knowledge_capture_http_client final : public http_client {
+public:
+  http_response send(const http_request& request) override {
+    requests.push_back(request);
+    return { .body = response_body };
+  }
+
+  std::string response_body {
+    "<html><head><title>C++ Guidelines &amp; RAG</title>"
+    "<style>.hidden{display:none}</style><script>alert(1)</script></head>"
+    "<body><main><h1>Core Guidelines</h1><p>RAG can index HTML from URLs.</p></main></body></html>"
+  };
+  std::vector<http_request> requests;
+};
+
 class remote_vector_capture_http_client final : public http_client {
 public:
   http_response send(const http_request& request) override {
@@ -258,6 +274,26 @@ void test_splitter_chunks_with_overlap() {
   require(chunks[0].content == "abcdefghij", "first chunk should start at zero");
   require(chunks[1].content == "ijklmnopqr", "second chunk should include overlap");
   require(chunks[2].content == "qrstuvwxyz", "third chunk should include final overlap");
+}
+
+void test_splitter_starts_overlapping_chunks_at_clean_boundaries() {
+  knowledge_splitter splitter({
+    .max_chars = 100,
+    .overlap_chars = 40,
+    .prefer_paragraph_boundaries = true,
+  });
+
+  const auto chunks = splitter.split({
+    .id = "doc",
+    .content =
+      "First paragraph introduces the resource management topic and fills the first chunk.\n\n"
+      "Smart pointer rule summary: use unique_ptr, shared_ptr, and make_unique for ownership.\n\n"
+      "Final paragraph keeps the document long enough to require multiple chunks.",
+  });
+
+  require(chunks.size() >= 2, "paragraph fixture should produce multiple chunks");
+  require(chunks[1].content.starts_with("Smart pointer rule summary"),
+    "overlapping chunk should start at a paragraph boundary instead of a sentence fragment");
 }
 
 void test_splitter_respects_markdown_headings() {
@@ -744,6 +780,77 @@ void test_tika_loader_live_integration_when_configured() {
     "tika live integration should return parsed text");
 
   cleanup();
+}
+
+void test_url_loader_fetches_html_document() {
+  auto http = std::make_shared<url_knowledge_capture_http_client>();
+  url_knowledge_loader loader(http);
+
+  const auto document = loader.load("https://example.test/guide.html", {
+    .metadata = { { "collection", "web" } },
+  });
+
+  require(document.id == "https---example-test-guide-html",
+    "url loader should derive stable URL ids");
+  require(document.title == "C++ Guidelines & RAG",
+    "url loader should extract HTML title");
+  require(document.source_uri == "https://example.test/guide.html",
+    "url loader should keep source URL");
+  require(contains(document.content, "Core Guidelines"),
+    "url loader should keep visible heading text");
+  require(contains(document.content, "# Core Guidelines"),
+    "url loader should preserve headings for better chunking");
+  require(contains(document.content, "RAG can index HTML from URLs."),
+    "url loader should keep visible paragraph text");
+  require(!contains(document.content, "alert"),
+    "url loader should remove script content");
+  require(document.metadata.at("collection") == "web",
+    "url loader should preserve metadata");
+  require(document.metadata.at("loader") == "url",
+    "url loader should record loader metadata");
+  require(http->requests.size() == 1, "url loader should send one HTTP request");
+  require(http->requests.front().method == "GET",
+    "url loader should fetch URLs with GET");
+  require(http->requests.front().url == "https://example.test/guide.html",
+    "url loader should request the source URL");
+}
+
+void test_document_loader_loads_url_documents() {
+  auto http = std::make_shared<url_knowledge_capture_http_client>();
+  knowledge_parser_registry registry;
+  registry.register_parser(std::make_shared<file_knowledge_document_parser>());
+  knowledge_document_loader loader(
+    std::move(registry),
+    std::make_shared<url_knowledge_loader>(http));
+
+  const auto documents = loader.load("https://example.test/guide.html", {
+    .metadata = { { "collection", "web" } },
+  });
+
+  require(documents.size() == 1, "document loader should load one URL document");
+  require(documents.front().source_uri == "https://example.test/guide.html",
+    "document loader should preserve URL source uri");
+  require(contains(documents.front().content, "RAG can index HTML from URLs."),
+    "document loader should use URL loader for HTTP sources");
+  require(documents.front().metadata.at("collection") == "web",
+    "document loader should apply caller metadata to URL documents");
+}
+
+void test_url_loader_live_integration_when_configured() {
+  const auto url = env_value("WUWE_URL_LOADER_TEST_URL");
+  if (url.empty()) {
+    println("[SKIP] url loader live integration requires WUWE_URL_LOADER_TEST_URL");
+    return;
+  }
+
+  const auto documents = knowledge_document_loader::make_default().load(url);
+  require(documents.size() == 1, "live URL loader should return one document");
+  require(documents.front().source_uri == url,
+    "live URL loader should preserve the source URL");
+  require(contains(documents.front().content, "C++ Core Guidelines"),
+    "live URL loader should extract visible Core Guidelines text");
+  require(documents.front().metadata.at("loader") == "url",
+    "live URL loader should record URL metadata");
 }
 
 void test_parser_registry_selects_file_and_tika_parsers() {
@@ -3001,6 +3108,8 @@ void run(const char* name, void (*test)()) {
 int main() {
   try {
     run("splitter chunks with overlap", test_splitter_chunks_with_overlap);
+    run("splitter starts overlapping chunks at clean boundaries",
+      test_splitter_starts_overlapping_chunks_at_clean_boundaries);
     run("splitter respects markdown headings", test_splitter_respects_markdown_headings);
     run("splitter skips markdown headings for tika documents",
       test_splitter_skips_markdown_headings_for_tika_documents);
@@ -3028,6 +3137,10 @@ int main() {
       test_tika_loader_extracts_pdf_page_breaks_from_html);
     run("tika loader live integration when configured",
       test_tika_loader_live_integration_when_configured);
+    run("url loader fetches html document", test_url_loader_fetches_html_document);
+    run("document loader loads url documents", test_document_loader_loads_url_documents);
+    run("url loader live integration when configured",
+      test_url_loader_live_integration_when_configured);
     run("parser registry selects file and tika parsers",
       test_parser_registry_selects_file_and_tika_parsers);
     run("document loader loads files with stable metadata",

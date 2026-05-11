@@ -57,11 +57,23 @@ openrouter_llm_client::openrouter_llm_client(llm_client_config config)
 llm_response openrouter_llm_client::complete(const llm_request& request) {
   const auto payload = build_openai_payload(request);
 
+  std::vector<std::pair<std::string, std::string>> headers {
+    {"Authorization", "Bearer " + config_.api_key},
+    {"Content-Type", "application/json"},
+  };
+  if (config_.base_url.find("openrouter.ai") != std::string::npos) {
+    if (!config_.referer_url.empty()) {
+      headers.push_back({"HTTP-Referer", config_.referer_url});
+    }
+    if (!config_.app_title.empty()) {
+      headers.push_back({"X-Title", config_.app_title});
+    }
+  }
+
   const http_request req {
     .method = "POST",
     .url = config_.base_url + "/v1/chat/completions",
-    .headers = {{"Authorization", "Bearer " + config_.api_key},
-      {"Content-Type", "application/json"}},
+    .headers = std::move(headers),
     .body = payload.dump(),
     .timeout = config_.timeout,
   };
@@ -156,18 +168,21 @@ llm_response openrouter_llm_client::parse_openai_response(const http_response& r
 
   if (response.error_code) {
     result.error_code = response.error_code;
+    result.content = response.body;
     return result;
   }
 
   const auto data = json::parse(response.body, nullptr, false);
   if (data.is_discarded()) {
     result.error_code = std::make_error_code(std::errc::protocol_error);
+    result.content = response.body;
     return result;
   }
 
   if (!data.contains("choices") || !data["choices"].is_array() || data["choices"].empty() ||
       !data["choices"][0].contains("message")) {
     result.error_code = std::make_error_code(std::errc::protocol_error);
+    result.content = response.body;
     return result;
   }
 

@@ -501,6 +501,43 @@ private:
     return hard_end;
   }
 
+  std::size_t choose_next_chunk_start(
+    const std::string& content,
+    std::size_t current_start,
+    std::size_t current_end,
+    std::size_t range_end) const {
+    if (policy_.overlap_chars == 0 || current_end >= range_end) {
+      return current_end;
+    }
+
+    const auto overlap_start =
+      current_end > policy_.overlap_chars ? current_end - policy_.overlap_chars : current_start;
+    if (!policy_.prefer_paragraph_boundaries || overlap_start <= current_start) {
+      return overlap_start;
+    }
+
+    const auto paragraph = content.find("\n\n", overlap_start);
+    if (paragraph != std::string::npos && paragraph + 2 <= current_end) {
+      return paragraph + 2;
+    }
+
+    const auto newline = content.find('\n', overlap_start);
+    if (newline != std::string::npos && newline + 1 <= current_end) {
+      return newline + 1;
+    }
+
+    auto next_word = overlap_start;
+    while (next_word < current_end &&
+           !std::isspace(static_cast<unsigned char>(content[next_word]))) {
+      ++next_word;
+    }
+    while (next_word < current_end &&
+           std::isspace(static_cast<unsigned char>(content[next_word]))) {
+      ++next_word;
+    }
+    return next_word < current_end ? next_word : overlap_start;
+  }
+
   std::vector<knowledge_chunk> split_markdown_sections(
     const knowledge_document& document) const {
     std::vector<knowledge_chunk> chunks;
@@ -584,7 +621,8 @@ private:
       if (end == range_end) {
         break;
       }
-      start = end - policy_.overlap_chars;
+      const auto next_start = choose_next_chunk_start(document.content, start, end, range_end);
+      start = next_start > start ? next_start : end;
     }
   }
 

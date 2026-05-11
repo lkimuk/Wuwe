@@ -25,8 +25,8 @@ documents. It is organized around a local production workflow:
 The Knowledge Retrieval module is currently at a framework-complete stage for
 local and service-integrated RAG workflows. The implemented surface includes:
 
-- Document ingestion for Markdown, text, HTML, RTF, CSV, JSON, OpenAPI JSON, and
-  source repositories.
+- Document ingestion for Markdown, text, local HTML, HTTP/HTTPS HTML pages, RTF,
+  CSV, JSON, OpenAPI JSON, and source repositories.
 - Optional Apache Tika HTTP parsing for PDF, DOCX, PPTX, XLSX, and legacy Office
   formats.
 - Parser plugin registration through `knowledge_parser_registry`.
@@ -54,6 +54,11 @@ cmake --build --preset windows-vcpkg-debug --target knowledge_tests knowledge_re
 .\build-vcpkg\examples\Debug\knowledge_retrieval_example.exe
 .\build-vcpkg\examples\Debug\knowledge_benchmark_example.exe --docs 40 --queries 8 --concurrency 2 --json
 ```
+
+`url_rag_example` is the smallest live URL RAG smoke test: it hardcodes the C++
+Core Guidelines URL, ingests the page, retrieves relevant cited context, and
+asks an OpenAI-compatible LLM to answer from that context. It requires
+`OPENROUTER_API_KEY` or `OPENAI_API_KEY`.
 
 Optional live integrations are skipped unless configured:
 
@@ -201,6 +206,10 @@ auto upload = rag.upload_document("handbook.pdf", {
   .metadata = { { "collection", "handbook" } },
   .enrichers = std::move(enrichers),
 }, true);
+
+auto web_upload = rag.upload_document("https://example.com/guide.html", {
+  .metadata = { { "collection", "web" } },
+});
 
 auto answer = rag.ask({
   .query = "What are the main design patterns?",

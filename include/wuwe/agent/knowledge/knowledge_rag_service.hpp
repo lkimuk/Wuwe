@@ -116,7 +116,9 @@ public:
         ::wuwe::make_message()
         << ("system" < ::wuwe::says >
               "Answer using only the provided knowledge. Include citation numbers like [1] "
-              "for every factual claim. If the knowledge is insufficient, say so.")
+              "for every factual claim. Use only citation numbers that appear in the provided "
+              "knowledge block; do not invent citation numbers. If the knowledge is insufficient, "
+              "say so.")
         << ("user" < ::wuwe::says > request.query);
       llm_request = context.augment(std::move(llm_request), request.query);
       llm_request.model = request.model;
