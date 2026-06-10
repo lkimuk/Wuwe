@@ -2,6 +2,7 @@
 #define WUWE_AGENT_LLM_openrouter_llm_client_H
 
 #include <memory>
+#include <stop_token>
 
 #include <nlohmann/json.hpp>
 
@@ -21,6 +22,7 @@ public:
   explicit openrouter_llm_client(llm_client_config config);
 
   llm_response complete(const llm_request& request) override;
+  llm_response complete(const llm_request& request, std::stop_token stop_token) override;
 
 private:
   json build_openai_payload(const llm_request& request) const;

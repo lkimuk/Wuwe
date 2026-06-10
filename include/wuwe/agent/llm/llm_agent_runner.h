@@ -1,17 +1,70 @@
 #ifndef WUWE_AGENT_LLM_AGENT_RUNNER_H
 #define WUWE_AGENT_LLM_AGENT_RUNNER_H
 
+#include <exception>
 #include <functional>
+#include <future>
 #include <memory>
+#include <stop_token>
 #include <string_view>
+#include <thread>
 #include <utility>
 
+#include <wuwe/agent/llm/llm_error.h>
 #include <wuwe/agent/llm/llm_client.h>
 #include <wuwe/agent/memory/memory_context.hpp>
 #include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/wuwe_fwd.h>
 
 WUWE_NAMESPACE_BEGIN
+
+struct llm_agent_callbacks {
+  std::function<void(std::string_view)> on_delta;
+  std::function<void(const llm_tool_call&)> on_tool_start;
+  std::function<void(const llm_tool_call&, const llm_tool_result&)> on_tool_result;
+  std::function<void(const llm_response&)> on_done;
+  std::function<void(std::error_code, std::string_view)> on_error;
+  std::function<void()> on_cancelled;
+};
+
+struct llm_agent_run_options {
+  std::stop_token stop_token;
+  llm_agent_callbacks callbacks;
+};
+
+class llm_agent_run {
+public:
+  llm_agent_run() = default;
+
+  llm_agent_run(std::jthread worker, std::future<llm_response> future)
+      : worker_(std::move(worker)), future_(std::move(future)) {
+  }
+
+  llm_agent_run(const llm_agent_run&) = delete;
+  llm_agent_run& operator=(const llm_agent_run&) = delete;
+  llm_agent_run(llm_agent_run&&) noexcept = default;
+  llm_agent_run& operator=(llm_agent_run&&) noexcept = default;
+
+  bool valid() const noexcept {
+    return future_.valid();
+  }
+
+  void request_stop() {
+    worker_.request_stop();
+  }
+
+  void wait() const {
+    future_.wait();
+  }
+
+  llm_response get() {
+    return future_.get();
+  }
+
+private:
+  std::jthread worker_;
+  std::future<llm_response> future_;
+};
 
 class llm_agent_runner {
 public:
@@ -31,10 +84,8 @@ public:
     std::shared_ptr<ToolProvider> tool_provider, int max_tool_rounds = 4)
       : client_(client),
         tools_([tool_provider] { return tool_provider->tools(); }),
-        invoke_([tool_provider](const std::string& name, const std::string& arguments_json) {
-          return tool_provider->invoke(name, arguments_json);
-        }),
         max_tool_rounds_(max_tool_rounds) {
+    bind_invoke(std::move(tool_provider));
   }
 
   template<typename ToolProvider>
@@ -44,20 +95,110 @@ public:
     int max_tool_rounds = 4)
       : client_(client),
         tools_([tool_provider] { return tool_provider->tools(); }),
-        invoke_([tool_provider](const std::string& name, const std::string& arguments_json) {
-          return tool_provider->invoke(name, arguments_json);
-        }),
         memory_(memory),
         max_tool_rounds_(max_tool_rounds) {
+    bind_invoke(std::move(tool_provider));
   }
 
   llm_response complete(std::string_view prompt) const {
     llm_request request;
     request.messages.push_back({ .role = "user", .content = std::string(prompt) });
-    return complete(std::move(request));
+    return complete(std::move(request), {});
+  }
+
+  llm_response complete(std::string_view prompt, llm_agent_run_options options) const {
+    llm_request request;
+    request.messages.push_back({ .role = "user", .content = std::string(prompt) });
+    return complete(std::move(request), std::move(options));
   }
 
   llm_response complete(llm_request request) const {
+    return complete(std::move(request), {});
+  }
+
+  llm_response complete(llm_request request, llm_agent_run_options options) const {
+    const auto stop_token = options.stop_token;
+    const auto is_cancelled = [stop_token] {
+      return stop_token.stop_requested();
+    };
+    return complete_impl(std::move(request), std::move(options), stop_token, is_cancelled);
+  }
+
+  llm_agent_run run_async(llm_request request, llm_agent_run_options options = {}) const {
+    auto promise = std::make_shared<std::promise<llm_response>>();
+    auto future = promise->get_future();
+
+    std::jthread worker(
+      [this, request = std::move(request), options = std::move(options), promise](
+        std::stop_token worker_stop_token) mutable {
+        const auto external_stop_token = options.stop_token;
+        std::stop_source run_stop_source;
+        std::stop_callback external_stop_callback(
+          external_stop_token,
+          [&run_stop_source] {
+            run_stop_source.request_stop();
+          });
+        std::stop_callback worker_stop_callback(
+          worker_stop_token,
+          [&run_stop_source] {
+            run_stop_source.request_stop();
+          });
+
+        if (external_stop_token.stop_requested() || worker_stop_token.stop_requested()) {
+          run_stop_source.request_stop();
+        }
+
+        const auto run_stop_token = run_stop_source.get_token();
+        const auto is_cancelled = [run_stop_token] {
+          return run_stop_token.stop_requested();
+        };
+
+        try {
+          promise->set_value(
+            complete_impl(std::move(request), std::move(options), run_stop_token, is_cancelled));
+        }
+        catch (...) {
+          promise->set_exception(std::current_exception());
+        }
+      });
+
+    return llm_agent_run(std::move(worker), std::move(future));
+  }
+
+  llm_agent_run run_async(std::string_view prompt, llm_agent_run_options options = {}) const {
+    llm_request request;
+    request.messages.push_back({ .role = "user", .content = std::string(prompt) });
+    return run_async(std::move(request), std::move(options));
+  }
+
+private:
+  template<typename ToolProvider>
+  void bind_invoke(std::shared_ptr<ToolProvider> tool_provider) {
+    invoke_ =
+      [tool_provider](
+        const std::string& name,
+        const std::string& arguments_json,
+        std::stop_token stop_token) {
+        if constexpr (requires {
+                        tool_provider->invoke(name, arguments_json, stop_token);
+                      }) {
+          return tool_provider->invoke(name, arguments_json, stop_token);
+        }
+        else {
+          return tool_provider->invoke(name, arguments_json);
+        }
+      };
+  }
+
+  llm_response complete_impl(
+    llm_request request,
+    llm_agent_run_options options,
+    std::stop_token client_stop_token,
+    const std::function<bool()>& is_cancelled) const {
+    if (is_cancelled()) {
+      return cancelled_response(options.callbacks);
+    }
+
     const std::string query_text = last_user_content(request);
     const llm_request request_to_observe = request;
 
@@ -70,14 +211,23 @@ public:
       observe_request_messages(request_to_observe);
     }
 
-    llm_response response = client_.complete(request);
+    llm_response response = client_.complete(request, client_stop_token);
+    if (is_cancelled() || response.error_code == agent::llm_error_code::cancelled) {
+      return cancelled_response(options.callbacks);
+    }
     if (response.error_code) {
+      emit_error(options.callbacks, response);
       return response;
     }
+    emit_delta(options.callbacks, response);
     observe_assistant_response(response);
 
     for (int round = 0; round < max_tool_rounds_; ++round) {
+      if (is_cancelled()) {
+        return cancelled_response(options.callbacks);
+      }
       if (response.tool_calls.empty() || !invoke_) {
+        emit_done(options.callbacks, response);
         return response;
       }
 
@@ -89,7 +239,16 @@ public:
       request.messages.push_back(assistant_message);
 
       for (const auto& call : response.tool_calls) {
-        const llm_tool_result tool_result = invoke_(call.name, call.arguments_json);
+        if (is_cancelled()) {
+          return cancelled_response(options.callbacks);
+        }
+
+        emit_tool_start(options.callbacks, call);
+        const llm_tool_result tool_result = invoke_(call.name, call.arguments_json, client_stop_token);
+        if (is_cancelled()) {
+          return cancelled_response(options.callbacks);
+        }
+        emit_tool_result(options.callbacks, call, tool_result);
         chat_message tool_message { .role = "tool",
           .content =
             tool_result.content.empty() ? tool_result.error_code.message() : tool_result.content,
@@ -101,18 +260,65 @@ public:
         }
       }
 
-      response = client_.complete(request);
+      response = client_.complete(request, client_stop_token);
+      if (is_cancelled() || response.error_code == agent::llm_error_code::cancelled) {
+        return cancelled_response(options.callbacks);
+      }
       if (response.error_code) {
+        emit_error(options.callbacks, response);
         return response;
       }
+      emit_delta(options.callbacks, response);
       observe_assistant_response(response);
     }
 
     response.error_code = std::make_error_code(std::errc::resource_unavailable_try_again);
+    emit_error(options.callbacks, response);
     return response;
   }
 
-private:
+  static void emit_delta(const llm_agent_callbacks& callbacks, const llm_response& response) {
+    if (callbacks.on_delta && !response.content.empty()) {
+      callbacks.on_delta(response.content);
+    }
+  }
+
+  static void emit_tool_start(const llm_agent_callbacks& callbacks, const llm_tool_call& call) {
+    if (callbacks.on_tool_start) {
+      callbacks.on_tool_start(call);
+    }
+  }
+
+  static void emit_tool_result(
+    const llm_agent_callbacks& callbacks,
+    const llm_tool_call& call,
+    const llm_tool_result& result) {
+    if (callbacks.on_tool_result) {
+      callbacks.on_tool_result(call, result);
+    }
+  }
+
+  static void emit_done(const llm_agent_callbacks& callbacks, const llm_response& response) {
+    if (callbacks.on_done) {
+      callbacks.on_done(response);
+    }
+  }
+
+  static void emit_error(const llm_agent_callbacks& callbacks, const llm_response& response) {
+    if (callbacks.on_error) {
+      callbacks.on_error(response.error_code, response.content);
+    }
+  }
+
+  static llm_response cancelled_response(const llm_agent_callbacks& callbacks) {
+    if (callbacks.on_cancelled) {
+      callbacks.on_cancelled();
+    }
+    return {
+      .error_code = agent::make_error_code(agent::llm_error_code::cancelled),
+    };
+  }
+
   static std::string last_user_content(const llm_request& request) {
     for (auto it = request.messages.rbegin(); it != request.messages.rend(); ++it) {
       if (it->role == "user") {
@@ -147,7 +353,7 @@ private:
 private:
   llm_client& client_;
   std::function<std::vector<llm_tool>()> tools_;
-  std::function<llm_tool_result(const std::string&, const std::string&)> invoke_;
+  std::function<llm_tool_result(const std::string&, const std::string&, std::stop_token)> invoke_;
   agent::memory::memory_context* memory_ {};
   int max_tool_rounds_;
 };

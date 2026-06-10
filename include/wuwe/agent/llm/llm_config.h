@@ -29,6 +29,7 @@ struct llm_client_config {
 
   std::string base_url;
   std::string api_key { load_api_key_from_env() };
+  bool require_api_key { true };
   std::string model;
   int timeout { 30000 };
   int max_retries { 2 };

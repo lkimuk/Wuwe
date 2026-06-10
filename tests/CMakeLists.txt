@@ -21,6 +21,15 @@ set_tests_properties(knowledge_tests PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
+add_executable(agent_runtime_tests
+    agent_runtime_tests.cpp
+)
+
+target_link_libraries(agent_runtime_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(agent_runtime_tests)
+
+add_test(NAME agent_runtime_tests COMMAND agent_runtime_tests)
+
 add_executable(planning_tests
     planning_tests.cpp
 )

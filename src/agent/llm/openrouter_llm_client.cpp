@@ -1,11 +1,13 @@
 #include <wuwe/agent/llm/openrouter_llm_client.h>
 
+#include <wuwe/agent/llm/llm_error.h>
 #include <wuwe/net/net_errc.h>
 #include <wuwe/net/default_http_client.h>
 
+#include <algorithm>
 #include <chrono>
-#include <thread>
 #include <system_error>
+#include <thread>
 
 WUWE_NAMESPACE_BEGIN
 
@@ -38,7 +40,8 @@ json build_tool_choice_json(const llm_tool_choice& tool_choice) {
 }
 
 bool is_retryable_error(const std::error_code& ec) {
-  return ec == net_errc::rate_limited || ec == net_errc::timeout ||
+  return ec == agent::llm_error_code::rate_limited || ec == agent::llm_error_code::timeout ||
+         ec == net_errc::rate_limited || ec == net_errc::timeout ||
          ec == net_errc::connection_failed || ec == net_errc::transport_failed ||
          ec == net_errc::server_error || ec == net_errc::service_unavailable;
 }
@@ -49,18 +52,85 @@ int compute_backoff_ms(int attempt, int base_backoff_ms) {
   return base_backoff_ms * (1 << clamped_attempt);
 }
 
+bool wait_for_retry(std::stop_token stop_token, std::chrono::milliseconds duration) {
+  constexpr auto poll_interval = std::chrono::milliseconds(50);
+  auto remaining = duration;
+  while (remaining.count() > 0) {
+    if (stop_token.stop_requested()) {
+      return false;
+    }
+    const auto sleep_time = (std::min)(remaining, poll_interval);
+    std::this_thread::sleep_for(sleep_time);
+    remaining -= sleep_time;
+  }
+  return !stop_token.stop_requested();
+}
+
+std::error_code classify_openai_error(const std::error_code& transport_or_http_error,
+  const json& body) {
+  if (transport_or_http_error == net_errc::unauthorized ||
+      transport_or_http_error == net_errc::forbidden) {
+    return agent::make_error_code(agent::llm_error_code::authentication_failed);
+  }
+  if (transport_or_http_error == net_errc::rate_limited) {
+    return agent::make_error_code(agent::llm_error_code::rate_limited);
+  }
+  if (transport_or_http_error == net_errc::timeout) {
+    return agent::make_error_code(agent::llm_error_code::timeout);
+  }
+  if (transport_or_http_error == net_errc::not_found) {
+    return agent::make_error_code(agent::llm_error_code::model_unavailable);
+  }
+
+  if (body.is_object() && body.contains("error") && body["error"].is_object()) {
+    const auto& error = body["error"];
+    const auto code = error.value("code", std::string {});
+    const auto type = error.value("type", std::string {});
+
+    if (code == "invalid_api_key" || type == "invalid_api_key" ||
+        code == "unauthorized" || type == "authentication_error") {
+      return agent::make_error_code(agent::llm_error_code::authentication_failed);
+    }
+    if (code == "rate_limit_exceeded" || type == "rate_limit_exceeded" ||
+        code == "rate_limited") {
+      return agent::make_error_code(agent::llm_error_code::rate_limited);
+    }
+    if (code == "model_not_found" || type == "model_not_found" ||
+        code == "model_unavailable") {
+      return agent::make_error_code(agent::llm_error_code::model_unavailable);
+    }
+
+    return agent::make_error_code(agent::llm_error_code::api_error);
+  }
+
+  return transport_or_http_error;
+}
+
 } // namespace
 
 openrouter_llm_client::openrouter_llm_client(llm_client_config config)
     : config_(std::move(config)), http_(std::make_shared<default_http_client>()) {}
 
 llm_response openrouter_llm_client::complete(const llm_request& request) {
+  return complete(request, {});
+}
+
+llm_response openrouter_llm_client::complete(const llm_request& request, std::stop_token stop_token) {
+  if (stop_token.stop_requested()) {
+    return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
+  }
+  if (config_.require_api_key && config_.api_key.empty()) {
+    return { .error_code = agent::make_error_code(agent::llm_error_code::missing_api_key) };
+  }
+
   const auto payload = build_openai_payload(request);
 
   std::vector<std::pair<std::string, std::string>> headers {
-    {"Authorization", "Bearer " + config_.api_key},
     {"Content-Type", "application/json"},
   };
+  if (!config_.api_key.empty()) {
+    headers.push_back({"Authorization", "Bearer " + config_.api_key});
+  }
   if (config_.base_url.find("openrouter.ai") != std::string::npos) {
     if (!config_.referer_url.empty()) {
       headers.push_back({"HTTP-Referer", config_.referer_url});
@@ -82,15 +152,26 @@ llm_response openrouter_llm_client::complete(const llm_request& request) {
   const int base_backoff_ms = config_.retry_backoff_ms <= 0 ? 500 : config_.retry_backoff_ms;
 
   for (int attempt = 0; attempt <= max_retries; ++attempt) {
+    if (stop_token.stop_requested()) {
+      return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
+    }
+
     const auto response = http_->send(req);
     llm_response parsed = parse_openai_response(response);
+    if (stop_token.stop_requested()) {
+      return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
+    }
     if (!parsed.error_code) {
       return parsed;
     }
     if (attempt >= max_retries || !is_retryable_error(parsed.error_code)) {
       return parsed;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(compute_backoff_ms(attempt, base_backoff_ms)));
+    if (!wait_for_retry(
+          stop_token,
+          std::chrono::milliseconds(compute_backoff_ms(attempt, base_backoff_ms)))) {
+      return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
+    }
   }
 
   llm_response fallback;
@@ -167,21 +248,31 @@ llm_response openrouter_llm_client::parse_openai_response(const http_response& r
   llm_response result;
 
   if (response.error_code) {
-    result.error_code = response.error_code;
     result.content = response.body;
+    const auto body = json::parse(response.body, nullptr, false);
+    result.error_code =
+      classify_openai_error(response.error_code, body.is_discarded() ? json::object() : body);
     return result;
   }
 
   const auto data = json::parse(response.body, nullptr, false);
   if (data.is_discarded()) {
-    result.error_code = std::make_error_code(std::errc::protocol_error);
+    result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
+    result.content = response.body;
+    return result;
+  }
+
+  if (data.contains("error") && data["error"].is_object()) {
+    result.error_code = classify_openai_error(
+      agent::make_error_code(agent::llm_error_code::api_error),
+      data);
     result.content = response.body;
     return result;
   }
 
   if (!data.contains("choices") || !data["choices"].is_array() || data["choices"].empty() ||
       !data["choices"][0].contains("message")) {
-    result.error_code = std::make_error_code(std::errc::protocol_error);
+    result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
     result.content = response.body;
     return result;
   }

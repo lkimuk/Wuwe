@@ -48,6 +48,11 @@ concept tool_type = std::is_aggregate_v<T>
   && has_any_description<T>
   && requires(const T& t) { t.invoke(); };
 
+template<typename T, typename Context>
+concept context_tool_type = std::is_aggregate_v<T>
+  && has_any_description<T>
+  && requires(const T& t, const Context& context) { t.invoke(context); };
+
 struct llm_tool_result {
   std::string content;
   std::error_code error_code;
@@ -112,6 +117,12 @@ inline constexpr bool is_instance_description_member_v =
 template<typename T, std::size_t I>
 inline constexpr bool is_tool_parameter_member_v = !is_instance_description_member_v<T, I>;
 
+template<typename T, std::size_t I>
+std::string tool_parameter_name() {
+  constexpr auto member_names = gmp::member_names<T>();
+  return std::string(member_names[I]);
+}
+
 template<typename T>
 auto tool_prototype() -> std::optional<T> {
   if constexpr (std::default_initializable<T>) {
@@ -127,7 +138,31 @@ std::string type_name_string() {
   return std::string(gmp::type_name<T>().to_string_view());
 }
 
-template<tool_type T>
+inline std::string unqualified_type_name(std::string name) {
+  const auto namespace_pos = name.rfind("::");
+  if (namespace_pos != std::string::npos) {
+    name = name.substr(namespace_pos + 2);
+  }
+
+  constexpr std::string_view struct_prefix = "struct ";
+  constexpr std::string_view class_prefix = "class ";
+  if (name.rfind(struct_prefix, 0) == 0) {
+    name.erase(0, struct_prefix.size());
+  }
+  else if (name.rfind(class_prefix, 0) == 0) {
+    name.erase(0, class_prefix.size());
+  }
+
+  return name;
+}
+
+template<typename T>
+std::string tool_name_string() {
+  return unqualified_type_name(type_name_string<T>());
+}
+
+template<typename T>
+  requires(std::is_aggregate_v<T> && has_any_description<T>)
 std::string get_description() {
   if constexpr (has_static_description_v<T>) {
     return std::string(T::description);
@@ -240,21 +275,21 @@ json build_object_json_schema() {
         field_schema["default"] = build_json_value(tool_field_traits<T, Is>::default_value());
       }
 
-      properties[std::string(member_names[Is])] = std::move(field_schema);
+      properties[tool_parameter_name<T, Is>()] = std::move(field_schema);
 
       if constexpr (is_field_v<member_type>) {
         if (default_object.has_value()) {
           const auto& member = gmp::member_ref<Is>(*default_object);
           if (!member.default_value.has_value() && !is_optional_v<schema_type>) {
-            required.push_back(member_names[Is]);
+            required.push_back(tool_parameter_name<T, Is>());
           }
         }
         else if constexpr (!is_optional_v<schema_type>) {
-          required.push_back(member_names[Is]);
+          required.push_back(tool_parameter_name<T, Is>());
         }
       }
       else if constexpr (!is_optional_v<member_type> && !field_has_default_value<T, Is>) {
-        required.push_back(member_names[Is]);
+        required.push_back(tool_parameter_name<T, Is>());
       }
     }()), ...);
   }(std::make_index_sequence<member_names.size()>{});
@@ -314,10 +349,11 @@ inline std::string dump_json_compact(const json& j) {
   return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
-template<tool_type T>
+template<typename T>
+  requires(std::is_aggregate_v<T> && has_any_description<T>)
 llm_tool make_tool() {
   return {
-    .name = type_name_string<T>(),
+    .name = tool_name_string<T>(),
     .description = get_description<T>(),
     .parameters_json_schema = dump_json_compact(build_object_json_schema<T>())
   };
@@ -345,7 +381,7 @@ template<typename... Tools>
 std::string available_tool_names() {
   std::ostringstream out;
   std::size_t index = 0;
-  ((out << (index++ == 0 ? "" : ", ") << type_name_string<Tools>()), ...);
+  ((out << (index++ == 0 ? "" : ", ") << tool_name_string<Tools>()), ...);
   return out.str();
 }
 
@@ -381,7 +417,9 @@ void validate_object_keys(const json& json_value) {
   for (const auto& [key, _] : json_value.items()) {
     bool found = false;
     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-      (((is_tool_parameter_member_v<T, Is> && member_names[Is] == key) ? found = true : found),
+      (((is_tool_parameter_member_v<T, Is> && tool_parameter_name<T, Is>() == key)
+          ? found = true
+          : found),
         ...);
     }(std::make_index_sequence<member_names.size()> {});
 
@@ -397,7 +435,7 @@ void validate_object_keys(const json& json_value) {
               if (!first) {
                 message << ", ";
               }
-              message << member_names[Is];
+              message << tool_parameter_name<T, Is>();
               first = false;
             }
           }()),
@@ -413,8 +451,7 @@ template<std::size_t I, typename T>
 gmp::member_type_t<I, T> tool_object_member_get(const json& object) {
   using member_type = gmp::member_type_t<I, T>;
   using schema_type = unwrap_field_t<member_type>;
-  constexpr auto member_names = gmp::member_names<T>();
-  const std::string key(member_names[I]);
+  const std::string key = tool_parameter_name<T, I>();
   const auto it = object.find(key);
   const auto prototype = tool_prototype<T>();
 
@@ -529,7 +566,7 @@ llm_tool_result invoke_reflected_tool(const std::string& arguments_json) {
     return { .content = tool_result_to_string(tool.invoke()) };
   }
   catch (const std::exception& ex) {
-    return { .content = "invalid arguments for tool '" + type_name_string<T>() + "': " + ex.what(),
+    return { .content = "invalid arguments for tool '" + tool_name_string<T>() + "': " + ex.what(),
       .error_code = std::make_error_code(std::errc::invalid_argument) };
   }
 }
@@ -548,10 +585,52 @@ bool try_invoke_tool(const std::string& expected_name, const std::string& name,
 
 // clang-format on
 
+template<typename T>
+  requires(std::is_aggregate_v<T> && has_any_description<T>)
+llm_tool make_llm_tool() {
+  return detail::make_tool<T>();
+}
+
+template<typename T>
+T parse_tool_arguments(const nlohmann::json& arguments) {
+  return detail::tool_json_get<T>(arguments);
+}
+
+template<typename T>
+T parse_tool_arguments(std::string_view arguments_json) {
+  const auto arguments = nlohmann::json::parse(arguments_json.empty() ? "{}" : std::string(arguments_json));
+  return parse_tool_arguments<T>(arguments);
+}
+
+template<typename T>
+T parse_tool_arguments(const char* arguments_json) {
+  return parse_tool_arguments<T>(std::string_view(arguments_json == nullptr ? "" : arguments_json));
+}
+
+template<tool_type T>
+llm_tool_result invoke_reflected_tool(std::string_view arguments_json) {
+  return detail::invoke_reflected_tool<T>(std::string(arguments_json));
+}
+
+template<typename T, typename Context>
+  requires context_tool_type<T, Context>
+llm_tool_result invoke_reflected_tool(std::string_view arguments_json, const Context& context) {
+  try {
+    const auto tool = parse_tool_arguments<T>(arguments_json);
+    return tool.invoke(context);
+  }
+  catch (const std::exception& ex) {
+    return {
+      .content = "invalid arguments for tool '" + detail::tool_name_string<T>() + "': " + ex.what(),
+      .error_code = std::make_error_code(std::errc::invalid_argument),
+    };
+  }
+}
+
 template<typename... Tools>
 struct tool_provider {
-  std::vector<llm_tool> tools() const noexcept {
-     return { detail::make_tool<Tools>()... };
+  std::vector<llm_tool> tools() const {
+     return { make_llm_tool<Tools>()... };
   }
 
   llm_tool_result invoke(const std::string& name, const std::string& arguments_json) const {
@@ -562,7 +641,7 @@ struct tool_provider {
     };
 
     (detail::try_invoke_tool<Tools>(
-       detail::type_name_string<Tools>(), name, arguments_json, result) ||
+       detail::tool_name_string<Tools>(), name, arguments_json, result) ||
       ...);
     return result;
   }

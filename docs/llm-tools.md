@@ -31,7 +31,7 @@ The tool can then be bound with:
 
 ```cpp
 auto client = factory.create_shared("OpenRouter", config);
-auto runner = client->build_tools<get_weather>();
+auto runner = client->bind_tools<get_weather>();
 ```
 
 ## Description Styles
@@ -89,12 +89,12 @@ struct get_weather {
 };
 ```
 
-Optional metadata for raw fields can be supplied through `llm_tool_field_traits<Tool, I>`, where
+Optional metadata for raw fields can be supplied through `tool_field_traits<Tool, I>`, where
 `I` is the zero-based member index.
 
 ```cpp
 template <>
-struct wuwe::llm_tool_field_traits<get_weather, 0> {
+struct wuwe::tool_field_traits<get_weather, 0> {
   static constexpr std::string_view description =
     "Target city, for example New York or Tokyo.";
 };
@@ -129,10 +129,10 @@ and can still be read naturally inside `invoke()`.
 The metadata rule is intentionally simple:
 
 - If a member is `field<T>`, metadata is read only from `field<T>` itself.
-- If a member is a raw field, metadata is read from `llm_tool_field_traits<Tool, I>`.
+- If a member is a raw field, metadata is read from `tool_field_traits<Tool, I>`.
 
 Do not define both for the same member. `field<T>` is the self-contained form, while
-`llm_tool_field_traits` is the fallback for raw fields.
+`tool_field_traits` is the fallback for raw fields.
 
 ## Schema Generation
 
@@ -153,7 +153,13 @@ For enums, schema is emitted as a string enum when reflection can enumerate the 
 
 For `field<T>`, schema metadata such as `description` and `default` comes from the field object.
 
-For raw fields, schema metadata comes from `llm_tool_field_traits`.
+For raw fields, schema metadata comes from `tool_field_traits`.
+
+The public helper for exposing a reflected schema is:
+
+```cpp
+auto tool = wuwe::make_llm_tool<get_weather>();
+```
 
 ## Argument Parsing
 
@@ -164,9 +170,15 @@ Behavior:
 - unknown object fields are rejected
 - missing required fields are rejected
 - optional fields may be omitted
-- raw fields may use `llm_tool_field_traits` defaults
+- raw fields may use `tool_field_traits` defaults
 - `field<T>` may use `field<T>::default_value`
 - enum arguments may be passed by name
+
+The public helper for host-owned providers is:
+
+```cpp
+auto args = wuwe::parse_tool_arguments<get_weather>(arguments_json);
+```
 
 ## Return Values
 
@@ -228,7 +240,7 @@ struct save_memory {
   std::string content;
   std::optional<std::string> topic;
 
-  llm_tool_result invoke(const memory_tool_context& context) const;
+  wuwe::llm_tool_result invoke(const memory_tool_context& context) const;
 };
 ```
 
@@ -238,6 +250,46 @@ The custom provider is responsible for:
 - parsing JSON arguments into the reflected argument type
 - holding private application state
 - calling `tool.invoke(context)`
+
+Use the public helpers for this instead of depending on `detail` APIs:
+
+```cpp
+struct app_tool_context {
+  app_session& session;
+};
+
+struct search_open_document {
+  static constexpr std::string_view description =
+    "Search the currently open document.";
+
+  std::string query;
+
+  wuwe::llm_tool_result invoke(const app_tool_context& context) const;
+};
+
+class app_tool_provider {
+public:
+  std::vector<wuwe::llm_tool> tools() const {
+    return { wuwe::make_llm_tool<search_open_document>() };
+  }
+
+  wuwe::llm_tool_result invoke(const std::string& name, const std::string& arguments_json) {
+    if (name == wuwe::make_llm_tool<search_open_document>().name) {
+      return wuwe::invoke_reflected_tool<search_open_document>(
+        arguments_json,
+        app_tool_context { .session = session_ });
+    }
+
+    return {
+      .content = "tool not found: " + name,
+      .error_code = std::make_error_code(std::errc::function_not_supported),
+    };
+  }
+
+private:
+  app_session& session_;
+};
+```
 
 This keeps the model-facing parameter style consistent with ordinary reflected tools while keeping
 private state outside the schema.
@@ -264,7 +316,7 @@ struct save_memory {
   injected<memory_context*> memory;
   injected<memory_scope> scope;
 
-  llm_tool_result invoke() const;
+  wuwe::llm_tool_result invoke() const;
 };
 ```
 
@@ -306,7 +358,7 @@ The intended direction is:
 Multiple tools can be registered together:
 
 ```cpp
-auto runner = client->build_tools<get_weather, get_happy_fact>();
+auto runner = client->bind_tools<get_weather, get_happy_fact>();
 ```
 
 If the model calls an unknown tool, the runtime returns an error message that includes the list of

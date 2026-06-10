@@ -1,0 +1,104 @@
+# Agent Runtime
+
+Wuwe's agent runtime is host-application neutral. It does not know about UI frameworks,
+document models, tabs, databases, or application sessions. Host applications provide those
+through tool providers and keep ownership of their own state.
+
+## Synchronous Runner
+
+`llm_agent_runner::complete()` remains the simplest API:
+
+```cpp
+wuwe::llm_agent_runner runner(client, provider);
+auto response = runner.complete("Analyze the current document.");
+```
+
+For cancellable or observable runs, pass `llm_agent_run_options`:
+
+```cpp
+std::stop_source stop_source;
+
+wuwe::llm_agent_run_options options;
+options.stop_token = stop_source.get_token();
+options.callbacks.on_tool_start = [](const wuwe::llm_tool_call& call) {
+  // Update host UI or telemetry.
+};
+options.callbacks.on_tool_result =
+  [](const wuwe::llm_tool_call& call, const wuwe::llm_tool_result& result) {
+    // Observe tool completion.
+  };
+options.callbacks.on_done = [](const wuwe::llm_response& response) {
+  // Consume the final answer.
+};
+
+auto response = runner.complete(request, std::move(options));
+```
+
+The current OpenAI-compatible client is non-streaming, so `on_delta` is emitted with available
+response content after each completed model call. The runner callback shape is already prepared
+for streaming clients that can emit token-level deltas.
+
+## Async Runner
+
+`run_async()` starts a background `std::jthread` and returns an `llm_agent_run` handle:
+
+```cpp
+auto run = runner.run_async(request, std::move(options));
+
+// From the host's cancellation path:
+run.request_stop();
+
+auto response = run.get();
+```
+
+The handle owns the worker. Destroying it requests stop and joins the worker through `std::jthread`.
+Host applications should keep the handle somewhere with an explicit lifetime, such as the current
+operation object for a document, tab, request, or background task.
+
+The runner, its `llm_client`, any tool provider, and any memory/context objects referenced by the
+runner must outlive the async run. Wuwe does not take ownership of host application state.
+
+## Cancellation Contract
+
+Cancellation is cooperative:
+
+- `llm_client::complete(request, stop_token)` checks the token before and after the request.
+- `openrouter_llm_client` also checks cancellation between retry attempts.
+- `llm_agent_runner` checks cancellation before model calls, before tool calls, after tool calls,
+  and before each follow-up model call.
+- Tool providers may expose `invoke(name, arguments_json, stop_token)`. The runner will call that
+  overload when it exists, otherwise it falls back to `invoke(name, arguments_json)`.
+
+Cancelled runs return:
+
+```cpp
+response.error_code == wuwe::agent::llm_error_code::cancelled
+```
+
+OpenAI-compatible clients report missing credentials before network I/O when
+`llm_client_config::require_api_key` is true. Set it to false for local compatible servers that do
+not require an authorization header.
+
+## Stateful Tools
+
+State belongs to the host. A provider can expose stable reflected tools while keeping private
+application state outside the model-visible JSON schema:
+
+```cpp
+class app_tool_provider {
+public:
+  std::vector<wuwe::llm_tool> tools() const;
+
+  wuwe::llm_tool_result invoke(
+    const std::string& name,
+    const std::string& arguments_json,
+    std::stop_token stop_token);
+
+private:
+  app_session& session_;
+};
+```
+
+Use `wuwe::make_llm_tool<T>()`, `wuwe::parse_tool_arguments<T>()`, and
+`wuwe::invoke_reflected_tool<T>(arguments_json, context)` to build providers without depending on
+internal `detail` APIs.

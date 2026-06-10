@@ -2,6 +2,17 @@
 
 Wuwe is a C++20 framework for building agents.
 
+## Agent Runtime
+
+Wuwe provides a host-application-neutral agent runner for embedding agents in
+desktop apps, services, CLIs, and other C++ programs. The runner supports
+synchronous and async execution, cooperative cancellation with `std::stop_token`,
+tool lifecycle callbacks, final-result callbacks, and stateful tool providers
+that keep application state outside the model-visible schema.
+
+See [Agent Runtime](docs/agent-runtime.md) and [LLM Tools](docs/llm-tools.md)
+for the runner and reflected-tool APIs.
+
 ## Memory Management
 
 Wuwe includes a memory management layer for short-term conversation memory,

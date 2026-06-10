@@ -33,10 +33,6 @@ struct memory_tool_context {
 };
 
 struct save_memory {
-  static constexpr std::string_view name() noexcept {
-    return "save_memory";
-  }
-
   static constexpr std::string_view description =
     "Save a durable long-term memory record when the user explicitly asks to remember "
     "a stable preference, project fact, or reusable context.";
@@ -117,10 +113,6 @@ private:
 };
 
 struct search_memory {
-  static constexpr std::string_view name() noexcept {
-    return "search_memory";
-  }
-
   static constexpr std::string_view description =
     "Search durable long-term memory records in the current application scope.";
 
@@ -192,38 +184,6 @@ private:
   }
 };
 
-namespace detail {
-
-template<typename Tool>
-llm_tool make_memory_tool() {
-  return {
-    .name = std::string(Tool::name()),
-    .description = std::string(Tool::description),
-    .parameters_json_schema =
-      ::wuwe::detail::dump_json_compact(::wuwe::detail::build_object_json_schema<Tool>()),
-  };
-}
-
-template<typename Tool>
-llm_tool_result invoke_memory_tool(
-  const std::string& arguments_json,
-  const memory_tool_context& context) {
-  try {
-    const auto args = nlohmann::json::parse(arguments_json.empty() ? "{}" : arguments_json);
-    const auto tool = ::wuwe::detail::tool_json_get<Tool>(args);
-    return tool.invoke(context);
-  }
-  catch (const std::exception& ex) {
-    return {
-      .content = std::string("invalid arguments for tool '") +
-                 std::string(Tool::name()) + "': " + ex.what(),
-      .error_code = std::make_error_code(std::errc::invalid_argument),
-    };
-  }
-}
-
-} // namespace detail
-
 class memory_tool_provider {
 public:
   explicit memory_tool_provider(memory_context& memory, memory_tool_options options = {})
@@ -232,23 +192,26 @@ public:
 
   std::vector<llm_tool> tools() const {
     return {
-      detail::make_memory_tool<save_memory>(),
-      detail::make_memory_tool<search_memory>(),
+      ::wuwe::make_llm_tool<save_memory>(),
+      ::wuwe::make_llm_tool<search_memory>(),
     };
   }
 
   llm_tool_result invoke(const std::string& name, const std::string& arguments_json) const {
     const memory_tool_context context { .memory = memory_, .options = options_ };
+    const auto save_memory_name = ::wuwe::make_llm_tool<save_memory>().name;
+    const auto search_memory_name = ::wuwe::make_llm_tool<search_memory>().name;
 
-    if (name == save_memory::name()) {
-      return detail::invoke_memory_tool<save_memory>(arguments_json, context);
+    if (name == save_memory_name) {
+      return ::wuwe::invoke_reflected_tool<save_memory>(arguments_json, context);
     }
-    if (name == search_memory::name()) {
-      return detail::invoke_memory_tool<search_memory>(arguments_json, context);
+    if (name == search_memory_name) {
+      return ::wuwe::invoke_reflected_tool<search_memory>(arguments_json, context);
     }
 
     return {
-      .content = "tool not found: " + name + ". Available tools: save_memory, search_memory",
+      .content = "tool not found: " + name + ". Available tools: " +
+                 save_memory_name + ", " + search_memory_name,
       .error_code = std::make_error_code(std::errc::function_not_supported),
     };
   }

@@ -28,10 +28,6 @@ struct knowledge_tool_context {
 };
 
 struct search_knowledge {
-  static constexpr std::string_view name() noexcept {
-    return "search_knowledge";
-  }
-
   static constexpr std::string_view description =
     "Search the external knowledge base for cited document chunks relevant to the query.";
 
@@ -115,38 +111,6 @@ private:
   }
 };
 
-namespace detail {
-
-template<typename Tool>
-llm_tool make_knowledge_tool() {
-  return {
-    .name = std::string(Tool::name()),
-    .description = std::string(Tool::description),
-    .parameters_json_schema =
-      ::wuwe::detail::dump_json_compact(::wuwe::detail::build_object_json_schema<Tool>()),
-  };
-}
-
-template<typename Tool>
-llm_tool_result invoke_knowledge_tool(
-  const std::string& arguments_json,
-  const knowledge_tool_context& context) {
-  try {
-    const auto args = nlohmann::json::parse(arguments_json.empty() ? "{}" : arguments_json);
-    const auto tool = ::wuwe::detail::tool_json_get<Tool>(args);
-    return tool.invoke(context);
-  }
-  catch (const std::exception& ex) {
-    return {
-      .content = std::string("invalid arguments for tool '") +
-                 std::string(Tool::name()) + "': " + ex.what(),
-      .error_code = std::make_error_code(std::errc::invalid_argument),
-    };
-  }
-}
-
-} // namespace detail
-
 class knowledge_tool_provider {
 public:
   explicit knowledge_tool_provider(
@@ -156,21 +120,22 @@ public:
   }
 
   std::vector<llm_tool> tools() const {
-    return { detail::make_knowledge_tool<search_knowledge>() };
+    return { ::wuwe::make_llm_tool<search_knowledge>() };
   }
 
   llm_tool_result invoke(const std::string& name, const std::string& arguments_json) const {
+    const auto search_knowledge_name = ::wuwe::make_llm_tool<search_knowledge>().name;
     const knowledge_tool_context context {
       .retriever = retriever_,
       .options = options_,
     };
 
-    if (name == search_knowledge::name()) {
-      return detail::invoke_knowledge_tool<search_knowledge>(arguments_json, context);
+    if (name == search_knowledge_name) {
+      return ::wuwe::invoke_reflected_tool<search_knowledge>(arguments_json, context);
     }
 
     return {
-      .content = "tool not found: " + name + ". Available tools: search_knowledge",
+      .content = "tool not found: " + name + ". Available tools: " + search_knowledge_name,
       .error_code = std::make_error_code(std::errc::function_not_supported),
     };
   }
