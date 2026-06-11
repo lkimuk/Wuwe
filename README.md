@@ -15,6 +15,17 @@ See [Agent Runtime](docs/agent-runtime.md), [LLM Streaming](docs/llm-streaming.m
 and [LLM Tools](docs/llm-tools.md) for the runner, streaming, and reflected-tool
 APIs.
 
+## Reasoning
+
+Wuwe includes a Reasoning facade for selecting and combining standard agentic
+reasoning patterns over the lower-level runtime modules. It supports simple
+single-pass calls, ReAct-style tool use, reflect-and-retry self-correction, and
+plan-and-execute workflows while emitting one unified event stream for host
+applications. Results also include a structured trace and budget usage counters
+for auditing model, tool, reflection, and plan-step work.
+
+See [Reasoning](docs/reasoning.md) for the strategy boundary and API examples.
+
 ## Memory Management
 
 Wuwe includes a memory management layer for short-term conversation memory,

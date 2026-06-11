@@ -12,6 +12,7 @@
 #include <wuwe/agent/memory/memory.hpp>
 #include <wuwe/agent/orchestration/flow.hpp>
 #include <wuwe/agent/planning/planning.hpp>
+#include <wuwe/agent/reasoning/reasoning.hpp>
 #include <wuwe/agent/reflection/reflection.hpp>
 #include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/print.h>

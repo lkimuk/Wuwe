@@ -19,6 +19,8 @@
 WUWE_NAMESPACE_BEGIN
 
 struct llm_agent_callbacks {
+  std::function<bool(const llm_request&)> on_model_start;
+  std::function<bool(const llm_tool_call&)> allow_tool_call;
   std::function<void(std::string_view)> on_delta;
   std::function<void(const llm_tool_call&)> on_tool_start;
   std::function<void(const llm_tool_call&, const llm_tool_result&)> on_tool_result;
@@ -248,6 +250,9 @@ private:
           return cancelled_response(options.callbacks);
         }
 
+        if (!allow_tool_call(options.callbacks, call)) {
+          return cancelled_response(options.callbacks);
+        }
         emit_tool_start(options.callbacks, call);
         const llm_tool_result tool_result = invoke_(call.name, call.arguments_json, client_stop_token);
         if (is_cancelled()) {
@@ -295,6 +300,9 @@ private:
     const llm_agent_callbacks& callbacks,
     std::stop_token stop_token,
     bool use_streaming) const {
+    if (callbacks.on_model_start && !callbacks.on_model_start(request)) {
+      return cancelled_response(callbacks);
+    }
     if (!use_streaming) {
       return client_.complete(request, stop_token);
     }
@@ -313,6 +321,10 @@ private:
     if (callbacks.on_tool_start) {
       callbacks.on_tool_start(call);
     }
+  }
+
+  static bool allow_tool_call(const llm_agent_callbacks& callbacks, const llm_tool_call& call) {
+    return !callbacks.allow_tool_call || callbacks.allow_tool_call(call);
   }
 
   static void emit_tool_result(

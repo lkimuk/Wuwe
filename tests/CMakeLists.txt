@@ -48,6 +48,15 @@ wuwe_copy_runtime_dlls(reflection_tests)
 
 add_test(NAME reflection_tests COMMAND reflection_tests)
 
+add_executable(reasoning_tests
+    reasoning_tests.cpp
+)
+
+target_link_libraries(reasoning_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(reasoning_tests)
+
+add_test(NAME reasoning_tests COMMAND reasoning_tests)
+
 add_executable(mcp_tests
     mcp_tests.cpp
 )
