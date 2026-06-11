@@ -2,14 +2,19 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include <wuwe/agent/llm/llm_agent_runner.h>
 #include <wuwe/agent/llm/llm_error.h>
 #include <wuwe/agent/llm/openrouter_llm_client.h>
 #include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/print.h>
+#include <wuwe/net/http_client.h>
+#include <wuwe/net/sse_event_parser.h>
 
 namespace agent_runtime_test_tools {
 
@@ -106,6 +111,44 @@ public:
   }
 
   int calls { 0 };
+};
+
+class streaming_capture_http_client final : public http_client {
+public:
+  explicit streaming_capture_http_client(std::vector<std::string> chunks)
+      : chunks_(std::move(chunks)) {
+  }
+
+  http_response send(const http_request& request) override {
+    requests.push_back(request);
+    return response_;
+  }
+
+  http_response send_stream(
+    const http_request& request,
+    const http_stream_chunk_callback& on_chunk,
+    std::stop_token stop_token = {}) override {
+    requests.push_back(request);
+    if (stop_token.stop_requested()) {
+      return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
+    }
+
+    std::string body;
+    for (const auto& chunk : chunks_) {
+      body += chunk;
+      if (on_chunk && !on_chunk(chunk)) {
+        return { .error_code = std::make_error_code(std::errc::operation_canceled),
+          .body = body };
+      }
+    }
+    return { .body = body };
+  }
+
+  std::vector<http_request> requests;
+
+private:
+  std::vector<std::string> chunks_;
+  http_response response_;
 };
 
 class stop_aware_provider {
@@ -233,6 +276,97 @@ void test_async_runner_can_be_cancelled_by_handle() {
   require(client.calls == 1, "async runner should call model once");
 }
 
+void test_sse_parser_handles_split_and_batched_events() {
+  sse_event_parser parser;
+  std::vector<sse_event> events;
+  const auto collect = [&](const sse_event& event) {
+    events.push_back(event);
+    return true;
+  };
+
+  require(parser.feed("event: token\ndata: Hel", collect), "first split SSE feed should pass");
+  require(parser.feed("lo\nid: 1\n\ndata: [DONE]\n\n", collect),
+    "second split SSE feed should pass");
+  require(parser.finish(collect), "SSE finish should pass");
+
+  require(events.size() == 2, "SSE parser should emit two events");
+  require(events[0].event == "token", "SSE parser should retain event name");
+  require(events[0].data == "Hello", "SSE parser should join split data line");
+  require(events[0].id == "1", "SSE parser should retain event id");
+  require(events[1].data == "[DONE]", "SSE parser should parse batched done event");
+}
+
+void test_openrouter_streaming_content_and_tool_call_accumulation() {
+  auto http = std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n"
+    "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}],"
+    "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\","
+    "\"type\":\"function\",\"function\":{\"name\":\"get_\",\"arguments\":\"{\\\"city\\\"\"}}]},"
+    "\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{"
+    "\"name\":\"weather\",\"arguments\":\":\\\"Tokyo\\\"}\"}}]},"
+    "\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: [DONE]\n\n",
+  });
+
+  openrouter_llm_client client({
+    .base_url = "https://example.test",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, http);
+
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<llm_stream_event> events;
+  llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  const auto response = client.complete_stream(request, callbacks);
+  require(!response.error_code, "streaming response should succeed: " + response.error_code.message());
+  require(response.content == "Hello", "streaming content deltas should aggregate");
+  require(response.finish_reason == "tool_calls", "latest finish reason should be retained");
+  require(response.usage.total_tokens == 5, "streaming usage should be parsed");
+  require(response.tool_calls.size() == 1, "streaming tool call should be completed");
+  require(response.tool_calls[0].id == "call_1", "streaming tool call id should be retained");
+  require(response.tool_calls[0].name == "get_weather",
+    "streaming tool call name deltas should aggregate");
+  require(response.tool_calls[0].arguments_json == R"({"city":"Tokyo"})",
+    "streaming tool call argument deltas should aggregate");
+
+  int content_deltas = 0;
+  int tool_deltas = 0;
+  int tool_done = 0;
+  int done = 0;
+  for (const auto& event : events) {
+    if (event.type == llm_stream_event_type::content_delta) {
+      ++content_deltas;
+    }
+    if (event.type == llm_stream_event_type::tool_call_delta) {
+      ++tool_deltas;
+    }
+    if (event.type == llm_stream_event_type::tool_call_done) {
+      ++tool_done;
+    }
+    if (event.type == llm_stream_event_type::done) {
+      ++done;
+    }
+  }
+  require(content_deltas == 2, "streaming should emit both content deltas");
+  require(tool_deltas == 2, "streaming should emit both tool call deltas");
+  require(tool_done == 1, "streaming should emit completed tool call");
+  require(done == 1, "streaming should emit done once");
+
+  require(http->requests.size() == 1, "streaming should issue one HTTP request");
+  const auto payload = nlohmann::json::parse(http->requests[0].body);
+  require(payload.value("stream", false), "streaming request should set stream=true");
+}
+
 void test_openrouter_client_reports_missing_api_key_without_network() {
   openrouter_llm_client client({
     .base_url = "https://openrouter.ai/api",
@@ -268,6 +402,10 @@ int main() {
     run("runner pre-cancelled request does not call model",
       test_runner_pre_cancelled_request_does_not_call_model);
     run("async runner can be cancelled by handle", test_async_runner_can_be_cancelled_by_handle);
+    run("SSE parser handles split and batched events",
+      test_sse_parser_handles_split_and_batched_events);
+    run("OpenRouter streaming content and tool call accumulation",
+      test_openrouter_streaming_content_and_tool_call_accumulation);
     run("openrouter client reports missing api key without network",
       test_openrouter_client_reports_missing_api_key_without_network);
   }

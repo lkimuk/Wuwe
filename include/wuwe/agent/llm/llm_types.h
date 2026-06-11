@@ -1,8 +1,10 @@
 #ifndef WUWE_AGENT_LLM_TYPES_H
 #define WUWE_AGENT_LLM_TYPES_H
 
+#include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -67,6 +69,35 @@ struct llm_response {
   explicit operator bool() const noexcept {
     return !error_code;
   }
+};
+
+enum class llm_stream_event_type {
+  content_delta,
+  tool_call_delta,
+  tool_call_done,
+  done,
+  error
+};
+
+struct llm_tool_call_delta {
+  int index { 0 };
+  std::string id;
+  std::string name_delta;
+  std::string arguments_delta;
+};
+
+struct llm_stream_event {
+  llm_stream_event_type type { llm_stream_event_type::content_delta };
+  std::string content_delta;
+  std::optional<llm_tool_call_delta> tool_call_delta;
+  std::optional<llm_tool_call> tool_call;
+  std::optional<llm_response> response;
+  std::error_code error_code;
+  std::string message;
+};
+
+struct llm_stream_callbacks {
+  std::function<void(const llm_stream_event&)> on_event;
 };
 
 WUWE_NAMESPACE_END

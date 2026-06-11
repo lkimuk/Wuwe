@@ -3,9 +3,11 @@
 #include <wuwe/agent/llm/llm_error.h>
 #include <wuwe/net/net_errc.h>
 #include <wuwe/net/default_http_client.h>
+#include <wuwe/net/sse_event_parser.h>
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <system_error>
 #include <thread>
 
@@ -66,6 +68,12 @@ bool wait_for_retry(std::stop_token stop_token, std::chrono::milliseconds durati
   return !stop_token.stop_requested();
 }
 
+void emit_stream_event(const llm_stream_callbacks& callbacks, llm_stream_event event) {
+  if (callbacks.on_event) {
+    callbacks.on_event(event);
+  }
+}
+
 std::error_code classify_openai_error(const std::error_code& transport_or_http_error,
   const json& body) {
   if (transport_or_http_error == net_errc::unauthorized ||
@@ -111,6 +119,16 @@ std::error_code classify_openai_error(const std::error_code& transport_or_http_e
 openrouter_llm_client::openrouter_llm_client(llm_client_config config)
     : config_(std::move(config)), http_(std::make_shared<default_http_client>()) {}
 
+openrouter_llm_client::openrouter_llm_client(
+  llm_client_config config,
+  std::shared_ptr<http_client> http)
+    : config_(std::move(config)),
+      http_(std::move(http)) {
+  if (!http_) {
+    http_ = std::make_shared<default_http_client>();
+  }
+}
+
 llm_response openrouter_llm_client::complete(const llm_request& request) {
   return complete(request, {});
 }
@@ -125,25 +143,10 @@ llm_response openrouter_llm_client::complete(const llm_request& request, std::st
 
   const auto payload = build_openai_payload(request);
 
-  std::vector<std::pair<std::string, std::string>> headers {
-    {"Content-Type", "application/json"},
-  };
-  if (!config_.api_key.empty()) {
-    headers.push_back({"Authorization", "Bearer " + config_.api_key});
-  }
-  if (config_.base_url.find("openrouter.ai") != std::string::npos) {
-    if (!config_.referer_url.empty()) {
-      headers.push_back({"HTTP-Referer", config_.referer_url});
-    }
-    if (!config_.app_title.empty()) {
-      headers.push_back({"X-Title", config_.app_title});
-    }
-  }
-
   const http_request req {
     .method = "POST",
     .url = config_.base_url + "/v1/chat/completions",
-    .headers = std::move(headers),
+    .headers = build_headers(),
     .body = payload.dump(),
     .timeout = config_.timeout,
   };
@@ -177,6 +180,300 @@ llm_response openrouter_llm_client::complete(const llm_request& request, std::st
   llm_response fallback;
   fallback.error_code = std::make_error_code(std::errc::io_error);
   return fallback;
+}
+
+llm_response openrouter_llm_client::complete_stream(
+  const llm_request& request,
+  const llm_stream_callbacks& callbacks,
+  std::stop_token stop_token) {
+  if (stop_token.stop_requested()) {
+    auto response = llm_response {
+      .error_code = agent::make_error_code(agent::llm_error_code::cancelled),
+    };
+    emit_stream_event(callbacks, {
+      .type = llm_stream_event_type::error,
+      .response = response,
+      .error_code = response.error_code,
+    });
+    return response;
+  }
+  if (config_.require_api_key && config_.api_key.empty()) {
+    auto response = llm_response {
+      .error_code = agent::make_error_code(agent::llm_error_code::missing_api_key),
+    };
+    emit_stream_event(callbacks, {
+      .type = llm_stream_event_type::error,
+      .response = response,
+      .error_code = response.error_code,
+    });
+    return response;
+  }
+
+  auto payload = build_openai_payload(request);
+  payload["stream"] = true;
+  payload["stream_options"] = { { "include_usage", true } };
+
+  const http_request req {
+    .method = "POST",
+    .url = config_.base_url + "/v1/chat/completions",
+    .headers = build_headers(),
+    .body = payload.dump(),
+    .timeout = config_.timeout,
+  };
+
+  const int max_retries = config_.max_retries < 0 ? 0 : config_.max_retries;
+  const int base_backoff_ms = config_.retry_backoff_ms <= 0 ? 500 : config_.retry_backoff_ms;
+
+  for (int attempt = 0; attempt <= max_retries; ++attempt) {
+    if (stop_token.stop_requested()) {
+      auto response = llm_response {
+        .error_code = agent::make_error_code(agent::llm_error_code::cancelled),
+      };
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::error,
+        .response = response,
+        .error_code = response.error_code,
+      });
+      return response;
+    }
+
+    llm_response result;
+    sse_event_parser parser;
+    std::map<int, llm_tool_call> tool_calls;
+    bool emitted_output = false;
+    bool saw_sse_event = false;
+    bool saw_done = false;
+    bool stream_parse_failed = false;
+
+    const auto fail_stream = [&](std::error_code error_code, std::string content) {
+      result.error_code = error_code;
+      result.content = std::move(content);
+      stream_parse_failed = true;
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::error,
+        .response = result,
+        .error_code = result.error_code,
+        .message = result.content,
+      });
+      return false;
+    };
+
+    const auto process_event = [&](const sse_event& event) {
+      saw_sse_event = true;
+      if (event.data == "[DONE]") {
+        saw_done = true;
+        return true;
+      }
+
+      const auto data = json::parse(event.data, nullptr, false);
+      if (data.is_discarded() || !data.is_object()) {
+        return fail_stream(
+          agent::make_error_code(agent::llm_error_code::invalid_response),
+          event.data);
+      }
+
+      if (data.contains("error") && data["error"].is_object()) {
+        return fail_stream(
+          classify_openai_error(
+            agent::make_error_code(agent::llm_error_code::api_error),
+            data),
+          event.data);
+      }
+
+      if (data.contains("usage") && data["usage"].is_object()) {
+        const auto& usage = data["usage"];
+        result.usage.prompt_tokens = usage.value("prompt_tokens", 0);
+        result.usage.completion_tokens = usage.value("completion_tokens", 0);
+        result.usage.total_tokens = usage.value("total_tokens", 0);
+      }
+
+      if (!data.contains("choices") || !data["choices"].is_array()) {
+        return true;
+      }
+
+      for (const auto& choice : data["choices"]) {
+        if (!choice.is_object()) {
+          continue;
+        }
+        if (choice.contains("finish_reason") && choice["finish_reason"].is_string()) {
+          result.finish_reason = choice["finish_reason"].get<std::string>();
+        }
+        if (!choice.contains("delta") || !choice["delta"].is_object()) {
+          continue;
+        }
+
+        const auto& delta = choice["delta"];
+        if (delta.contains("content") && delta["content"].is_string()) {
+          const auto content_delta = delta["content"].get<std::string>();
+          if (!content_delta.empty()) {
+            result.content += content_delta;
+            emitted_output = true;
+            emit_stream_event(callbacks, {
+              .type = llm_stream_event_type::content_delta,
+              .content_delta = content_delta,
+            });
+          }
+        }
+
+        if (delta.contains("tool_calls") && delta["tool_calls"].is_array()) {
+          for (const auto& call_delta_json : delta["tool_calls"]) {
+            if (!call_delta_json.is_object()) {
+              continue;
+            }
+
+            const int index = call_delta_json.value("index", 0);
+            auto& tool_call = tool_calls[index];
+            llm_tool_call_delta call_delta {
+              .index = index,
+            };
+
+            if (call_delta_json.contains("id") && call_delta_json["id"].is_string()) {
+              tool_call.id = call_delta_json["id"].get<std::string>();
+              call_delta.id = tool_call.id;
+            }
+            else {
+              call_delta.id = tool_call.id;
+            }
+
+            if (call_delta_json.contains("function") &&
+                call_delta_json["function"].is_object()) {
+              const auto& function = call_delta_json["function"];
+              if (function.contains("name") && function["name"].is_string()) {
+                call_delta.name_delta = function["name"].get<std::string>();
+                tool_call.name += call_delta.name_delta;
+              }
+              if (function.contains("arguments") && function["arguments"].is_string()) {
+                call_delta.arguments_delta = function["arguments"].get<std::string>();
+                tool_call.arguments_json += call_delta.arguments_delta;
+              }
+            }
+
+            if (!call_delta.id.empty() || !call_delta.name_delta.empty() ||
+                !call_delta.arguments_delta.empty()) {
+              emitted_output = true;
+              emit_stream_event(callbacks, {
+                .type = llm_stream_event_type::tool_call_delta,
+                .tool_call_delta = call_delta,
+              });
+            }
+          }
+        }
+      }
+
+      return true;
+    };
+
+    const auto response = http_->send_stream(
+      req,
+      [&](std::string_view chunk) {
+        if (stop_token.stop_requested()) {
+          return false;
+        }
+        return parser.feed(chunk, process_event);
+      },
+      stop_token);
+
+    if (!stream_parse_failed) {
+      parser.finish(process_event);
+    }
+
+    if (stop_token.stop_requested()) {
+      result.error_code = agent::make_error_code(agent::llm_error_code::cancelled);
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::error,
+        .response = result,
+        .error_code = result.error_code,
+      });
+      return result;
+    }
+
+    if (stream_parse_failed) {
+      return result;
+    }
+
+    if (response.error_code) {
+      result.content = response.body;
+      const auto body = json::parse(response.body, nullptr, false);
+      result.error_code =
+        classify_openai_error(response.error_code, body.is_discarded() ? json::object() : body);
+
+      if (attempt < max_retries && !emitted_output && is_retryable_error(result.error_code) &&
+          wait_for_retry(
+            stop_token,
+            std::chrono::milliseconds(compute_backoff_ms(attempt, base_backoff_ms)))) {
+        continue;
+      }
+
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::error,
+        .response = result,
+        .error_code = result.error_code,
+        .message = result.content,
+      });
+      return result;
+    }
+
+    if (!saw_sse_event) {
+      result = parse_openai_response(response);
+      if (result.error_code) {
+        emit_stream_event(callbacks, {
+          .type = llm_stream_event_type::error,
+          .response = result,
+          .error_code = result.error_code,
+          .message = result.content,
+        });
+        return result;
+      }
+      if (!result.content.empty()) {
+        emit_stream_event(callbacks, {
+          .type = llm_stream_event_type::content_delta,
+          .content_delta = result.content,
+        });
+      }
+      for (const auto& call : result.tool_calls) {
+        emit_stream_event(callbacks, {
+          .type = llm_stream_event_type::tool_call_done,
+          .tool_call = call,
+        });
+      }
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::done,
+        .response = result,
+      });
+      return result;
+    }
+
+    for (auto& [index, call] : tool_calls) {
+      (void)index;
+      result.tool_calls.push_back(call);
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::tool_call_done,
+        .tool_call = call,
+      });
+    }
+
+    if (!saw_done && result.content.empty() && result.tool_calls.empty()) {
+      result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
+      result.content = response.body;
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::error,
+        .response = result,
+        .error_code = result.error_code,
+        .message = result.content,
+      });
+      return result;
+    }
+
+    emit_stream_event(callbacks, {
+      .type = llm_stream_event_type::done,
+      .response = result,
+    });
+    return result;
+  }
+
+  return {
+    .error_code = std::make_error_code(std::errc::io_error),
+  };
 }
 
 json openrouter_llm_client::build_openai_payload(const llm_request& request) const {
@@ -242,6 +539,24 @@ json openrouter_llm_client::build_openai_payload(const llm_request& request) con
   }
 
   return payload;
+}
+
+std::vector<std::pair<std::string, std::string>> openrouter_llm_client::build_headers() const {
+  std::vector<std::pair<std::string, std::string>> headers {
+    {"Content-Type", "application/json"},
+  };
+  if (!config_.api_key.empty()) {
+    headers.push_back({"Authorization", "Bearer " + config_.api_key});
+  }
+  if (config_.base_url.find("openrouter.ai") != std::string::npos) {
+    if (!config_.referer_url.empty()) {
+      headers.push_back({"HTTP-Referer", config_.referer_url});
+    }
+    if (!config_.app_title.empty()) {
+      headers.push_back({"X-Title", config_.app_title});
+    }
+  }
+  return headers;
 }
 
 llm_response openrouter_llm_client::parse_openai_response(const http_response& response) const {

@@ -211,7 +211,10 @@ private:
       observe_request_messages(request_to_observe);
     }
 
-    llm_response response = client_.complete(request, client_stop_token);
+    const bool use_streaming =
+      client_.supports_streaming() && static_cast<bool>(options.callbacks.on_delta);
+    llm_response response =
+      complete_model(request, options.callbacks, client_stop_token, use_streaming);
     if (is_cancelled() || response.error_code == agent::llm_error_code::cancelled) {
       return cancelled_response(options.callbacks);
     }
@@ -219,7 +222,9 @@ private:
       emit_error(options.callbacks, response);
       return response;
     }
-    emit_delta(options.callbacks, response);
+    if (!use_streaming) {
+      emit_delta(options.callbacks, response);
+    }
     observe_assistant_response(response);
 
     for (int round = 0; round < max_tool_rounds_; ++round) {
@@ -260,7 +265,7 @@ private:
         }
       }
 
-      response = client_.complete(request, client_stop_token);
+      response = complete_model(request, options.callbacks, client_stop_token, use_streaming);
       if (is_cancelled() || response.error_code == agent::llm_error_code::cancelled) {
         return cancelled_response(options.callbacks);
       }
@@ -268,7 +273,9 @@ private:
         emit_error(options.callbacks, response);
         return response;
       }
-      emit_delta(options.callbacks, response);
+      if (!use_streaming) {
+        emit_delta(options.callbacks, response);
+      }
       observe_assistant_response(response);
     }
 
@@ -281,6 +288,25 @@ private:
     if (callbacks.on_delta && !response.content.empty()) {
       callbacks.on_delta(response.content);
     }
+  }
+
+  llm_response complete_model(
+    const llm_request& request,
+    const llm_agent_callbacks& callbacks,
+    std::stop_token stop_token,
+    bool use_streaming) const {
+    if (!use_streaming) {
+      return client_.complete(request, stop_token);
+    }
+
+    llm_stream_callbacks stream_callbacks;
+    stream_callbacks.on_event = [&](const llm_stream_event& event) {
+      if (event.type == llm_stream_event_type::content_delta && callbacks.on_delta &&
+          !event.content_delta.empty()) {
+        callbacks.on_delta(event.content_delta);
+      }
+    };
+    return client_.complete_stream(request, stream_callbacks, stop_token);
   }
 
   static void emit_tool_start(const llm_agent_callbacks& callbacks, const llm_tool_call& call) {

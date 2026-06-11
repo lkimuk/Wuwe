@@ -20,12 +20,21 @@ class http_client;
 class openrouter_llm_client final : public llm_client {
 public:
   explicit openrouter_llm_client(llm_client_config config);
+  openrouter_llm_client(llm_client_config config, std::shared_ptr<http_client> http);
 
   llm_response complete(const llm_request& request) override;
+  bool supports_streaming() const noexcept override {
+    return true;
+  }
   llm_response complete(const llm_request& request, std::stop_token stop_token) override;
+  llm_response complete_stream(
+    const llm_request& request,
+    const llm_stream_callbacks& callbacks,
+    std::stop_token stop_token = {}) override;
 
 private:
   json build_openai_payload(const llm_request& request) const;
+  std::vector<std::pair<std::string, std::string>> build_headers() const;
   llm_response parse_openai_response(const http_response& response) const;
 
 private:

@@ -27,6 +27,10 @@ public:
 
   virtual llm_response complete(const llm_request& request) = 0;
 
+  virtual bool supports_streaming() const noexcept {
+    return false;
+  }
+
   virtual llm_response complete(const llm_request& request, std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
       return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
@@ -36,6 +40,45 @@ public:
     if (stop_token.stop_requested() && !response.error_code) {
       response.error_code = agent::make_error_code(agent::llm_error_code::cancelled);
     }
+    return response;
+  }
+
+  virtual llm_response complete_stream(
+    const llm_request& request,
+    const llm_stream_callbacks& callbacks,
+    std::stop_token stop_token = {}) {
+    auto response = complete(request, stop_token);
+    if (response.error_code) {
+      if (callbacks.on_event) {
+        callbacks.on_event({
+          .type = llm_stream_event_type::error,
+          .response = response,
+          .error_code = response.error_code,
+          .message = response.content,
+        });
+      }
+      return response;
+    }
+
+    if (callbacks.on_event) {
+      if (!response.content.empty()) {
+        callbacks.on_event({
+          .type = llm_stream_event_type::content_delta,
+          .content_delta = response.content,
+        });
+      }
+      for (const auto& call : response.tool_calls) {
+        callbacks.on_event({
+          .type = llm_stream_event_type::tool_call_done,
+          .tool_call = call,
+        });
+      }
+      callbacks.on_event({
+        .type = llm_stream_event_type::done,
+        .response = response,
+      });
+    }
+
     return response;
   }
 };

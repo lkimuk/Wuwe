@@ -34,9 +34,12 @@ options.callbacks.on_done = [](const wuwe::llm_response& response) {
 auto response = runner.complete(request, std::move(options));
 ```
 
-The current OpenAI-compatible client is non-streaming, so `on_delta` is emitted with available
-response content after each completed model call. The runner callback shape is already prepared
-for streaming clients that can emit token-level deltas.
+When the bound client supports true streaming and `on_delta` is set, the runner
+uses the client's streaming path and forwards content deltas as they arrive. If
+the client does not support streaming, `on_delta` falls back to receiving the
+available response content after each completed model call.
+
+OpenAI-compatible streaming is documented in [LLM Streaming](llm-streaming.md).
 
 ## Async Runner
 
