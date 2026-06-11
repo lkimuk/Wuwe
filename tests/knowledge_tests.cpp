@@ -40,6 +40,7 @@
 #include <wuwe/agent/knowledge/sqlite_knowledge_index.hpp>
 #include <wuwe/agent/knowledge/structured_knowledge_loader.hpp>
 #include <wuwe/agent/knowledge/tika_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/tika_runtime.hpp>
 #include <wuwe/agent/knowledge/url_knowledge_loader.hpp>
 #include <wuwe/agent/memory/embedding_model.hpp>
 #include <wuwe/agent/llm/llm_types.h>
@@ -753,9 +754,9 @@ void test_tika_loader_extracts_pdf_page_breaks_from_html() {
 }
 
 void test_tika_loader_live_integration_when_configured() {
-  const auto tika_url = env_value("WUWE_TIKA_URL");
+  const auto tika_url = env_value("WUWE_TEST_TIKA_URL");
   if (tika_url.empty()) {
-    println("[SKIP] tika loader live integration requires WUWE_TIKA_URL");
+    println("[SKIP] tika loader live integration requires WUWE_TEST_TIKA_URL");
     return;
   }
 
@@ -851,6 +852,43 @@ void test_url_loader_live_integration_when_configured() {
     "live URL loader should extract visible Core Guidelines text");
   require(documents.front().metadata.at("loader") == "url",
     "live URL loader should record URL metadata");
+}
+
+void test_tika_runtime_discovers_packaged_sidecar() {
+  const auto root = unique_temp_path("");
+  const auto tika_dir = root / "runtime" / "tika";
+  const auto jre_bin = root / "runtime" / "jre" / "bin";
+  std::filesystem::create_directories(tika_dir);
+  std::filesystem::create_directories(jre_bin);
+  {
+    std::ofstream(tika_dir / "tika-server-standard.jar", std::ios::binary) << "jar";
+#ifdef _WIN32
+    std::ofstream(jre_bin / "java.exe", std::ios::binary) << "java";
+#else
+    std::ofstream(jre_bin / "java", std::ios::binary) << "java";
+#endif
+  }
+
+  const auto cleanup = [&] {
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+  };
+
+  auto discovery = tika_runtime_process::discover({
+    .runtime_dir = tika_dir,
+  });
+  require(discovery.found, "tika runtime should discover configured package directory");
+  require(discovery.config.jar_path == tika_dir / "tika-server-standard.jar",
+    "tika runtime should prefer the standard Tika jar name");
+#ifdef _WIN32
+  require(discovery.config.java_path == jre_bin / "java.exe",
+    "tika runtime should prefer bundled package JRE on Windows");
+#else
+  require(discovery.config.java_path == jre_bin / "java",
+    "tika runtime should prefer bundled package JRE on Unix-like systems");
+#endif
+
+  cleanup();
 }
 
 void test_parser_registry_selects_file_and_tika_parsers() {
@@ -1409,17 +1447,18 @@ void test_qdrant_knowledge_search_builds_filters_and_parses_results() {
 }
 
 void test_qdrant_knowledge_live_integration_when_configured() {
-  const auto url = env_value("WUWE_QDRANT_URL");
+  const auto url = env_value("WUWE_TEST_QDRANT_URL");
   if (url.empty()) {
-    println("[SKIP] qdrant knowledge live integration requires WUWE_QDRANT_URL");
+    println("[SKIP] qdrant knowledge live integration requires WUWE_TEST_QDRANT_URL");
     return;
   }
 
+  const auto collection = env_value("WUWE_TEST_QDRANT_KNOWLEDGE_COLLECTION");
   qdrant_knowledge_index index({
     .base_url = url,
-    .collection_name = env_value("WUWE_QDRANT_KNOWLEDGE_COLLECTION").empty()
+    .collection_name = collection.empty()
       ? "wuwe_knowledge_live_test"
-      : env_value("WUWE_QDRANT_KNOWLEDGE_COLLECTION"),
+      : collection,
     .embedding_provider = "test",
     .embedding_model = "deterministic",
     .embedding_version = "live-test",
@@ -3141,6 +3180,8 @@ int main() {
     run("document loader loads url documents", test_document_loader_loads_url_documents);
     run("url loader live integration when configured",
       test_url_loader_live_integration_when_configured);
+    run("tika runtime discovers packaged sidecar",
+      test_tika_runtime_discovers_packaged_sidecar);
     run("parser registry selects file and tika parsers",
       test_parser_registry_selects_file_and_tika_parsers);
     run("document loader loads files with stable metadata",

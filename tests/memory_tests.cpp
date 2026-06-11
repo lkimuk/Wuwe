@@ -1012,17 +1012,18 @@ void test_qdrant_upsert_payload_includes_embedding_metadata() {
 }
 
 void test_qdrant_live_integration_when_configured() {
-  const auto url = env_value("WUWE_QDRANT_URL");
+  const auto url = env_value("WUWE_TEST_QDRANT_URL");
   if (url.empty()) {
-    println("[SKIP] qdrant live integration requires WUWE_QDRANT_URL");
+    println("[SKIP] qdrant live integration requires WUWE_TEST_QDRANT_URL");
     return;
   }
 
+  const auto collection = env_value("WUWE_TEST_QDRANT_COLLECTION");
   qdrant_memory_index index({
     .base_url = url,
-    .collection_name = env_value("WUWE_QDRANT_COLLECTION").empty()
+    .collection_name = collection.empty()
       ? "wuwe_memory_live_test"
-      : env_value("WUWE_QDRANT_COLLECTION"),
+      : collection,
     .embedding_provider = "test",
     .embedding_model = "deterministic",
     .embedding_version = "live-test",

@@ -34,7 +34,6 @@ struct example_options {
   std::filesystem::path docs_path { "docs" };
   std::string query { "RAG retrieval citations" };
   std::string qdrant_url { env_value("WUWE_QDRANT_URL", "http://localhost:6333") };
-  std::string tika_url { env_value("WUWE_TIKA_URL") };
   std::string collection { env_value(
     "WUWE_QDRANT_KNOWLEDGE_COLLECTION", "wuwe_knowledge_rag_demo") };
   std::string embedding_base_url { env_value(
@@ -64,13 +63,13 @@ void print_usage() {
   wuwe::print("{}",
     "Usage: knowledge_qdrant_rag_example [--docs PATH] [--query TEXT] [--limit N]\n"
     "                                    [--candidate-limit N]\n"
-    "                                    [--qdrant-url URL] [--tika-url URL]\n"
+    "                                    [--qdrant-url URL]\n"
     "                                    [--collection NAME] [--embedding-base-url URL]\n"
     "                                    [--embedding-model NAME] [--chat-model NAME]\n"
     "                                    [--query-rewrite] [--llm-summary]\n"
     "                                    [--answer] [--no-answer] [--clear]\n\n"
     "Environment defaults:\n"
-    "  WUWE_QDRANT_URL, WUWE_TIKA_URL, WUWE_QDRANT_KNOWLEDGE_COLLECTION\n"
+    "  WUWE_QDRANT_URL, WUWE_QDRANT_KNOWLEDGE_COLLECTION\n"
     "  OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_EMBEDDING_MODEL, OPENROUTER_CHAT_MODEL\n"
     "  OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_EMBEDDING_MODEL\n");
 }
@@ -137,9 +136,6 @@ example_options parse_args(int argc, char** argv) {
     }
     else if (arg == "--qdrant-url") {
       options.qdrant_url = read_text("--qdrant-url");
-    }
-    else if (arg == "--tika-url") {
-      options.tika_url = read_text("--tika-url");
     }
     else if (arg == "--collection") {
       options.collection = read_text("--collection");
@@ -240,7 +236,7 @@ int main(int argc, char** argv) {
                          : std::shared_ptr<wuwe::openrouter_llm_client> {};
 
     knowledge::knowledge_rag_service service(
-      retriever, knowledge::knowledge_document_loader::make_default(options.tika_url), chat_client);
+      retriever, knowledge::knowledge_document_loader::make_default(), chat_client);
     std::vector<std::shared_ptr<knowledge::knowledge_document_enricher>> enrichers;
     if (options.llm_summary) {
       enrichers.push_back(std::make_shared<knowledge::llm_knowledge_document_enricher>(chat_client,

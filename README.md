@@ -26,6 +26,16 @@ for auditing model, tool, reflection, and plan-step work.
 
 See [Reasoning](docs/reasoning.md) for the strategy boundary and API examples.
 
+## Packaging
+
+Wuwe ships as one complete package. The release archive includes the C++ SDK,
+examples, docs, and the runtime sidecars needed for turnkey PDF and Office RAG.
+The repository carries a pinned Tika Server jar and Windows x64 JRE archive so
+the package can be generated and used without extra release-time or client-side
+downloads.
+
+See [Packaging](docs/packaging.md) for the release layout and package script.
+
 ## Memory Management
 
 Wuwe includes a memory management layer for short-term conversation memory,
@@ -170,6 +180,10 @@ cmake -S . -B build
 cmake --build build --config Release
 cmake --install build --config Release --prefix <install-prefix>
 ```
+
+The install prefix includes Wuwe's bundled runtime sidecars under `runtime/`, so
+applications can consume the install directory directly without separately
+installing Java or starting a document parser.
 
 ## Use From Another Project
 

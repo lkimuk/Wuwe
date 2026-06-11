@@ -23,20 +23,32 @@ Implemented:
 - `plan_execute`: explicit planning and step execution through Planning.
 - Unified event stream across model, tool, reflection, and planning activity.
 - Structured trace records stored on `reasoning_result`.
+- JSON export helpers for usage, trace records, trace arrays, and full results.
 - Usage counters for model calls, tool calls, reflection calls, and plan steps.
 - Reasoning budgets for model calls, tool calls, tool rounds, reflection
   attempts, plan steps, and timeout.
 - Tool budget enforcement before tool invocation.
 - Model budget enforcement before real provider calls, including follow-up
   model calls inside ReAct loops.
+- `reasoning_runner::run_async()` with a `reasoning_run` handle,
+  `request_stop()`, `wait()`, and `get()`.
+- Formal run callbacks for events, content deltas, completion, errors, and
+  cancellation.
+- Stable `reasoning_error_code` values with underlying LLM/provider error
+  preservation.
+- Lightweight policy selection through `select_policy(...)`.
+- Default agentic runner builders that assemble reasonable Planning,
+  Reflection, Memory, Tool, and LLM components.
+- Knowledge-aware runner builder that exposes `search_knowledge` as a standard
+  reasoning tool.
+- Qt-friendly public headers: internal public methods no longer use `emit(...)`
+  as an API name.
 - Public umbrella include through `<wuwe/wuwe.h>`.
 - Dedicated example and tests.
 
 Not implemented yet:
 
 - token and monetary cost budgets,
-- serialized trace export helpers,
-- async `reasoning_runner` API,
 - Tree-of-Thought or search-based reasoning,
 - multi-agent debate or critique,
 - retrieval-specific research loops,
@@ -119,11 +131,30 @@ struct reasoning_result {
   std::vector<reasoning_step> steps;
   std::vector<reasoning_trace_record> trace;
   reasoning_usage usage;
+  reasoning_error_code reasoning_error;
+  std::error_code underlying_error;
   std::error_code error_code;
   std::string error;
   std::chrono::milliseconds elapsed;
 };
 ```
+
+`error_code` uses Wuwe's stable Reasoning error category. `underlying_error`
+preserves provider-level failures, such as `llm_error_code::missing_api_key`,
+so host applications can display precise diagnostics without parsing strings.
+
+Policy selection helpers are also available:
+
+```cpp
+auto policy = reasoning::select_policy({
+  .input = "Create a multi-step workflow for this task.",
+  .has_tools = true,
+});
+```
+
+The selector is intentionally lightweight. It gives host applications a sane
+default, while still allowing them to set `reasoning_policy` explicitly for
+product-specific behavior.
 
 ## Supported Modes
 
@@ -236,6 +267,56 @@ auto result = runner.run({
 });
 ```
 
+Default agentic runner:
+
+```cpp
+auto provider = std::make_shared<wuwe::tool_provider<get_weather>>();
+auto runner = reasoning::make_default_agentic_runner(client, provider, {
+  .model = "openai/gpt-4.1-mini",
+  .memory = &memory,
+});
+```
+
+This constructs the common pieces ReArk and other host applications otherwise
+have to repeat: ReAct tool execution, a default Reflection runner, a Planning
+runner, optional Memory, and the unified Reasoning event/trace contract.
+
+Knowledge-aware runner:
+
+```cpp
+auto runner = reasoning::make_knowledge_aware_runner(client, retriever, {
+  .model = "openai/gpt-4.1-mini",
+});
+```
+
+The runner exposes Knowledge Retrieval through the standard `search_knowledge`
+tool, so applications do not need to hand-roll the RAG tool bridge for every
+integration.
+
+Async execution:
+
+```cpp
+reasoning::reasoning_run_options options;
+options.callbacks.on_delta = [](std::string_view delta) {
+  std::cout << delta << std::flush;
+};
+options.callbacks.on_done = [](const reasoning::reasoning_result& result) {
+  // Persist result.trace or update host state.
+};
+
+auto run = runner.run_async({
+  .input = "Analyze this document set.",
+  .policy = reasoning::select_policy(reasoning::reasoning_task_profile::complex_analysis),
+}, std::move(options));
+
+// Later, from host cancellation:
+run.request_stop();
+auto result = run.get();
+```
+
+Callbacks execute on the runner execution thread. GUI hosts such as ReArk
+should marshal callbacks back to the UI thread before updating UI state.
+
 ## Events
 
 `reasoning_observer` receives one stream across all supported modes:
@@ -266,6 +347,19 @@ Host applications can use this stream for:
 - debugging,
 - integration tests.
 
+For async runs, `reasoning_callbacks` separates common host needs:
+
+- `on_event`: every observable event.
+- `on_delta`: streamed or synthesized content deltas.
+- `on_done`: successful terminal result.
+- `on_error`: failed terminal result with stable `reasoning_error_code` and
+  optional underlying provider error.
+- `on_cancelled`: cancelled terminal result.
+
+Terminal callbacks are dispatched after the final trace and usage are attached
+to `reasoning_result`, so UI timelines and logs can consume the final result
+without reconstructing trace state from earlier events.
+
 ## Trace Records
 
 Every emitted event is also recorded in `reasoning_result::trace`.
@@ -295,6 +389,17 @@ for (const auto& record : result.trace) {
             << record.message << "\n";
 }
 ```
+
+JSON export helpers:
+
+```cpp
+auto trace_json = reasoning::reasoning_trace_to_json(result.trace);
+auto usage_json = reasoning::reasoning_usage_to_json(result.usage);
+auto result_json = reasoning::reasoning_result_to_json(result);
+```
+
+These helpers are intended for UI timelines, debug panes, telemetry,
+session-replay storage, and golden-trace regression tests.
 
 ## Usage Counters
 
@@ -338,13 +443,20 @@ ReAct follow-up calls are counted, not just the outer reasoning call.
 `reasoning_runner_options::should_cancel` provides cooperative cancellation at
 the reasoning layer. Cancellation is also passed down to Planning through
 `plan_runner` and to model/tool loops through `llm_agent_runner` behavior.
+For Plan/Execute workflows, `tool_plan_executor` forwards the run stop token to
+providers that implement `invoke(name, arguments_json, stop_token)`.
 
 A cancelled run returns:
 
 - `completed = false`,
-- `error_code = std::errc::operation_canceled`,
+- `reasoning_error = reasoning_error_code::cancelled`,
+- `error_code = reasoning::make_error_code(reasoning_error_code::cancelled)`,
 - a terminal `cancelled` or `failed` event,
 - trace records up to the stop point.
+
+`reasoning_runner::run_async()` combines the caller-provided
+`reasoning_run_options::stop_token` with the returned handle's
+`request_stop()`. Either source can cancel the run.
 
 ## Extension Points
 
@@ -358,6 +470,11 @@ A cancelled run returns:
 - `reflection`: Reflection integration.
 - `observer`: live reasoning event sink.
 - `should_cancel`: cooperative cancellation hook.
+
+`make_default_agentic_runner(...)` and `make_knowledge_aware_runner(...)`
+cover the common production composition path. Use the lower-level
+`reasoning_runner_options` constructor when the host application needs custom
+planner, executor, reflection, memory, or model/tool completion behavior.
 
 When using a custom `agent_complete`, the custom implementation should honor
 the supplied `llm_agent_run_options.callbacks`. Reasoning-level model and tool
@@ -403,10 +520,15 @@ consistent.
 `reasoning_tests` covers:
 
 - simple one-pass model reasoning,
+- async reasoning callbacks, terminal callback behavior, and handle
+  cancellation,
 - simple mode created with `with_tools()` not executing tools,
 - ReAct-style tool use through a tool provider,
 - reflect-and-retry with critique feedback,
 - reflect-and-retry event mode labeling,
+- stable Reasoning error mapping from underlying LLM errors,
+- policy selection and JSON trace export helpers,
+- default agentic runner construction,
 - model-call budget enforcement,
 - tool-call budget enforcement before invocation,
 - structured trace records,
@@ -452,22 +574,21 @@ The current implementation is deliberately complete for the first framework
 version, but these boundaries remain:
 
 - There is no token-level or cost-level budget yet.
-- Trace records are in-memory structures; no built-in JSON export exists yet.
-- `reasoning_runner` is synchronous.
 - Custom `agent_complete` implementations must honor callbacks for budgets and
   trace fidelity.
 - `reflect_and_retry` uses a generic retry prompt rather than a prompt-template
   registry.
 - `plan_execute` relies on Planning for detailed plan semantics and does not
   duplicate plan validation.
+- `run_async` owns scheduling through `std::jthread`; GUI hosts must still
+  marshal callbacks onto their UI thread.
 
 ## Future Enhancements
 
 High-value next steps:
 
 - Token and cost budgets based on provider usage metadata.
-- JSON serialization and deserialization for `reasoning_trace_record`.
-- Async `reasoning_runner::run_async`.
+- JSON deserialization for `reasoning_trace_record`.
 - Standard trace sinks for files, telemetry, and test snapshots.
 - Configurable retry prompt templates for Reflection.
 - Per-mode default policies, such as conservative ReAct defaults or strict JSON

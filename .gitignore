@@ -44,3 +44,6 @@
 build/
 build-*/
 build-vcpkg/
+install/
+artifacts/
+dist/

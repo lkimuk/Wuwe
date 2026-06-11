@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cctype>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,20 @@ struct session_lookup {
 
   wuwe::llm_tool_result invoke(const session_context& context) const {
     return { .content = context.prefix + key.value };
+  }
+};
+
+struct shout_text {
+  static constexpr std::string_view description = "Uppercase text.";
+
+  std::string text;
+
+  std::string invoke() const {
+    std::string result = text;
+    for (auto& ch : result) {
+      ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return result;
   }
 };
 
@@ -174,6 +189,17 @@ public:
   bool saw_stop_possible { false };
 };
 
+class duplicate_echo_provider {
+public:
+  std::vector<llm_tool> tools() const {
+    return { make_llm_tool<echo_text>() };
+  }
+
+  llm_tool_result invoke(const std::string&, const std::string&) const {
+    return { .content = "duplicate" };
+  }
+};
+
 void test_public_tool_api_supports_names_schema_and_parse() {
   const auto tool = make_llm_tool<echo_text>();
   require(tool.name == "echo_text",
@@ -200,6 +226,48 @@ void test_public_tool_api_supports_stateful_context_tools() {
   require(!result.error_code, "context tool invocation should succeed: " + result.content);
   require(result.content == "session:active-tab",
     "context tool invocation should pass provider-owned state");
+}
+
+void test_composite_tool_provider_routes_tools_in_order() {
+  auto first = std::make_shared<tool_provider<echo_text>>();
+  auto second = std::make_shared<tool_provider<shout_text>>();
+  auto duplicate = std::make_shared<duplicate_echo_provider>();
+  auto provider = compose_tool_providers(first, second, duplicate);
+
+  const auto tools = provider->tools();
+  require(tools.size() == 2, "composite provider should de-duplicate tool names");
+  require(tools[0].name == "echo_text", "composite provider should preserve provider order");
+  require(tools[1].name == "shout_text", "composite provider should include later provider tools");
+
+  const auto echo = provider->invoke("echo_text", R"({"text":"first"})");
+  require(!echo.error_code && echo.content == "first",
+    "composite provider should route duplicate tool names to the first provider");
+
+  const auto shout = provider->invoke("shout_text", R"({"text":"mixed"})");
+  require(!shout.error_code && shout.content == "MIXED",
+    "composite provider should route to later providers");
+
+  const auto missing = provider->invoke("missing", "{}");
+  require(missing.error_code == std::errc::function_not_supported,
+    "composite provider should report missing tools");
+  require(contains(missing.content, "echo_text") && contains(missing.content, "shout_text"),
+    "composite provider missing-tool error should list available tools");
+}
+
+void test_composite_tool_provider_preserves_stop_token() {
+  auto stop_aware = std::make_shared<stop_aware_provider>();
+  auto provider = compose_tool_providers(stop_aware);
+  std::stop_source stop_source;
+
+  const auto result = provider->invoke(
+    "echo_text",
+    R"({"text":"with stop"})",
+    stop_source.get_token());
+
+  require(!result.error_code && result.content == "with stop",
+    "composite provider should invoke stop-aware providers");
+  require(stop_aware->saw_stop_possible,
+    "composite provider should preserve stop_token for child providers");
 }
 
 void test_runner_callbacks_and_stop_token_reach_provider() {
@@ -397,6 +465,10 @@ int main() {
       test_public_tool_api_supports_names_schema_and_parse);
     run("public tool API supports stateful context tools",
       test_public_tool_api_supports_stateful_context_tools);
+    run("composite tool provider routes tools in order",
+      test_composite_tool_provider_routes_tools_in_order);
+    run("composite tool provider preserves stop token",
+      test_composite_tool_provider_preserves_stop_token);
     run("runner callbacks and stop token reach provider",
       test_runner_callbacks_and_stop_token_reach_provider);
     run("runner pre-cancelled request does not call model",

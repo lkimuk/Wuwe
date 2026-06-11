@@ -1,7 +1,11 @@
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 #include <wuwe/agent/reasoning/reasoning.hpp>
@@ -40,6 +44,27 @@ public:
 
 private:
   std::vector<llm_response> responses_;
+};
+
+class cancellable_llm_client final : public llm_client {
+public:
+  llm_response complete(const llm_request& request) override {
+    requests.push_back(request);
+    return { .content = "late answer" };
+  }
+
+  llm_response complete(const llm_request& request, std::stop_token stop_token) override {
+    requests.push_back(request);
+    for (int index = 0; index < 100; ++index) {
+      if (stop_token.stop_requested()) {
+        return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return { .content = "late answer" };
+  }
+
+  std::vector<llm_request> requests;
 };
 
 struct echo_tool {
@@ -104,6 +129,153 @@ void simple_mode_runs_model_and_emits_events() {
     "simple reasoning emits completed");
 }
 
+void async_run_reports_deltas_and_done() {
+  scripted_llm_client client({ { .content = "async answer" } });
+  reasoning::reasoning_runner runner(client);
+  std::string streamed;
+  std::atomic<bool> done { false };
+
+  auto run = runner.run_async({
+      .input = "answer asynchronously",
+      .policy = {
+        .mode = reasoning::reasoning_mode::simple,
+      },
+    },
+    {
+      .callbacks = {
+        .on_delta = [&](std::string_view delta) {
+          streamed += delta;
+        },
+        .on_done = [&](const reasoning::reasoning_result& result) {
+          done = result.completed;
+        },
+      },
+    });
+
+  auto result = run.get();
+  require(result.completed, "async reasoning completes");
+  require(result.content == "async answer", "async reasoning returns content");
+  require(streamed == "async answer", "async reasoning reports content deltas");
+  require(done.load(), "async reasoning invokes done callback");
+}
+
+void async_run_can_be_cancelled() {
+  cancellable_llm_client client;
+  reasoning::reasoning_runner runner(client);
+  std::atomic<bool> cancelled { false };
+
+  auto run = runner.run_async({
+      .input = "cancel this",
+      .policy = {
+        .mode = reasoning::reasoning_mode::simple,
+      },
+    },
+    {
+      .callbacks = {
+        .on_cancelled = [&](const reasoning::reasoning_result& result) {
+          cancelled = result.reasoning_error == reasoning::reasoning_error_code::cancelled;
+        },
+      },
+    });
+
+  run.request_stop();
+  auto result = run.get();
+  require(!result.completed, "cancelled async reasoning does not complete");
+  require(result.reasoning_error == reasoning::reasoning_error_code::cancelled,
+    "cancelled async reasoning reports reasoning cancellation");
+  require(cancelled.load(), "cancelled async reasoning invokes cancellation callback");
+}
+
+void llm_errors_are_mapped_to_reasoning_errors() {
+  scripted_llm_client client({
+    {
+      .error_code = agent::make_error_code(agent::llm_error_code::missing_api_key),
+    },
+  });
+  reasoning::reasoning_runner runner(client);
+  std::atomic<bool> saw_error { false };
+
+  auto result = runner.run({
+      .input = "needs a key",
+      .policy = {
+        .mode = reasoning::reasoning_mode::simple,
+      },
+    },
+    {
+      .callbacks = {
+        .on_error = [&](const reasoning::reasoning_error& error) {
+          saw_error = error.code == reasoning::reasoning_error_code::missing_api_key &&
+                      error.underlying_error ==
+                        agent::make_error_code(agent::llm_error_code::missing_api_key);
+        },
+      },
+    });
+
+  require(!result.completed, "llm error fails reasoning");
+  require(result.reasoning_error == reasoning::reasoning_error_code::missing_api_key,
+    "reasoning preserves missing api key as stable error");
+  require(result.underlying_error ==
+      agent::make_error_code(agent::llm_error_code::missing_api_key),
+    "reasoning preserves underlying llm error");
+  require(saw_error.load(), "reasoning invokes error callback with mapped code");
+}
+
+void reflect_mode_preserves_model_error_details() {
+  scripted_llm_client client({
+    {
+      .error_code = agent::make_error_code(agent::llm_error_code::authentication_failed),
+    },
+  });
+  auto reflection_runner = std::make_shared<reflection::reflection_runner>(
+    reflection::reflection_runner_options {
+      .reflector = std::make_shared<scripted_reflector>(
+        std::vector<reflection::reflection_result> {}),
+    });
+  reasoning::reasoning_runner runner({
+    .client = &client,
+    .reflection = reflection_runner,
+  });
+
+  auto result = runner.run({
+    .input = "fail before reflection",
+    .policy = {
+      .mode = reasoning::reasoning_mode::reflect_and_retry,
+    },
+  });
+
+  require(!result.completed, "reflect mode stops when the model fails");
+  require(result.reasoning_error == reasoning::reasoning_error_code::authentication_failed,
+    "reflect mode preserves model reasoning error");
+  require(result.underlying_error ==
+      agent::make_error_code(agent::llm_error_code::authentication_failed),
+    "reflect mode preserves underlying model error");
+}
+
+void policy_selector_and_trace_json_are_stable() {
+  auto simple = reasoning::select_policy({
+    .input = "What is this?",
+  });
+  require(simple.mode == reasoning::reasoning_mode::simple,
+    "policy selector chooses simple for plain answers");
+
+  auto planned = reasoning::select_policy({
+    .input = "Create a multi-step workflow",
+  });
+  require(planned.mode == reasoning::reasoning_mode::plan_execute,
+    "policy selector chooses planning for multi-step workflow");
+
+  reasoning::reasoning_trace_record record {
+    .sequence = 1,
+    .type = reasoning::reasoning_event_type::completed,
+    .mode = reasoning::reasoning_mode::simple,
+    .message = "done",
+  };
+  auto json = reasoning::reasoning_trace_to_json({ record });
+  require(json.is_array() && json.size() == 1, "trace json exports an array");
+  require(json.at(0).at("type") == "completed", "trace json exports event type");
+  require(json.at(0).at("mode") == "simple", "trace json exports reasoning mode");
+}
+
 void react_mode_uses_tool_provider() {
   scripted_llm_client client({
     {
@@ -147,6 +319,31 @@ void react_mode_uses_tool_provider() {
   require(std::find(events.begin(), events.end(), reasoning::reasoning_event_type::tool_completed) !=
       events.end(),
     "react reasoning emits tool result");
+}
+
+void default_agentic_runner_wires_standard_capabilities() {
+  scripted_llm_client client({ { .content = "default answer" } });
+  auto provider = std::make_shared<tool_provider<echo_tool>>();
+  auto runner = reasoning::make_default_agentic_runner(client, provider);
+
+  auto simple = runner.run({
+    .input = "answer simply",
+    .policy = reasoning::select_policy(reasoning::reasoning_task_profile::simple_answer),
+  });
+  require(simple.completed, "default agentic runner handles simple mode");
+  require(simple.content == "default answer", "default agentic runner returns simple content");
+
+  auto reflected = runner.run({
+    .input = "reflect",
+    .policy = reasoning::select_policy(reasoning::reasoning_task_profile::high_confidence_answer),
+  });
+  require(reflected.completed, "default agentic runner includes reflection support");
+
+  auto planned = runner.run({
+    .input = "plan this",
+    .policy = reasoning::select_policy(reasoning::reasoning_task_profile::plan_required),
+  });
+  require(planned.completed, "default agentic runner includes planning support");
 }
 
 void simple_mode_with_tool_provider_does_not_execute_tools() {
@@ -377,7 +574,14 @@ void run(const char* name, void (*test)()) {
 int main() {
   try {
     run("simple mode runs model and emits events", simple_mode_runs_model_and_emits_events);
+    run("async run reports deltas and done", async_run_reports_deltas_and_done);
+    run("async run can be cancelled", async_run_can_be_cancelled);
+    run("llm errors are mapped to reasoning errors", llm_errors_are_mapped_to_reasoning_errors);
+    run("reflect mode preserves model error details", reflect_mode_preserves_model_error_details);
+    run("policy selector and trace json are stable", policy_selector_and_trace_json_are_stable);
     run("react mode uses tool provider", react_mode_uses_tool_provider);
+    run("default agentic runner wires standard capabilities",
+      default_agentic_runner_wires_standard_capabilities);
     run("simple mode with tool provider does not execute tools",
       simple_mode_with_tool_provider_does_not_execute_tools);
     run("reflect and retry retries until reflection passes",

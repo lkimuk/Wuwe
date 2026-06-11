@@ -3,14 +3,20 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
+#include <vector>
 
+#include <wuwe/agent/knowledge/knowledge_tools.hpp>
 #include <wuwe/agent/llm/llm_agent_runner.h>
 #include <wuwe/agent/llm/llm_client.h>
 #include <wuwe/agent/memory/memory_context.hpp>
@@ -31,7 +37,57 @@ struct reasoning_runner_options {
   std::shared_ptr<planning::plan_executor> executor;
   planning::plan_store* plan_store {};
   agent::memory::memory_context* memory {};
+  std::function<std::vector<llm_tool>()> available_tools;
   std::shared_ptr<reflection::reflection_runner> reflection;
+  reasoning_observer observer;
+  std::function<bool()> should_cancel;
+};
+
+class reasoning_run {
+public:
+  reasoning_run() = default;
+
+  reasoning_run(std::jthread worker, std::future<reasoning_result> future)
+      : worker_(std::move(worker)), future_(std::move(future)) {
+  }
+
+  reasoning_run(const reasoning_run&) = delete;
+  reasoning_run& operator=(const reasoning_run&) = delete;
+  reasoning_run(reasoning_run&&) noexcept = default;
+  reasoning_run& operator=(reasoning_run&&) noexcept = default;
+
+  bool valid() const noexcept {
+    return future_.valid();
+  }
+
+  void request_stop() {
+    worker_.request_stop();
+  }
+
+  bool stop_requested() const noexcept {
+    return worker_.get_stop_token().stop_requested();
+  }
+
+  void wait() const {
+    future_.wait();
+  }
+
+  reasoning_result get() {
+    return future_.get();
+  }
+
+private:
+  std::jthread worker_;
+  std::future<reasoning_result> future_;
+};
+
+struct default_agentic_runner_options {
+  std::string model;
+  agent::memory::memory_context* memory {};
+  std::shared_ptr<reflection::reflection_runner> reflection;
+  std::shared_ptr<planning::planner> planner;
+  std::shared_ptr<planning::plan_executor> executor;
+  planning::plan_store* plan_store {};
   reasoning_observer observer;
   std::function<bool()> should_cancel;
 };
@@ -59,30 +115,48 @@ public:
     std::shared_ptr<ToolProvider> provider,
     reasoning_runner_options options = {}) {
     options.client = &client;
+    if (!options.available_tools) {
+      options.available_tools = [provider] {
+        return provider->tools();
+      };
+    }
     options.agent_complete =
-      [&client, provider = std::move(provider)](
+      [&client, provider = std::move(provider), memory = options.memory](
         llm_request request,
         llm_agent_run_options run_options,
         const reasoning_policy& policy) {
         if (policy.mode == reasoning_mode::simple) {
-          llm_agent_runner runner(client, static_cast<int>(policy.budget.max_tool_rounds));
+          llm_agent_runner runner(
+            client,
+            memory,
+            static_cast<int>(policy.budget.max_tool_rounds));
           return runner.complete(std::move(request), std::move(run_options));
         }
-        llm_agent_runner runner(client, provider, static_cast<int>(policy.budget.max_tool_rounds));
+        llm_agent_runner runner(
+          client,
+          provider,
+          memory,
+          static_cast<int>(policy.budget.max_tool_rounds));
         return runner.complete(std::move(request), std::move(run_options));
       };
     return reasoning_runner(std::move(options));
   }
 
   reasoning_result run(reasoning_request request) const {
+    return run(std::move(request), {});
+  }
+
+  reasoning_result run(reasoning_request request, reasoning_run_options run_options) const {
     const auto started = std::chrono::steady_clock::now();
     auto state = std::make_shared<run_state>();
     state->started = started;
     state->budget = request.policy.budget;
+    state->callbacks = std::move(run_options.callbacks);
+    state->stop_token = run_options.stop_token;
 
     reasoning_result result;
     result.mode = request.policy.mode;
-    emit({ .type = reasoning_event_type::started, .mode = result.mode }, state.get());
+    notify({ .type = reasoning_event_type::started, .mode = result.mode }, state.get());
 
     try {
       switch (request.policy.mode) {
@@ -104,18 +178,37 @@ public:
       result.mode = request.policy.mode;
       result.completed = false;
       result.error = ex.what();
-      result.error_code = std::make_error_code(std::errc::operation_canceled);
+      result.reasoning_error =
+        dynamic_cast<const std::invalid_argument*>(&ex) != nullptr
+          ? reasoning_error_code::invalid_configuration
+          : reasoning_error_code::unknown;
+      result.error_code = make_error_code(result.reasoning_error);
     }
 
     result.elapsed = elapsed_since(started);
     if (state->budget_exceeded) {
       result.completed = false;
-      result.error_code = std::make_error_code(std::errc::operation_canceled);
+      result.reasoning_error = state->budget_error_code;
+      result.error_code = make_error_code(result.reasoning_error);
       result.error = state->budget_error;
     }
     result.usage = state->usage;
-    emit({
-      .type = result.completed ? reasoning_event_type::completed : reasoning_event_type::failed,
+    if (!result.completed && result.reasoning_error == reasoning_error_code::none) {
+      result.reasoning_error = result.error_code == make_error_code(reasoning_error_code::cancelled)
+                                 ? reasoning_error_code::cancelled
+                                 : reasoning_error_code::unknown;
+      if (!result.error_code) {
+        result.error_code = make_error_code(result.reasoning_error);
+      }
+    }
+    const auto terminal_type =
+      result.completed ? reasoning_event_type::completed
+                       : (result.reasoning_error == reasoning_error_code::cancelled
+                            ? reasoning_event_type::cancelled
+                            : reasoning_event_type::failed);
+    state->defer_terminal_callbacks = true;
+    notify({
+      .type = terminal_type,
       .mode = result.mode,
       .message = result.completed ? result.content : result.error,
       .result = &result,
@@ -123,16 +216,63 @@ public:
     }, state.get());
     result.trace = std::move(state->trace);
     result.usage = state->usage;
+    state->defer_terminal_callbacks = false;
+    dispatch_terminal_callbacks(result, state->callbacks);
     return result;
+  }
+
+  reasoning_run run_async(
+    reasoning_request request,
+    reasoning_run_options run_options = {}) const {
+    auto promise = std::make_shared<std::promise<reasoning_result>>();
+    auto future = promise->get_future();
+    auto runner = *this;
+
+    std::jthread worker(
+      [runner = std::move(runner),
+        request = std::move(request),
+        run_options = std::move(run_options),
+        promise](std::stop_token worker_stop_token) mutable {
+        const auto external_stop_token = run_options.stop_token;
+        std::stop_source run_stop_source;
+        std::stop_callback external_stop_callback(
+          external_stop_token,
+          [&run_stop_source] {
+            run_stop_source.request_stop();
+          });
+        std::stop_callback worker_stop_callback(
+          worker_stop_token,
+          [&run_stop_source] {
+            run_stop_source.request_stop();
+          });
+
+        if (external_stop_token.stop_requested() || worker_stop_token.stop_requested()) {
+          run_stop_source.request_stop();
+        }
+
+        run_options.stop_token = run_stop_source.get_token();
+        try {
+          promise->set_value(runner.run(std::move(request), std::move(run_options)));
+        }
+        catch (...) {
+          promise->set_exception(std::current_exception());
+        }
+      });
+
+    return reasoning_run(std::move(worker), std::move(future));
   }
 
 private:
   struct run_state {
     std::chrono::steady_clock::time_point started;
     reasoning_budget budget;
+    reasoning_callbacks callbacks;
+    std::stop_token stop_token;
     reasoning_usage usage;
     std::vector<reasoning_trace_record> trace;
     bool budget_exceeded { false };
+    bool defer_terminal_callbacks { false };
+    reasoning_error_code budget_error_code { reasoning_error_code::unknown };
     std::string budget_error;
   };
 
@@ -142,7 +282,7 @@ private:
     const std::shared_ptr<run_state>& state) const {
     reasoning_result result;
     result.mode = request.policy.mode;
-    if (cancelled() || budget_cancelled(*state)) {
+    if (cancelled(*state) || budget_cancelled(*state)) {
       return cancelled_result(result, state.get());
     }
 
@@ -155,8 +295,10 @@ private:
     result.final_response = response;
     result.content = response.content;
     result.completed = static_cast<bool>(response);
-    result.error_code = response.error_code;
     if (response.error_code) {
+      result.underlying_error = response.error_code;
+      result.reasoning_error = map_underlying_error(response.error_code);
+      result.error_code = make_error_code(result.reasoning_error);
       result.error = response.error_code.message();
     }
     result.steps.push_back({
@@ -168,7 +310,8 @@ private:
     });
     if (state->budget_exceeded) {
       result.completed = false;
-      result.error_code = std::make_error_code(std::errc::operation_canceled);
+      result.reasoning_error = state->budget_error_code;
+      result.error_code = make_error_code(result.reasoning_error);
       result.error = state->budget_error;
     }
     return result;
@@ -196,6 +339,8 @@ private:
       auto candidate = run_model_once(request, current_input, state);
       last.final_response = candidate.final_response;
       last.content = candidate.content;
+      last.reasoning_error = candidate.reasoning_error;
+      last.underlying_error = candidate.underlying_error;
       last.error_code = candidate.error_code;
       last.error = candidate.error;
       last.steps.insert(last.steps.end(),
@@ -208,10 +353,11 @@ private:
       if (!reserve_reflection_call(*state)) {
         last.completed = false;
         last.error = state->budget_error;
-        last.error_code = std::make_error_code(std::errc::operation_canceled);
+        last.reasoning_error = state->budget_error_code;
+        last.error_code = make_error_code(last.reasoning_error);
         return last;
       }
-      emit({ .type = reasoning_event_type::reflection_started,
+      notify({ .type = reasoning_event_type::reflection_started,
         .mode = reasoning_mode::reflect_and_retry,
         .message = candidate.content }, state.get());
 
@@ -224,7 +370,7 @@ private:
         .metadata = request.metadata,
       });
       last.reflections.push_back(reflected);
-      emit({ .type = reasoning_event_type::reflection_completed,
+      notify({ .type = reasoning_event_type::reflection_completed,
         .mode = reasoning_mode::reflect_and_retry,
         .reflection_result = &last.reflections.back().result }, state.get());
 
@@ -245,7 +391,8 @@ private:
           action == reflection::reflection_action::replan) {
         last.completed = false;
         last.error = "reflection requested " + reflection::to_string(action);
-        last.error_code = std::make_error_code(std::errc::operation_not_permitted);
+        last.reasoning_error = reasoning_error_code::reflection_blocked;
+        last.error_code = make_error_code(last.reasoning_error);
         return last;
       }
 
@@ -254,7 +401,8 @@ private:
 
     last.completed = false;
     last.error = "reflection retry budget exhausted";
-    last.error_code = std::make_error_code(std::errc::resource_unavailable_try_again);
+    last.reasoning_error = reasoning_error_code::reflection_budget_exceeded;
+    last.error_code = make_error_code(last.reasoning_error);
     return last;
   }
 
@@ -285,8 +433,9 @@ private:
       .store = options_.plan_store,
       .memory = options_.memory,
       .policy = policy,
+      .stop_token = state->stop_token,
       .should_cancel = [this, state] {
-        return cancelled() || budget_cancelled(*state);
+        return cancelled(*state) || budget_cancelled(*state);
       },
       .observer = [this, mode = request.policy.mode, state](const planning::plan_event& event) {
         emit_plan_event(mode, event, state.get());
@@ -298,6 +447,7 @@ private:
       .input = request.input,
       .system_prompt = request.system_prompt,
       .max_steps = request.policy.budget.max_steps,
+      .available_tools = options_.available_tools ? options_.available_tools() : std::vector<llm_tool> {},
       .metadata = request.metadata,
     });
 
@@ -309,7 +459,8 @@ private:
       result.error = plan_result.error.empty()
                        ? "plan stopped: " + planning::to_string(plan_result.stop_reason)
                        : plan_result.error;
-      result.error_code = std::make_error_code(std::errc::operation_canceled);
+      result.reasoning_error = reasoning_error_from_plan_stop(plan_result.stop_reason);
+      result.error_code = make_error_code(result.reasoning_error);
     }
     return result;
   }
@@ -322,7 +473,10 @@ private:
       return options_.agent_complete(std::move(request), std::move(options), policy);
     }
 
-    llm_agent_runner runner(*options_.client, static_cast<int>(policy.budget.max_tool_rounds));
+    llm_agent_runner runner(
+      *options_.client,
+      options_.memory,
+      static_cast<int>(policy.budget.max_tool_rounds));
     return runner.complete(std::move(request), std::move(options));
   }
 
@@ -344,7 +498,7 @@ private:
     llm_agent_callbacks callbacks;
     if (enable_streaming) {
       callbacks.on_delta = [this, mode, state](std::string_view delta) {
-        emit({
+        notify({
           .type = reasoning_event_type::content_delta,
           .mode = mode,
           .delta = std::string(delta),
@@ -353,7 +507,7 @@ private:
     }
     callbacks.on_model_start = [this, mode, state](const llm_request& request) {
       const bool allowed = state && reserve_model_call(*state);
-      emit({
+      notify({
         .type = reasoning_event_type::model_started,
         .mode = mode,
         .message = request.messages.empty() ? std::string {} : request.messages.back().content,
@@ -367,7 +521,7 @@ private:
       return true;
     };
     callbacks.on_tool_start = [this, mode, state](const llm_tool_call& call) {
-      emit({
+      notify({
         .type = reasoning_event_type::tool_started,
         .mode = mode,
         .message = call.name,
@@ -376,7 +530,7 @@ private:
     };
     callbacks.on_tool_result =
       [this, mode, state](const llm_tool_call& call, const llm_tool_result& result) {
-        emit({
+        notify({
           .type = reasoning_event_type::tool_completed,
           .mode = mode,
           .message = result.content,
@@ -385,7 +539,7 @@ private:
         }, state.get());
       };
     callbacks.on_cancelled = [this, mode, state] {
-      emit({ .type = reasoning_event_type::cancelled, .mode = mode }, state.get());
+      notify({ .type = reasoning_event_type::cancelled, .mode = mode }, state.get());
     };
     return callbacks;
   }
@@ -421,7 +575,7 @@ private:
         break;
     }
 
-    emit({
+    notify({
       .type = type,
       .mode = mode,
       .step_id = event.step == nullptr ? std::string {} : event.step->id,
@@ -432,17 +586,24 @@ private:
 
   reasoning_result cancelled_result(reasoning_result result, run_state* state) const {
     result.completed = false;
-    result.error_code = std::make_error_code(std::errc::operation_canceled);
-    result.error = state != nullptr && state->budget_exceeded
-                     ? state->budget_error
-                     : "reasoning cancelled";
-    emit({ .type = reasoning_event_type::cancelled, .mode = result.mode, .message = result.error },
-      state);
+    auto event_type = reasoning_event_type::cancelled;
+    if (state != nullptr && state->budget_exceeded) {
+      result.reasoning_error = state->budget_error_code;
+      result.error = state->budget_error;
+      event_type = reasoning_event_type::failed;
+    }
+    else {
+      result.reasoning_error = reasoning_error_code::cancelled;
+      result.error = "reasoning cancelled";
+    }
+    result.error_code = make_error_code(result.reasoning_error);
+    notify({ .type = event_type, .mode = result.mode, .message = result.error }, state);
     return result;
   }
 
-  bool cancelled() const {
-    return options_.should_cancel && options_.should_cancel();
+  bool cancelled(const run_state& state) const {
+    return state.stop_token.stop_requested() ||
+           (options_.should_cancel && options_.should_cancel());
   }
 
   bool reserve_model_call(run_state& state) const {
@@ -450,7 +611,10 @@ private:
       return false;
     }
     if (state.usage.model_calls >= state.budget.max_model_calls) {
-      mark_budget_exceeded(state, "reasoning model call budget exceeded");
+      mark_budget_exceeded(
+        state,
+        reasoning_error_code::model_call_budget_exceeded,
+        "reasoning model call budget exceeded");
       return false;
     }
     ++state.usage.model_calls;
@@ -462,7 +626,10 @@ private:
       return false;
     }
     if (state.usage.reflection_calls >= state.budget.max_reflection_attempts) {
-      mark_budget_exceeded(state, "reasoning reflection budget exceeded");
+      mark_budget_exceeded(
+        state,
+        reasoning_error_code::reflection_budget_exceeded,
+        "reasoning reflection budget exceeded");
       return false;
     }
     ++state.usage.reflection_calls;
@@ -474,7 +641,10 @@ private:
       return false;
     }
     if (state.usage.tool_calls >= state.budget.max_tool_calls) {
-      mark_budget_exceeded(state, "reasoning tool call budget exceeded");
+      mark_budget_exceeded(
+        state,
+        reasoning_error_code::tool_call_budget_exceeded,
+        "reasoning tool call budget exceeded");
       return false;
     }
     ++state.usage.tool_calls;
@@ -487,20 +657,27 @@ private:
     }
     if (state.budget.timeout.count() > 0 &&
         elapsed_since(state.started) >= state.budget.timeout) {
-      mark_budget_exceeded(state, "reasoning timeout budget exceeded");
+      mark_budget_exceeded(
+        state,
+        reasoning_error_code::timeout,
+        "reasoning timeout budget exceeded");
       return true;
     }
     return false;
   }
 
-  void mark_budget_exceeded(run_state& state, std::string message) const {
+  void mark_budget_exceeded(
+    run_state& state,
+    reasoning_error_code code,
+    std::string message) const {
     if (!state.budget_exceeded) {
       state.budget_exceeded = true;
+      state.budget_error_code = code;
       state.budget_error = std::move(message);
     }
   }
 
-  void emit(reasoning_event event, run_state* state = nullptr) const {
+  void notify(reasoning_event event, run_state* state = nullptr) const {
     if (state) {
       if (event.elapsed.count() == 0) {
         event.elapsed = elapsed_since(state->started);
@@ -509,6 +686,110 @@ private:
     }
     if (options_.observer) {
       options_.observer(event);
+    }
+    if (!state) {
+      return;
+    }
+    const auto& callbacks = state->callbacks;
+    if (callbacks.on_event) {
+      callbacks.on_event(event);
+    }
+    if (event.type == reasoning_event_type::content_delta && callbacks.on_delta &&
+        !event.delta.empty()) {
+      callbacks.on_delta(event.delta);
+    }
+    if (state->defer_terminal_callbacks &&
+        (event.type == reasoning_event_type::completed ||
+         event.type == reasoning_event_type::failed ||
+         event.type == reasoning_event_type::cancelled)) {
+      return;
+    }
+    if (event.type == reasoning_event_type::completed && callbacks.on_done && event.result) {
+      callbacks.on_done(*event.result);
+    }
+    if (event.type == reasoning_event_type::failed && callbacks.on_error && event.result) {
+      callbacks.on_error({
+        .code = event.result->reasoning_error,
+        .underlying_error = event.result->underlying_error,
+        .message = event.result->error,
+      });
+    }
+    if (event.type == reasoning_event_type::cancelled && callbacks.on_cancelled && event.result) {
+      callbacks.on_cancelled(*event.result);
+    }
+  }
+
+  static void dispatch_terminal_callbacks(
+    const reasoning_result& result,
+    const reasoning_callbacks& callbacks) {
+    if (result.completed) {
+      if (callbacks.on_done) {
+        callbacks.on_done(result);
+      }
+      return;
+    }
+
+    if (result.reasoning_error == reasoning_error_code::cancelled) {
+      if (callbacks.on_cancelled) {
+        callbacks.on_cancelled(result);
+      }
+      return;
+    }
+
+    if (callbacks.on_error) {
+      callbacks.on_error({
+        .code = result.reasoning_error,
+        .underlying_error = result.underlying_error,
+        .message = result.error,
+      });
+    }
+  }
+
+  static reasoning_error_code map_underlying_error(std::error_code code) {
+    if (!code) {
+      return reasoning_error_code::none;
+    }
+    if (code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::missing_api_key)) {
+      return reasoning_error_code::missing_api_key;
+    }
+    if (code ==
+        ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::authentication_failed)) {
+      return reasoning_error_code::authentication_failed;
+    }
+    if (code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::rate_limited)) {
+      return reasoning_error_code::rate_limited;
+    }
+    if (code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::model_unavailable)) {
+      return reasoning_error_code::model_unavailable;
+    }
+    if (code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::cancelled) ||
+        code == std::make_error_code(std::errc::operation_canceled)) {
+      return reasoning_error_code::cancelled;
+    }
+    if (code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::timeout) ||
+        code == std::make_error_code(std::errc::timed_out)) {
+      return reasoning_error_code::timeout;
+    }
+    if (code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::transport_error) ||
+        code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::http_error) ||
+        code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::api_error) ||
+        code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::invalid_response) ||
+        code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::empty_response)) {
+      return reasoning_error_code::transport_failed;
+    }
+    return reasoning_error_code::unknown;
+  }
+
+  static reasoning_error_code reasoning_error_from_plan_stop(
+    planning::plan_run_stop_reason reason) {
+    switch (reason) {
+      case planning::plan_run_stop_reason::cancelled:
+        return reasoning_error_code::cancelled;
+      case planning::plan_run_stop_reason::step_budget_exhausted:
+      case planning::plan_run_stop_reason::max_iterations:
+        return reasoning_error_code::planning_budget_exceeded;
+      default:
+        return reasoning_error_code::planning_failed;
     }
   }
 
@@ -557,6 +838,117 @@ private:
 
   reasoning_runner_options options_;
 };
+
+inline std::shared_ptr<reflection::reflection_runner> make_default_reflection_runner() {
+  return std::make_shared<reflection::reflection_runner>(
+    reflection::reflection_runner_options {
+      .reflector = std::make_shared<reflection::rule_reflector>(),
+    });
+}
+
+inline std::shared_ptr<planning::planner> make_default_planner(
+  llm_client& client,
+  const default_agentic_runner_options& options) {
+  if (options.planner) {
+    return options.planner;
+  }
+  if (!options.model.empty()) {
+    return std::make_shared<planning::llm_planner>(
+      client,
+      planning::llm_planner_options {
+        .model = options.model,
+      });
+  }
+  return std::make_shared<planning::static_planner>();
+}
+
+inline planning::plan_step_result complete_passthrough_plan_step(
+  const planning::plan_step& step) {
+  if (!step.input.empty()) {
+    return planning::plan_step_result::completed(step.input);
+  }
+  if (!step.description.empty()) {
+    return planning::plan_step_result::completed(step.description);
+  }
+  return planning::plan_step_result::completed(step.title);
+}
+
+inline std::shared_ptr<planning::plan_executor> make_default_passthrough_executor() {
+  return std::make_shared<planning::function_plan_executor>(
+    [](const planning::plan_step& step, const planning::plan_execution_context&) {
+      return complete_passthrough_plan_step(step);
+    });
+}
+
+template<typename ToolProvider>
+std::shared_ptr<planning::plan_executor> make_default_tool_or_passthrough_executor(
+  std::shared_ptr<ToolProvider> provider) {
+  auto tool_executor = std::make_shared<planning::tool_plan_executor>(std::move(provider));
+  return std::make_shared<planning::function_plan_executor>(
+    [tool_executor](const planning::plan_step& step, const planning::plan_execution_context& context) {
+      if (step.assigned_tool && !step.assigned_tool->empty()) {
+        return tool_executor->execute(step, context);
+      }
+      return complete_passthrough_plan_step(step);
+    });
+}
+
+template<typename ToolProvider>
+reasoning_runner make_default_agentic_runner(
+  llm_client& client,
+  std::shared_ptr<ToolProvider> provider,
+  default_agentic_runner_options options = {}) {
+  auto executor = options.executor;
+  if (!executor) {
+    executor = make_default_tool_or_passthrough_executor(provider);
+  }
+
+  reasoning_runner_options runner_options {
+    .client = &client,
+    .planner = make_default_planner(client, options),
+    .executor = std::move(executor),
+    .plan_store = options.plan_store,
+    .memory = options.memory,
+    .available_tools = [provider] {
+      return provider->tools();
+    },
+    .reflection = options.reflection ? options.reflection : make_default_reflection_runner(),
+    .observer = std::move(options.observer),
+    .should_cancel = std::move(options.should_cancel),
+  };
+  return reasoning_runner::with_tools(client, std::move(provider), std::move(runner_options));
+}
+
+inline reasoning_runner make_default_agentic_runner(
+  llm_client& client,
+  default_agentic_runner_options options = {}) {
+  auto executor = options.executor;
+  if (!executor) {
+    executor = make_default_passthrough_executor();
+  }
+
+  return reasoning_runner({
+    .client = &client,
+    .planner = make_default_planner(client, options),
+    .executor = std::move(executor),
+    .plan_store = options.plan_store,
+    .memory = options.memory,
+    .reflection = options.reflection ? options.reflection : make_default_reflection_runner(),
+    .observer = std::move(options.observer),
+    .should_cancel = std::move(options.should_cancel),
+  });
+}
+
+inline reasoning_runner make_knowledge_aware_runner(
+  llm_client& client,
+  knowledge::knowledge_retriever& retriever,
+  default_agentic_runner_options options = {},
+  knowledge::knowledge_tool_options knowledge_options = {}) {
+  auto provider = std::make_shared<knowledge::knowledge_tool_provider>(
+    retriever,
+    std::move(knowledge_options));
+  return make_default_agentic_runner(client, std::move(provider), std::move(options));
+}
 
 } // namespace wuwe::agent::reasoning
 

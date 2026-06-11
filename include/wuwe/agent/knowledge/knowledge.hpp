@@ -41,6 +41,7 @@
 #include <wuwe/agent/knowledge/sqlite_knowledge_index.hpp>
 #include <wuwe/agent/knowledge/structured_knowledge_loader.hpp>
 #include <wuwe/agent/knowledge/tika_knowledge_loader.hpp>
+#include <wuwe/agent/knowledge/tika_runtime.hpp>
 #include <wuwe/agent/knowledge/url_knowledge_loader.hpp>
 
 #endif // WUWE_AGENT_KNOWLEDGE_HPP

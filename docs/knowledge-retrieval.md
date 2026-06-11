@@ -27,8 +27,8 @@ local and service-integrated RAG workflows. The implemented surface includes:
 
 - Document ingestion for Markdown, text, local HTML, HTTP/HTTPS HTML pages, RTF,
   CSV, JSON, OpenAPI JSON, and source repositories.
-- Optional Apache Tika HTTP parsing for PDF, DOCX, PPTX, XLSX, and legacy Office
-  formats.
+- Bundled document parsing for PDF, DOCX, PPTX, XLSX, and legacy Office formats
+  in release packages.
 - Parser plugin registration through `knowledge_parser_registry`.
 - Character, token, Markdown-aware, paragraph-aware, code-fence-safe, and
   code-symbol-aware chunking.
@@ -60,11 +60,11 @@ Core Guidelines URL, ingests the page, retrieves relevant cited context, and
 asks an OpenAI-compatible LLM to answer from that context. It requires
 `OPENROUTER_API_KEY` or `OPENAI_API_KEY`.
 
-Optional live integrations are skipped unless configured:
+Optional live integrations are skipped unless configured for tests:
 
-- `WUWE_TIKA_URL` enables the Tika live parser test.
-- `WUWE_QDRANT_URL` enables the Qdrant live vector-index test.
-- `WUWE_QDRANT_KNOWLEDGE_COLLECTION` overrides the Qdrant live-test collection.
+- `WUWE_TEST_TIKA_URL` enables the Tika live parser test.
+- `WUWE_TEST_QDRANT_URL` enables the Qdrant live vector-index test.
+- `WUWE_TEST_QDRANT_KNOWLEDGE_COLLECTION` overrides the Qdrant live-test collection.
 
 Remaining work is mainly deployment- and data-specific. Production data
 migration helpers and real-corpus benchmarking entry points now exist; larger
@@ -82,12 +82,11 @@ provider:
 .\build\tests\Debug\memory_tests.exe
 ```
 
-For a live PDF retrieval smoke test, run Qdrant and Tika, then configure the
-environment:
+For a live PDF retrieval smoke test from a release package, run Qdrant and let
+Wuwe start its bundled document parser automatically:
 
 ```powershell
 $env:WUWE_QDRANT_URL="http://localhost:6333"
-$env:WUWE_TIKA_URL="http://127.0.0.1:9998"
 $env:OPENROUTER_API_KEY=[Environment]::GetEnvironmentVariable("OPENROUTER_API_KEY", "User")
 ```
 
@@ -199,7 +198,7 @@ std::vector<std::shared_ptr<knowledge::knowledge_document_enricher>> enrichers {
 
 knowledge::knowledge_rag_service rag(
   retriever,
-  knowledge::knowledge_document_loader::make_default("http://127.0.0.1:9998"),
+  knowledge::knowledge_document_loader::make_default(),
   llm_client);
 
 auto upload = rag.upload_document("handbook.pdf", {
@@ -545,10 +544,18 @@ vendor directories such as `.git`, `build`, `node_modules`, `target`, and
 
 ## Tika Document Parsing
 
-`tika_knowledge_loader` is an optional HTTP parser backend for richer document
-formats such as PDF, DOCX, PPTX, XLSX, and legacy Office files. It does not make
-Tika a required dependency of the core library; callers run Tika Server
-separately and configure the loader with its base URL:
+Wuwe release packages include a bundled parser runtime for richer document
+formats such as PDF, DOCX, PPTX, XLSX, and legacy Office files. Applications
+normally use the default document loader and do not configure the parser:
+
+```cpp
+auto loader = knowledge::knowledge_document_loader::make_default();
+auto documents = loader.load("handbook.pdf");
+```
+
+Internally, the parser is implemented by `tika_knowledge_loader`, an HTTP parser
+backend. It remains available for tests and advanced embedding scenarios where
+an application intentionally manages its own parser service:
 
 ```cpp
 knowledge::tika_knowledge_loader loader({
@@ -558,6 +565,11 @@ knowledge::tika_knowledge_loader loader({
 auto document = loader.load("handbook.pdf");
 retriever->ingest(std::move(document));
 ```
+
+`knowledge_document_loader::make_default()` looks for the package-layout
+`runtime/tika` directory next to the current working directory or executable,
+then starts the bundled parser with `runtime/jre/bin/java.exe` when available.
+Users do not need to know or configure the parser service.
 
 The loader sends raw file bytes to `PUT /tika` with `Accept: text/plain`, then
 stores the returned text in `knowledge_document::content`. Metadata records the
@@ -571,12 +583,6 @@ joined with form-feed separators, which allows the splitter to record
 page ranges. If Tika does not return page-shaped HTML, the loader falls back to
 the normal text response. Set `tika_knowledge_loader_config::extract_pdf_pages =
 false` to disable the extra request.
-
-Run Tika Server out of process, for example:
-
-```bash
-java -jar tika-server-standard.jar
-```
 
 For applications that need parser plugins, use `knowledge_parser_registry`.
 Register `file_knowledge_document_parser` for built-in text-like formats and
@@ -709,13 +715,13 @@ range, metadata, embedding metadata, and the serialized chunk. Query metadata
 filters and `tenant_id` are pushed into Qdrant filters; full ACL semantics are
 also checked after payload restore.
 
-Set `WUWE_QDRANT_URL` to run the optional live integration test. Set
-`WUWE_QDRANT_KNOWLEDGE_COLLECTION` to override the test collection name.
+Set `WUWE_TEST_QDRANT_URL` to run the optional live integration test. Set
+`WUWE_TEST_QDRANT_KNOWLEDGE_COLLECTION` to override the test collection name.
 
 ## Qdrant RAG Example
 
 `knowledge_qdrant_rag_example` demonstrates the end-to-end service-backed RAG
-path: load documents, optionally parse office/PDF files with Tika, embed chunks
+path: load documents, parse office/PDF files through the bundled parser, embed chunks
 with an OpenAI-compatible embedding API, upsert/search Qdrant, build a cited
 context block, and expose the same query through `search_knowledge`.
 
@@ -723,7 +729,6 @@ Configure the services:
 
 ```powershell
 $env:WUWE_QDRANT_URL="http://localhost:6333"
-$env:WUWE_TIKA_URL="http://127.0.0.1:9998"
 $env:OPENROUTER_API_KEY="<api-key>"
 $env:OPENROUTER_BASE_URL="https://openrouter.ai/api"
 $env:OPENROUTER_EMBEDDING_MODEL="openai/text-embedding-3-small"

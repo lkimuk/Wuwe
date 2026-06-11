@@ -1,6 +1,7 @@
 #include <memory>
 #include <filesystem>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -57,6 +58,28 @@ struct echo_tool_provider {
   }
 
   int fail_once_calls {};
+};
+
+struct stop_aware_tool_provider {
+  std::vector<llm_tool> tools() const {
+    return {
+      {
+        .name = "stop_aware",
+        .description = "Record stop token availability.",
+        .parameters_json_schema = "{}",
+      },
+    };
+  }
+
+  llm_tool_result invoke(
+    const std::string&,
+    const std::string& arguments_json,
+    std::stop_token stop_token) {
+    saw_stop_possible = saw_stop_possible || stop_token.stop_possible();
+    return { .content = arguments_json };
+  }
+
+  bool saw_stop_possible {};
 };
 
 class revising_planner final : public planner {
@@ -231,6 +254,31 @@ void tool_executor_invokes_provider() {
   const auto result = runner.run({ .goal = "call echo" });
   require(result.completed, "tool plan completes");
   require(result.final_output == "{\"message\":\"hello\"}", "tool output is surfaced");
+}
+
+void tool_executor_forwards_stop_token_to_provider() {
+  auto provider = std::make_shared<stop_aware_tool_provider>();
+  auto planner = std::make_shared<static_planner>(std::vector<plan_step> {
+    {
+      .id = "stop-aware-step",
+      .title = "Stop aware",
+      .assigned_tool = "stop_aware",
+      .input = "{\"message\":\"hello\"}",
+    },
+  });
+  auto executor = std::make_shared<tool_plan_executor>(provider);
+  std::stop_source stop_source;
+
+  plan_runner runner({
+    .planner = planner,
+    .executor = executor,
+    .stop_token = stop_source.get_token(),
+  });
+
+  const auto result = runner.run({ .goal = "call stop-aware tool" });
+  require(result.completed, "stop-aware tool plan completes");
+  require(provider->saw_stop_possible,
+    "tool plan executor should forward plan_runner stop token to provider");
 }
 
 void failed_step_can_retry() {
@@ -828,6 +876,7 @@ void agent_executor_hands_off_to_registered_agent() {
 int main() {
   static_plan_respects_dependencies();
   tool_executor_invokes_provider();
+  tool_executor_forwards_stop_token_to_provider();
   failed_step_can_retry();
   blocked_step_can_replan();
   reflection_gate_can_retry_step_output();

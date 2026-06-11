@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -17,6 +18,7 @@ namespace wuwe::agent::planning {
 struct plan_execution_context {
   const plan& current_plan;
   const std::map<std::string, nlohmann::json>& artifacts;
+  std::stop_token stop_token;
 };
 
 class plan_executor {
@@ -48,17 +50,40 @@ private:
 class tool_plan_executor final : public plan_executor {
 public:
   using tools_callback = std::function<std::vector<llm_tool>()>;
-  using invoke_callback = std::function<llm_tool_result(const std::string&, const std::string&)>;
+  using invoke_callback =
+    std::function<llm_tool_result(const std::string&, const std::string&, std::stop_token)>;
+  using simple_invoke_callback =
+    std::function<llm_tool_result(const std::string&, const std::string&)>;
 
   tool_plan_executor(tools_callback tools, invoke_callback invoke)
       : tools_(std::move(tools)), invoke_(std::move(invoke)) {
   }
 
+  tool_plan_executor(tools_callback tools, simple_invoke_callback invoke)
+      : tools_(std::move(tools)),
+        invoke_([invoke = std::move(invoke)](
+                  const std::string& name,
+                  const std::string& arguments_json,
+                  std::stop_token) {
+          return invoke(name, arguments_json);
+        }) {
+  }
+
   template<typename ToolProvider>
   explicit tool_plan_executor(std::shared_ptr<ToolProvider> provider)
       : tools_([provider] { return provider->tools(); }),
-        invoke_([provider](const std::string& name, const std::string& arguments_json) {
-          return provider->invoke(name, arguments_json);
+        invoke_([provider](
+                  const std::string& name,
+                  const std::string& arguments_json,
+                  std::stop_token stop_token) {
+          if constexpr (requires {
+                          provider->invoke(name, arguments_json, stop_token);
+                        }) {
+            return provider->invoke(name, arguments_json, stop_token);
+          }
+          else {
+            return provider->invoke(name, arguments_json);
+          }
         }) {
   }
 
@@ -84,7 +109,7 @@ public:
     const auto arguments = !step.input.empty()
                              ? step.input
                              : (step.input_json.is_object() ? step.input_json.dump() : std::string("{}"));
-    const auto result = invoke_(*step.assigned_tool, arguments);
+    const auto result = invoke_(*step.assigned_tool, arguments, context.stop_token);
     if (result.error_code) {
       return plan_step_result {
         .status = plan_step_status::failed,

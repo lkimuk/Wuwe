@@ -105,3 +105,15 @@ private:
 Use `wuwe::make_llm_tool<T>()`, `wuwe::parse_tool_arguments<T>()`, and
 `wuwe::invoke_reflected_tool<T>(arguments_json, context)` to build providers without depending on
 internal `detail` APIs.
+
+When a host has multiple providers, compose them instead of writing a forwarding
+provider:
+
+```cpp
+auto tools = wuwe::compose_tool_providers(app_tools, knowledge_tools, memory_tools);
+wuwe::llm_agent_runner runner(client, tools);
+```
+
+Provider order is significant. The first provider wins duplicate tool names, and
+`std::stop_token` is forwarded to child providers that support stop-aware
+`invoke(...)`.

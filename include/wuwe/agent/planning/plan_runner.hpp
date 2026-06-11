@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <utility>
 
@@ -67,7 +68,7 @@ public:
         trace_sink_(std::move(trace_sink)) {
   }
 
-  void emit(plan_event event) const {
+  void notify(plan_event event) const {
     if (observer_) {
       observer_(event);
     }
@@ -274,6 +275,7 @@ struct plan_runner_options {
   std::function<plan_policy_check(const plan_step&, const plan&)> policy_check;
   std::function<plan_approval_result(const plan_step&, const plan&)> approval_provider;
   plan_reflection_options reflection;
+  std::stop_token stop_token;
   std::function<bool()> should_cancel;
   plan_observer observer;
   plan_trace_sink trace_sink;
@@ -297,7 +299,7 @@ public:
 
     plan current = options_.planner->create_plan(request);
     validate_or_throw(current, validation_for(request));
-    emit({ .type = plan_event_type::plan_created, .current_plan = &current });
+    notify({ .type = plan_event_type::plan_created, .current_plan = &current });
     trace(plan_event_type::plan_created, current, nullptr, 0, {});
     remember("created plan '" + current.id + "' for goal: " + current.goal,
       { { "planning_event", "plan_created" }, { "plan_id", current.id } });
@@ -323,7 +325,7 @@ public:
     }
 
     validate_or_throw(current, validation_for(request));
-    emit({ .type = plan_event_type::plan_resumed, .current_plan = &current });
+    notify({ .type = plan_event_type::plan_resumed, .current_plan = &current });
     trace(plan_event_type::plan_resumed, current, nullptr, 0, {});
     remember("resumed plan '" + current.id + "' for goal: " + current.goal,
       { { "planning_event", "plan_resumed" }, { "plan_id", current.id } });
@@ -347,9 +349,9 @@ private:
         result.stop_reason = plan_run_stop_reason::cancelled;
         result.error = "plan run cancelled";
         result.final_output = final_output(result.value);
-        emit({ .type = plan_event_type::plan_cancelled, .current_plan = &result.value });
+        notify({ .type = plan_event_type::plan_cancelled, .current_plan = &result.value });
         trace(plan_event_type::plan_cancelled, result.value, nullptr, result.iterations, result.elapsed);
-        emit({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
+        notify({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
         trace(plan_event_type::plan_finished, result.value, nullptr, result.iterations, result.elapsed);
         save(result.value);
         return result;
@@ -360,7 +362,7 @@ private:
         result.stop_reason = plan_run_stop_reason::max_iterations;
         result.error = "plan run exceeded timeout";
         result.final_output = final_output(result.value);
-        emit({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
+        notify({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
         trace(plan_event_type::plan_finished, result.value, nullptr, result.iterations, result.elapsed);
         save(result.value);
         return result;
@@ -371,7 +373,7 @@ private:
         result.completed = false;
         result.stop_reason = plan_run_stop_reason::step_budget_exhausted;
         result.final_output = final_output(result.value);
-        emit({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
+        notify({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
         trace(plan_event_type::plan_finished, result.value, nullptr, result.iterations, result.elapsed);
         save(result.value);
         return result;
@@ -393,7 +395,7 @@ private:
         }
         if (result.stop_reason == plan_run_stop_reason::approval_required) {
           if (const auto* approval_step = plan_graph::first_pending_approval_step(result.value)) {
-            emit({ .type = plan_event_type::step_approval_required,
+            notify({ .type = plan_event_type::step_approval_required,
               .current_plan = &result.value,
               .step = approval_step });
             trace(plan_event_type::step_approval_required,
@@ -403,7 +405,7 @@ private:
               result.elapsed);
           }
         }
-        emit({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
+        notify({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
         trace(plan_event_type::plan_finished, result.value, nullptr, result.iterations, result.elapsed);
         save(result.value);
         return result;
@@ -435,7 +437,7 @@ private:
         if (recovery_policy().should_replan(*step)) {
           result.value = options_.planner->revise_plan(result.value, observation);
           validate_or_throw(result.value, validation_for(request));
-          emit({ .type = plan_event_type::plan_revised, .current_plan = &result.value });
+          notify({ .type = plan_event_type::plan_revised, .current_plan = &result.value });
           trace(plan_event_type::plan_revised, result.value, nullptr, result.iterations, result.elapsed);
           save(result.value);
           break;
@@ -450,7 +452,7 @@ private:
           result.error = step->error.empty() ? "plan step failed: " + step->id : step->error;
           result.final_output = final_output(result.value);
           result.elapsed = elapsed_since(run_started);
-          emit({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
+          notify({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
           trace(plan_event_type::plan_finished, result.value, nullptr, result.iterations, result.elapsed);
           save(result.value);
           return result;
@@ -463,7 +465,7 @@ private:
     result.error = "plan exceeded maximum iterations";
     result.final_output = final_output(result.value);
     result.elapsed = elapsed_since(run_started);
-    emit({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
+    notify({ .type = plan_event_type::plan_finished, .current_plan = &result.value });
     trace(plan_event_type::plan_finished, result.value, nullptr, result.iterations, result.elapsed);
     save(result.value);
     return result;
@@ -533,7 +535,7 @@ private:
           if (!decision.reason.empty()) {
             step.metadata["approval_reason"] = decision.reason;
           }
-          emit({ .type = plan_event_type::step_approval_required, .current_plan = &value, .step = &step });
+          notify({ .type = plan_event_type::step_approval_required, .current_plan = &value, .step = &step });
           trace(plan_event_type::step_approval_required, value, &step, run_result.iterations,
             elapsed_since(run_started));
           continue;
@@ -544,7 +546,7 @@ private:
       step.status = plan_step_status::running;
       ++step.attempts;
       ++run_result.steps_executed;
-      emit({ .type = plan_event_type::step_started, .current_plan = &value, .step = &step });
+      notify({ .type = plan_event_type::step_started, .current_plan = &value, .step = &step });
       trace(plan_event_type::step_started, value, &step, run_result.iterations, elapsed_since(run_started));
 
       const auto started = std::chrono::steady_clock::now();
@@ -552,7 +554,11 @@ private:
         .index = index,
         .future = std::async(std::launch::async, [&value, this, index] {
           return options_.executor->execute(value.steps[index],
-            { .current_plan = value, .artifacts = value.artifacts });
+            {
+              .current_plan = value,
+              .artifacts = value.artifacts,
+              .stop_token = options_.stop_token,
+            });
         }),
         .started = started,
       });
@@ -599,7 +605,7 @@ private:
       .metadata = step.metadata,
     };
 
-    emit(step_event_for(step), &value, &step, observation);
+    notify(step_event_for(step), &value, &step, observation);
     trace(step_event_for(step), value, &step, run_result.iterations, elapsed_since(run_started));
     remember_step(value.id, step);
     return observation;
@@ -636,7 +642,7 @@ private:
     }
 
     const auto observation = plan_reflection_gate::observation_from(step, value.id);
-    emit({
+    notify({
       .type = plan_event_type::step_reflected,
       .current_plan = &value,
       .step = &step,
@@ -687,8 +693,8 @@ private:
     return plan_event_type::step_failed;
   }
 
-  void emit(plan_event event) const {
-    services().emit(std::move(event));
+  void notify(plan_event event) const {
+    services().notify(std::move(event));
   }
 
   static std::chrono::milliseconds elapsed_since(std::chrono::steady_clock::time_point started) {
@@ -708,12 +714,12 @@ private:
     services().trace(type, value, step, iteration, elapsed);
   }
 
-  void emit(
+  void notify(
     plan_event_type type,
     const plan* current_plan,
     const plan_step* step,
     planning_observation observation) const {
-    emit({
+    notify({
       .type = type,
       .current_plan = current_plan,
       .step = step,

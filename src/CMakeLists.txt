@@ -79,7 +79,65 @@ install(
 install(
     DIRECTORY ${CMAKE_SOURCE_DIR}/third_party/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    REGEX "/runtime($|/)" EXCLUDE
 )
+
+option(WUWE_INSTALL_BUNDLED_RUNTIME "Install bundled runtime sidecars" ON)
+set(WUWE_BUNDLED_TIKA_DIR
+    "${CMAKE_SOURCE_DIR}/third_party/runtime/tika"
+    CACHE PATH "Bundled Tika runtime directory")
+set(WUWE_BUNDLED_JRE_ARCHIVE
+    "${CMAKE_SOURCE_DIR}/third_party/runtime/jre/temurin-21-jre-windows-x64.zip"
+    CACHE FILEPATH "Bundled JRE archive")
+
+if(WUWE_INSTALL_BUNDLED_RUNTIME)
+    if(NOT EXISTS "${WUWE_BUNDLED_TIKA_DIR}")
+        message(FATAL_ERROR
+            "Bundled Tika runtime directory not found: ${WUWE_BUNDLED_TIKA_DIR}. "
+            "Disable WUWE_INSTALL_BUNDLED_RUNTIME only for non-release developer installs.")
+    endif()
+    install(
+        DIRECTORY "${WUWE_BUNDLED_TIKA_DIR}/"
+        DESTINATION runtime/tika
+        FILES_MATCHING
+            PATTERN "tika-server*.jar"
+            PATTERN "*.sha1"
+            PATTERN "README.md"
+    )
+    install(
+        FILES
+            "${CMAKE_SOURCE_DIR}/tools/runtime/start-tika.ps1"
+            "${CMAKE_SOURCE_DIR}/tools/runtime/start-tika.sh"
+        DESTINATION runtime/tika
+    )
+
+    if(WIN32)
+        if(NOT EXISTS "${WUWE_BUNDLED_JRE_ARCHIVE}")
+            message(FATAL_ERROR
+                "Bundled JRE archive not found: ${WUWE_BUNDLED_JRE_ARCHIVE}. "
+                "Disable WUWE_INSTALL_BUNDLED_RUNTIME only for non-release developer installs.")
+        endif()
+        install(CODE "
+            set(_archive [[${WUWE_BUNDLED_JRE_ARCHIVE}]])
+            set(_destination \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/runtime/jre\")
+            set(_extract_root [[${CMAKE_CURRENT_BINARY_DIR}/wuwe-install-jre]])
+            file(REMOVE_RECURSE \"\${_destination}\")
+            file(REMOVE_RECURSE \"\${_extract_root}\")
+            file(MAKE_DIRECTORY \"\${_destination}\")
+            file(MAKE_DIRECTORY \"\${_extract_root}\")
+            file(ARCHIVE_EXTRACT INPUT \"\${_archive}\" DESTINATION \"\${_extract_root}\")
+            file(GLOB _children LIST_DIRECTORIES true \"\${_extract_root}/*\")
+            list(LENGTH _children _count)
+            if(_count EQUAL 1 AND IS_DIRECTORY \"\${_children}\")
+                set(_jre_root \"\${_children}\")
+            else()
+                set(_jre_root \"\${_extract_root}\")
+            endif()
+            file(COPY \"\${_jre_root}/\" DESTINATION \"\${_destination}\")
+            file(REMOVE_RECURSE \"\${_extract_root}\")
+        ")
+    endif()
+endif()
 
 install(
     EXPORT ${PROJECT_NAME}-targets

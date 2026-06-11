@@ -94,6 +94,19 @@ std::vector<wuwe::llm_tool> tools() const;
 wuwe::llm_tool_result invoke(const std::string& name, const std::string& arguments_json) const;
 ```
 
+Providers may also expose the stop-aware form:
+
+```cpp
+wuwe::llm_tool_result invoke(
+  const std::string& name,
+  const std::string& arguments_json,
+  std::stop_token stop_token) const;
+```
+
+When available, `tool_plan_executor` forwards `plan_execution_context::stop_token`
+to the provider. This keeps Planning cancellation behavior aligned with
+`llm_agent_runner` and Reasoning.
+
 A `plan_step` uses `assigned_tool` as the tool name and `input` as the JSON
 argument payload.
 

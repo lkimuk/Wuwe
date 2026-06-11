@@ -294,6 +294,27 @@ private:
 This keeps the model-facing parameter style consistent with ordinary reflected tools while keeping
 private state outside the schema.
 
+### Composing Providers
+
+Applications often own several independent tool providers: product tools,
+knowledge search, memory tools, or integration-specific actions. Use
+`compose_tool_providers(...)` to expose them as one provider without writing a
+manual bridge:
+
+```cpp
+auto app_tools = std::make_shared<app_tool_provider>(session);
+auto knowledge_tools =
+  std::make_shared<wuwe::agent::knowledge::knowledge_tool_provider>(*retriever);
+
+auto tools = wuwe::compose_tool_providers(app_tools, knowledge_tools);
+wuwe::llm_agent_runner runner(client, tools);
+```
+
+Providers are evaluated in order. If multiple providers expose the same tool
+name, the first provider wins and later duplicate schemas are hidden from
+`tools()`. Invocation also preserves `std::stop_token` for providers that expose
+`invoke(name, arguments_json, stop_token)`.
+
 The built-in memory tools use this pattern through `memory_tool_provider`: `save_memory` and
 `search_memory` are reflected aggregate argument types, while `memory_context`, `memory_scope`,
 policy limits, and review callbacks are provider state.

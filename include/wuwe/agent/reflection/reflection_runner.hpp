@@ -46,7 +46,7 @@ public:
       : store_(store), observer_(std::move(observer)) {
   }
 
-  void emit(reflection_event event) const {
+  void notify(reflection_event event) const {
     if (observer_) {
       observer_(event);
     }
@@ -79,7 +79,7 @@ public:
   reflection_run_result run(reflection_request request) {
     const auto started = std::chrono::steady_clock::now();
     auto services = runtime_services();
-    services.emit({ .type = reflection_event_type::reflection_started, .request = &request });
+    services.notify({ .type = reflection_event_type::reflection_started, .request = &request });
 
     auto result = reflection_policy_engine(options_.policy).apply(options_.reflector->reflect(request));
 
@@ -92,7 +92,7 @@ public:
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - started);
     services.save(record);
-    services.emit({
+    services.notify({
       .type = reflection_event_type::reflection_completed,
       .request = &record.request,
       .result = &record.result,

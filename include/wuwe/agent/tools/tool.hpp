@@ -2,8 +2,11 @@
 #define WUWE_AGENT_TOOL_HPP
 
 #include <concepts>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <sstream>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -658,6 +661,131 @@ struct tool_provider<> {
       .error_code = std::make_error_code(std::errc::function_not_supported) };
   }
 };
+
+class composite_tool_provider {
+public:
+  composite_tool_provider() = default;
+
+  template<typename... ToolProviders>
+  explicit composite_tool_provider(std::shared_ptr<ToolProviders>... providers) {
+    (add(std::move(providers)), ...);
+  }
+
+  template<typename ToolProvider>
+  void add(std::shared_ptr<ToolProvider> provider) {
+    providers_.push_back({
+      .tools = [provider] {
+        return provider->tools();
+      },
+      .invoke = [provider](
+                  const std::string& name,
+                  const std::string& arguments_json,
+                  std::stop_token stop_token) {
+        if constexpr (requires {
+                        provider->invoke(name, arguments_json, stop_token);
+                      }) {
+          return provider->invoke(name, arguments_json, stop_token);
+        }
+        else {
+          return provider->invoke(name, arguments_json);
+        }
+      },
+    });
+  }
+
+  std::vector<llm_tool> tools() const {
+    std::vector<llm_tool> result;
+    std::vector<std::string> seen_names;
+    for (const auto& provider : providers_) {
+      for (auto tool : provider.tools()) {
+        if (contains_name(seen_names, tool.name)) {
+          continue;
+        }
+        seen_names.push_back(tool.name);
+        result.push_back(std::move(tool));
+      }
+    }
+    return result;
+  }
+
+  llm_tool_result invoke(
+    const std::string& name,
+    const std::string& arguments_json) const {
+    return invoke(name, arguments_json, {});
+  }
+
+  llm_tool_result invoke(
+    const std::string& name,
+    const std::string& arguments_json,
+    std::stop_token stop_token) const {
+    for (const auto& provider : providers_) {
+      if (!provider_has_tool(provider, name)) {
+        continue;
+      }
+      return provider.invoke(name, arguments_json, stop_token);
+    }
+
+    return {
+      .content = "tool not found: " + name + available_tool_suffix(),
+      .error_code = std::make_error_code(std::errc::function_not_supported),
+    };
+  }
+
+private:
+  struct provider_entry {
+    std::function<std::vector<llm_tool>()> tools;
+    std::function<llm_tool_result(
+      const std::string&,
+      const std::string&,
+      std::stop_token)> invoke;
+  };
+
+  static bool contains_name(
+    const std::vector<std::string>& names,
+    const std::string& name) {
+    for (const auto& existing : names) {
+      if (existing == name) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool provider_has_tool(
+    const provider_entry& provider,
+    const std::string& name) {
+    for (const auto& tool : provider.tools()) {
+      if (tool.name == name) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  std::string available_tool_suffix() const {
+    const auto available = tools();
+    if (available.empty()) {
+      return {};
+    }
+
+    std::string suffix = ". Available tools: ";
+    for (std::size_t i = 0; i < available.size(); ++i) {
+      if (i > 0) {
+        suffix += ", ";
+      }
+      suffix += available[i].name;
+    }
+    return suffix;
+  }
+
+  std::vector<provider_entry> providers_;
+};
+
+template<typename... ToolProviders>
+std::shared_ptr<composite_tool_provider> compose_tool_providers(
+  std::shared_ptr<ToolProviders>... providers) {
+  return std::make_shared<composite_tool_provider>(std::move(providers)...);
+}
 
 WUWE_NAMESPACE_END
 

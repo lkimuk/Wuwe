@@ -12,6 +12,7 @@
 #include <wuwe/agent/knowledge/knowledge_parser_registry.hpp>
 #include <wuwe/agent/knowledge/knowledge_path.hpp>
 #include <wuwe/agent/knowledge/knowledge_document_enricher.hpp>
+#include <wuwe/agent/knowledge/tika_runtime.hpp>
 #include <wuwe/agent/knowledge/url_knowledge_loader.hpp>
 
 namespace wuwe::agent::knowledge {
@@ -34,13 +35,22 @@ class knowledge_document_loader {
 public:
   explicit knowledge_document_loader(
     knowledge_parser_registry registry,
-    std::shared_ptr<url_knowledge_loader> url_loader = std::make_shared<url_knowledge_loader>())
-      : registry_(std::move(registry)), url_loader_(std::move(url_loader)) {
+    std::shared_ptr<url_knowledge_loader> url_loader = std::make_shared<url_knowledge_loader>(),
+    std::vector<std::shared_ptr<tika_runtime_process>> runtimes = {})
+      : registry_(std::move(registry)),
+        url_loader_(std::move(url_loader)),
+        runtimes_(std::move(runtimes)) {
   }
 
-  static knowledge_document_loader make_default(std::string tika_url = {}) {
+  static knowledge_document_loader make_default() {
     knowledge_parser_registry registry;
     registry.register_parser(std::make_shared<file_knowledge_document_parser>());
+    std::vector<std::shared_ptr<tika_runtime_process>> runtimes;
+    std::string tika_url;
+    if (auto runtime = tika_runtime_process::ensure_running()) {
+      tika_url = runtime->base_url();
+      runtimes.push_back(std::move(runtime));
+    }
     if (!tika_url.empty()) {
       registry.register_parser(
         std::make_shared<tika_knowledge_document_parser>(
@@ -48,7 +58,9 @@ public:
             .base_url = std::move(tika_url),
           })));
     }
-    return knowledge_document_loader(std::move(registry));
+    return knowledge_document_loader(std::move(registry),
+      std::make_shared<url_knowledge_loader>(),
+      std::move(runtimes));
   }
 
   std::vector<knowledge_document> load(
@@ -124,6 +136,7 @@ private:
 
   knowledge_parser_registry registry_;
   std::shared_ptr<url_knowledge_loader> url_loader_;
+  std::vector<std::shared_ptr<tika_runtime_process>> runtimes_;
 };
 
 } // namespace wuwe::agent::knowledge
