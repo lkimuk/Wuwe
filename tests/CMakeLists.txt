@@ -30,6 +30,25 @@ wuwe_copy_runtime_dlls(agent_runtime_tests)
 
 add_test(NAME agent_runtime_tests COMMAND agent_runtime_tests)
 
+add_executable(net_tests
+    net_tests.cpp
+)
+
+target_link_libraries(net_tests PRIVATE wuwe)
+if(NOT TARGET OpenSSL::SSL)
+    find_package(OpenSSL QUIET)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_compile_definitions(net_tests PRIVATE
+        CPPHTTPLIB_OPENSSL_SUPPORT=1
+        WUWE_NET_TESTS_HAS_OPENSSL=1
+    )
+    target_link_libraries(net_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+wuwe_copy_runtime_dlls(net_tests)
+
+add_test(NAME net_tests COMMAND net_tests)
+
 add_executable(planning_tests
     planning_tests.cpp
 )

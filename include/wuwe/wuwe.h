@@ -16,6 +16,9 @@
 #include <wuwe/agent/reflection/reflection.hpp>
 #include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/print.h>
+#include <wuwe/net/cpr_http_client.h>
+#include <wuwe/net/default_http_client.h>
+#include <wuwe/net/httplib_http_client.h>
 
 WUWE_NAMESPACE_BEGIN
 

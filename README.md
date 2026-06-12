@@ -36,6 +36,24 @@ downloads.
 
 See [Packaging](docs/packaging.md) for the release layout and package script.
 
+## HTTP Backends
+
+Wuwe's network layer is built behind the `http_client` abstraction. The default
+backend remains cpr/libcurl for mature HTTPS behavior, and Wuwe also ships a
+`cpp-httplib` backend for local HTTP, comparison testing, and one-command
+backend switching.
+
+The shared contract exposes status codes, response headers, transport errors,
+streaming callbacks, cancellation, redirect controls, proxy options, TLS
+verification controls, custom CA paths, and trace id propagation.
+
+Use `-DWUWE_HTTP_BACKEND=httplib` to make `default_http_client` use
+`cpp-httplib`, or construct `cpr_http_client` / `httplib_http_client`
+explicitly for A/B testing.
+
+See [HTTP Backends](docs/http-backends.md) for backend selection and
+verification.
+
 ## Memory Management
 
 Wuwe includes a memory management layer for short-term conversation memory,

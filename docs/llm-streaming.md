@@ -22,8 +22,10 @@ string handling into agent orchestration code.
 ### HTTP Transport
 
 `http_client::send_stream()` accepts a chunk callback and a `std::stop_token`.
-`default_http_client` implements it with cpr's write callback and checks
-cancellation while data is being received.
+`default_http_client` delegates to the selected HTTP backend. The default build
+uses cpr/libcurl; `-DWUWE_HTTP_BACKEND=httplib` switches the default to the
+`cpp-httplib` backend. Both concrete backends implement the same streaming
+contract and check cancellation while data is being received.
 
 The transport layer does not understand SSE or LLM payloads. Its contract is
 only:
@@ -31,6 +33,7 @@ only:
 - deliver body chunks in arrival order,
 - stop when the callback returns false,
 - return transport or HTTP errors,
+- expose status codes and response headers for diagnostics,
 - preserve the response body for diagnostics and fallback parsing.
 
 ### SSE Parser
@@ -123,8 +126,8 @@ Cancellation is cooperative:
   calls.
 - `openrouter_llm_client::complete_stream()` checks before attempts and during
   chunk processing.
-- `default_http_client::send_stream()` aborts the cpr transfer if the stop token
-  is requested or the callback returns false.
+- `default_http_client::send_stream()` aborts the selected backend transfer if
+  the stop token is requested or the callback returns false.
 
 Cancelled calls return `llm_error_code::cancelled` when the LLM layer observes
 the stop request.

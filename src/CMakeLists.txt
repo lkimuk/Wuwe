@@ -22,6 +22,14 @@ FetchContent_Declare(cpr GIT_REPOSITORY https://github.com/libcpr/cpr.git
                          GIT_TAG f091b2c061b307ee89b164c39976fc9202a1c79d)
 FetchContent_MakeAvailable(cpr)
 
+set(WUWE_HTTP_BACKEND "cpr" CACHE STRING "Default HTTP backend: cpr or httplib")
+set_property(CACHE WUWE_HTTP_BACKEND PROPERTY STRINGS cpr httplib)
+string(TOLOWER "${WUWE_HTTP_BACKEND}" WUWE_HTTP_BACKEND_NORMALIZED)
+if(NOT WUWE_HTTP_BACKEND_NORMALIZED STREQUAL "cpr" AND
+   NOT WUWE_HTTP_BACKEND_NORMALIZED STREQUAL "httplib")
+    message(FATAL_ERROR "WUWE_HTTP_BACKEND must be either 'cpr' or 'httplib'")
+endif()
+
 # ---------------------------------------------------------------------------------------
 # Static/Shared library
 # ---------------------------------------------------------------------------------------
@@ -35,6 +43,37 @@ target_include_directories(${PROJECT_NAME}
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE cpr::cpr)
+
+if(WUWE_HTTP_BACKEND_NORMALIZED STREQUAL "httplib")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE WUWE_DEFAULT_HTTP_BACKEND_HTTPLIB=1)
+    message(STATUS "Wuwe default HTTP backend: cpp-httplib")
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE WUWE_DEFAULT_HTTP_BACKEND_CPR=1)
+    message(STATUS "Wuwe default HTTP backend: cpr/libcurl")
+endif()
+
+option(WUWE_ENABLE_HTTPLIB_SSL "Enable HTTPS support for the cpp-httplib HTTP backend when OpenSSL is available" ON)
+if(WUWE_ENABLE_HTTPLIB_SSL)
+    if(NOT OPENSSL_ROOT_DIR)
+        find_program(WUWE_OPENSSL_EXECUTABLE openssl)
+        if(WUWE_OPENSSL_EXECUTABLE)
+            get_filename_component(WUWE_OPENSSL_BIN_DIR "${WUWE_OPENSSL_EXECUTABLE}" DIRECTORY)
+            get_filename_component(WUWE_OPENSSL_ROOT_FROM_EXE "${WUWE_OPENSSL_BIN_DIR}" DIRECTORY)
+            if(EXISTS "${WUWE_OPENSSL_ROOT_FROM_EXE}/include/openssl/ssl.h")
+                set(OPENSSL_ROOT_DIR "${WUWE_OPENSSL_ROOT_FROM_EXE}" CACHE PATH
+                    "OpenSSL root inferred from openssl executable" FORCE)
+            endif()
+        endif()
+    endif()
+    find_package(OpenSSL QUIET)
+    if(OpenSSL_FOUND)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT=1)
+        target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        message(STATUS "cpp-httplib HTTPS support enabled")
+    else()
+        message(STATUS "cpp-httplib HTTPS support disabled: OpenSSL not found")
+    endif()
+endif()
 
 option(WUWE_ENABLE_SQLITE "Enable SQLite-backed memory store when SQLite3 is available" ON)
 if(WUWE_ENABLE_SQLITE)

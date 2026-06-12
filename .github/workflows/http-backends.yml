@@ -1,0 +1,33 @@
+name: HTTP Backends
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - dev
+      - memory
+
+jobs:
+  test:
+    name: ${{ matrix.backend }} on Windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend:
+          - cpr
+          - httplib
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build-${{ matrix.backend }} -DWUWE_HTTP_BACKEND=${{ matrix.backend }}
+
+      - name: Build
+        run: cmake --build build-${{ matrix.backend }} --config Debug -- /m:1
+
+      - name: Test
+        run: ctest --test-dir build-${{ matrix.backend }} -C Debug --output-on-failure
