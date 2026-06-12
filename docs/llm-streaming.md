@@ -76,10 +76,21 @@ Stream callbacks receive `llm_stream_event`:
 - `done`: final accumulated `llm_response`.
 - `error`: terminal failure, with partial response content when available.
 
-### OpenRouter / OpenAI-Compatible Client
+### Provider Clients
 
-`openrouter_llm_client::complete_stream()` sends the normal chat-completions
-payload plus:
+All built-in LLM clients expose streaming through the same
+`llm_client::complete_stream()` contract. Provider-specific clients translate
+their native stream format into Wuwe's shared events:
+
+- OpenAI-compatible presets parse SSE chat-completion deltas.
+- Anthropic parses Messages API SSE events.
+- Gemini parses `streamGenerateContent?alt=sse` events.
+- Ollama parses line-delimited JSON chat chunks.
+
+### OpenAI-Compatible Client And Provider Presets
+
+`openai_compatible_llm_client::complete_stream()` sends the normal
+chat-completions payload plus:
 
 ```json
 {
@@ -124,7 +135,7 @@ Cancellation is cooperative:
 
 - `llm_agent_runner` checks before model calls, tool calls, and follow-up model
   calls.
-- `openrouter_llm_client::complete_stream()` checks before attempts and during
+- `openai_compatible_llm_client::complete_stream()` checks before attempts and during
   chunk processing.
 - `default_http_client::send_stream()` aborts the selected backend transfer if
   the stop token is requested or the callback returns false.

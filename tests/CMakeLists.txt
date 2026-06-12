@@ -30,6 +30,15 @@ wuwe_copy_runtime_dlls(agent_runtime_tests)
 
 add_test(NAME agent_runtime_tests COMMAND agent_runtime_tests)
 
+add_executable(llm_provider_tests
+    llm_provider_tests.cpp
+)
+
+target_link_libraries(llm_provider_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(llm_provider_tests)
+
+add_test(NAME llm_provider_tests COMMAND llm_provider_tests)
+
 add_executable(net_tests
     net_tests.cpp
 )

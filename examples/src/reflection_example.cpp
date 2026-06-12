@@ -45,7 +45,7 @@ int main() {
 
   namespace reflection = wuwe::agent::reflection;
 
-  const auto api_key = wuwe::llm_client_config::load_api_key_from_env();
+  const auto api_key = wuwe::llm_client_config::load_openrouter_api_key_from_env();
   if (api_key.empty()) {
     wuwe::println("missing OPENROUTER_API_KEY");
     wuwe::println("PowerShell:");

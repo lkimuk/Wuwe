@@ -15,12 +15,41 @@ if(MSVC)
 endif()
 
 include(FetchContent)
+
+option(WUWE_ENABLE_OPENSSL "Enable OpenSSL-backed HTTPS support when OpenSSL is available" ON)
+if(WUWE_ENABLE_OPENSSL)
+    if(NOT OPENSSL_ROOT_DIR)
+        find_program(WUWE_OPENSSL_EXECUTABLE openssl)
+        if(WUWE_OPENSSL_EXECUTABLE)
+            get_filename_component(WUWE_OPENSSL_BIN_DIR "${WUWE_OPENSSL_EXECUTABLE}" DIRECTORY)
+            get_filename_component(WUWE_OPENSSL_ROOT_FROM_EXE "${WUWE_OPENSSL_BIN_DIR}" DIRECTORY)
+            if(EXISTS "${WUWE_OPENSSL_ROOT_FROM_EXE}/include/openssl/ssl.h")
+                set(OPENSSL_ROOT_DIR "${WUWE_OPENSSL_ROOT_FROM_EXE}" CACHE PATH
+                    "OpenSSL root inferred from openssl executable" FORCE)
+            endif()
+        endif()
+    endif()
+    find_package(OpenSSL QUIET)
+endif()
+
+if(OpenSSL_FOUND)
+    set(CPR_FORCE_OPENSSL_BACKEND ON CACHE BOOL "Use OpenSSL as cpr/curl TLS backend" FORCE)
+    set(CURL_USE_OPENSSL ON CACHE BOOL "Use OpenSSL for libcurl HTTPS support" FORCE)
+    set(CURL_USE_SCHANNEL OFF CACHE BOOL "Disable Schannel when OpenSSL is selected" FORCE)
+    message(STATUS "OpenSSL detected: cpr/libcurl and cpp-httplib HTTPS support enabled")
+else()
+    message(STATUS "OpenSSL not found: cpr/libcurl will use its platform TLS backend")
+endif()
+
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build dependencies as static libraries" FORCE)
 set(BUILD_STATIC_LIBS ON CACHE BOOL "Build curl static libraries" FORCE)
 set(CPR_CURL_USE_LIBPSL OFF CACHE BOOL "Disable libpsl to avoid meson dependency on Windows" FORCE)
 FetchContent_Declare(cpr GIT_REPOSITORY https://github.com/libcpr/cpr.git
                          GIT_TAG f091b2c061b307ee89b164c39976fc9202a1c79d)
 FetchContent_MakeAvailable(cpr)
+set_target_properties(cpr PROPERTIES
+    DEBUG_POSTFIX d
+)
 
 set(WUWE_HTTP_BACKEND "cpr" CACHE STRING "Default HTTP backend: cpr or httplib")
 set_property(CACHE WUWE_HTTP_BACKEND PROPERTY STRINGS cpr httplib)
@@ -34,6 +63,9 @@ endif()
 # Static/Shared library
 # ---------------------------------------------------------------------------------------
 add_library(${PROJECT_NAME} STATIC ${PROJECT_SOURCES})
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    DEBUG_POSTFIX d
+)
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
@@ -53,26 +85,12 @@ else()
 endif()
 
 option(WUWE_ENABLE_HTTPLIB_SSL "Enable HTTPS support for the cpp-httplib HTTP backend when OpenSSL is available" ON)
-if(WUWE_ENABLE_HTTPLIB_SSL)
-    if(NOT OPENSSL_ROOT_DIR)
-        find_program(WUWE_OPENSSL_EXECUTABLE openssl)
-        if(WUWE_OPENSSL_EXECUTABLE)
-            get_filename_component(WUWE_OPENSSL_BIN_DIR "${WUWE_OPENSSL_EXECUTABLE}" DIRECTORY)
-            get_filename_component(WUWE_OPENSSL_ROOT_FROM_EXE "${WUWE_OPENSSL_BIN_DIR}" DIRECTORY)
-            if(EXISTS "${WUWE_OPENSSL_ROOT_FROM_EXE}/include/openssl/ssl.h")
-                set(OPENSSL_ROOT_DIR "${WUWE_OPENSSL_ROOT_FROM_EXE}" CACHE PATH
-                    "OpenSSL root inferred from openssl executable" FORCE)
-            endif()
-        endif()
-    endif()
-    find_package(OpenSSL QUIET)
-    if(OpenSSL_FOUND)
-        target_compile_definitions(${PROJECT_NAME} PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT=1)
-        target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-        message(STATUS "cpp-httplib HTTPS support enabled")
-    else()
-        message(STATUS "cpp-httplib HTTPS support disabled: OpenSSL not found")
-    endif()
+if(WUWE_ENABLE_HTTPLIB_SSL AND OpenSSL_FOUND)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT=1)
+    target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    message(STATUS "cpp-httplib HTTPS support enabled")
+elseif(WUWE_ENABLE_HTTPLIB_SSL)
+    message(STATUS "cpp-httplib HTTPS support disabled: OpenSSL not found")
 endif()
 
 option(WUWE_ENABLE_SQLITE "Enable SQLite-backed memory store when SQLite3 is available" ON)

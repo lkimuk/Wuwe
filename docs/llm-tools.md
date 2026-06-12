@@ -30,9 +30,14 @@ struct get_weather {
 The tool can then be bound with:
 
 ```cpp
-auto client = factory.create_shared("OpenRouter", config);
+auto client = factory.create_shared("OpenAICompatible", config);
 auto runner = client->bind_tools<get_weather>();
 ```
+
+Use provider keys such as `OpenAI`, `OpenRouter`, `DeepSeek`, `DashScope`,
+`Qwen`, `Anthropic`, `Gemini`, or `Ollama` when you want Wuwe's provider
+defaults. Tool schemas stay on the shared `llm_client` abstraction; each
+provider client maps them to its native protocol.
 
 ## Description Styles
 

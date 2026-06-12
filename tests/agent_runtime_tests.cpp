@@ -11,6 +11,7 @@
 
 #include <wuwe/agent/llm/llm_agent_runner.h>
 #include <wuwe/agent/llm/llm_error.h>
+#include <wuwe/agent/llm/openai_compatible_llm_client.h>
 #include <wuwe/agent/llm/openrouter_llm_client.h>
 #include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/print.h>
@@ -188,6 +189,15 @@ public:
 
   bool saw_stop_possible { false };
 };
+
+bool has_request_header(const http_request& request, std::string_view name) {
+  for (const auto& [key, value] : request.headers) {
+    if (http_header_name_equals(key, name) && !value.empty()) {
+      return true;
+    }
+  }
+  return false;
+}
 
 class duplicate_echo_provider {
 public:
@@ -435,11 +445,74 @@ void test_openrouter_streaming_content_and_tool_call_accumulation() {
   require(payload.value("stream", false), "streaming request should set stream=true");
 }
 
-void test_openrouter_client_reports_missing_api_key_without_network() {
-  openrouter_llm_client client({
+void test_openai_compatible_and_openrouter_config_boundaries() {
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  auto compatible_http = std::make_shared<streaming_capture_http_client>(
+    std::vector<std::string> {});
+  openai_compatible_llm_client compatible({
+    .base_url = "https://compatible.example",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, compatible_http);
+  (void)compatible.complete(request);
+  require(compatible_http->requests.size() == 1,
+    "OpenAI-compatible client should issue one request");
+  require(compatible_http->requests[0].url ==
+      "https://compatible.example/v1/chat/completions",
+    "OpenAI-compatible client should use the configured base URL");
+  require(!has_request_header(compatible_http->requests[0], "HTTP-Referer"),
+    "OpenAI-compatible client should not add OpenRouter referer by default");
+  require(!has_request_header(compatible_http->requests[0], "X-Title"),
+    "OpenAI-compatible client should not add OpenRouter title by default");
+
+  auto openrouter_http = std::make_shared<streaming_capture_http_client>(
+    std::vector<std::string> {});
+  openrouter_llm_client openrouter({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, openrouter_http);
+  (void)openrouter.complete(request);
+  require(openrouter_http->requests.size() == 1,
+    "OpenRouter preset should issue one request");
+  require(openrouter_http->requests[0].url ==
+      "https://openrouter.ai/api/v1/chat/completions",
+    "OpenRouter preset should provide the OpenRouter base URL");
+  require(has_request_header(openrouter_http->requests[0], "HTTP-Referer"),
+    "OpenRouter preset should add OpenRouter referer header by default");
+  require(has_request_header(openrouter_http->requests[0], "X-Title"),
+    "OpenRouter preset should add OpenRouter title header by default");
+
+  auto openrouter_without_attribution_http = std::make_shared<streaming_capture_http_client>(
+    std::vector<std::string> {});
+  openrouter_llm_client openrouter_without_attribution({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+    .referer_url = std::string {},
+    .app_title = std::string {},
+  }, openrouter_without_attribution_http);
+  (void)openrouter_without_attribution.complete(request);
+  require(openrouter_without_attribution_http->requests.size() == 1,
+    "OpenRouter preset with explicit empty attribution should issue one request");
+  require(!has_request_header(openrouter_without_attribution_http->requests[0], "HTTP-Referer"),
+    "OpenRouter preset should allow callers to suppress referer attribution");
+  require(!has_request_header(openrouter_without_attribution_http->requests[0], "X-Title"),
+    "OpenRouter preset should allow callers to suppress title attribution");
+}
+
+void test_openai_compatible_client_reports_missing_api_key_without_network() {
+  openai_compatible_llm_client client({
     .base_url = "https://openrouter.ai/api",
     .api_key = "",
     .require_api_key = true,
+    .load_api_key_from_environment = false,
     .model = "test-model",
     .max_retries = 0,
   });
@@ -449,7 +522,7 @@ void test_openrouter_client_reports_missing_api_key_without_network() {
 
   const auto response = client.complete(request);
   require(response.error_code == agent::llm_error_code::missing_api_key,
-    "OpenRouter client should report missing API key before network I/O");
+    "OpenAI-compatible client should report missing API key before network I/O");
 }
 
 void run(const char* name, void (*test)()) {
@@ -478,8 +551,10 @@ int main() {
       test_sse_parser_handles_split_and_batched_events);
     run("OpenRouter streaming content and tool call accumulation",
       test_openrouter_streaming_content_and_tool_call_accumulation);
-    run("openrouter client reports missing api key without network",
-      test_openrouter_client_reports_missing_api_key_without_network);
+    run("OpenAI-compatible and OpenRouter config boundaries",
+      test_openai_compatible_and_openrouter_config_boundaries);
+    run("OpenAI-compatible client reports missing api key without network",
+      test_openai_compatible_client_reports_missing_api_key_without_network);
   }
   catch (const std::exception& ex) {
     println("[FAIL] {}", ex.what());

@@ -25,7 +25,7 @@
 #include <wuwe/agent/knowledge/knowledge_reranker.hpp>
 #include <wuwe/agent/knowledge/knowledge_retriever.hpp>
 #include <wuwe/agent/knowledge/knowledge_tools.hpp>
-#include <wuwe/agent/llm/openrouter_llm_client.h>
+#include <wuwe/agent/llm/openai_compatible_llm_client.h>
 #include <wuwe/agent/memory/embedding_model.hpp>
 #include <wuwe/wuwe.h>
 
@@ -430,8 +430,8 @@ public:
   }
 
 private:
-  std::shared_ptr<wuwe::openrouter_llm_client> make_llm_client() const {
-    return std::make_shared<wuwe::openrouter_llm_client>(wuwe::llm_client_config {
+  std::shared_ptr<wuwe::openai_compatible_llm_client> make_llm_client() const {
+    return std::make_shared<wuwe::openai_compatible_llm_client>(wuwe::llm_client_config {
       .base_url = environment_.base_url,
       .api_key = environment_.api_key,
       .model = model_plan_.first(),
@@ -601,7 +601,7 @@ private:
 
   demo_environment environment_;
   chat_model_plan model_plan_;
-  std::shared_ptr<wuwe::openrouter_llm_client> llm_client_;
+  std::shared_ptr<wuwe::openai_compatible_llm_client> llm_client_;
   std::shared_ptr<knowledge::knowledge_retriever> retriever_;
   knowledge::knowledge_rag_service service_;
 };

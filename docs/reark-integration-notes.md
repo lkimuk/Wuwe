@@ -45,6 +45,28 @@ Integration expectation:
 - avoid building a separate ad hoc streaming parser in ReArk when Wuwe already
   exposes the runtime surface.
 
+### LLM Provider Registry And Factory
+
+Wuwe now exposes a narrow provider registry and factory surface for host
+applications. ReArk should use these headers for model-provider settings and
+provider construction:
+
+```cpp
+#include <wuwe/agent/llm/llm_provider_registry.h>
+#include <wuwe/agent/llm/llm_provider_factory.h>
+```
+
+Use `list_llm_providers()`, `find_llm_provider()`,
+`make_default_llm_config()`, and `normalize_llm_client_config()` to populate UI
+state and apply Wuwe-owned defaults. Use `make_llm_client()` or
+`llm_client_factory` to construct the selected provider.
+
+ReArk should avoid including `<wuwe/wuwe.h>` in provider-selection translation
+units. The aggregation header remains available for convenience, but Wuwe no
+longer performs LLM factory registration from that public header. This keeps
+host code from pulling registration side effects into arbitrary translation
+units.
+
 ### Reasoning Facade
 
 Wuwe now includes a policy-driven Reasoning facade for selecting standard

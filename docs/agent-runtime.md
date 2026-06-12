@@ -66,7 +66,7 @@ runner must outlive the async run. Wuwe does not take ownership of host applicat
 Cancellation is cooperative:
 
 - `llm_client::complete(request, stop_token)` checks the token before and after the request.
-- `openrouter_llm_client` also checks cancellation between retry attempts.
+- `openai_compatible_llm_client` also checks cancellation between retry attempts.
 - `llm_agent_runner` checks cancellation before model calls, before tool calls, after tool calls,
   and before each follow-up model call.
 - Tool providers may expose `invoke(name, arguments_json, stop_token)`. The runner will call that
@@ -79,8 +79,9 @@ response.error_code == wuwe::agent::llm_error_code::cancelled
 ```
 
 OpenAI-compatible clients report missing credentials before network I/O when
-`llm_client_config::require_api_key` is true. Set it to false for local compatible servers that do
-not require an authorization header.
+`llm_client_config::require_api_key` is true. Set it to false for local compatible servers. If the
+host must guarantee that no environment API key is attached, also set
+`llm_client_config::load_api_key_from_environment` to false.
 
 ## Stateful Tools
 

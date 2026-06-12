@@ -36,6 +36,32 @@ downloads.
 
 See [Packaging](docs/packaging.md) for the release layout and package script.
 
+## LLM Providers
+
+Wuwe's LLM layer is built around the `llm_client` interface. The default
+implemented protocol client is `openai_compatible_llm_client`, which supports
+OpenAI-compatible chat completions, tool calls, SSE streaming, cancellation, and
+error classification. OpenAI, OpenRouter, DeepSeek, DashScope, and Qwen are
+provider presets over that protocol client.
+
+Use the factory key `OpenAICompatible` for generic compatible endpoints and
+provider keys such as `OpenAI`, `OpenRouter`, `DeepSeek`, `DashScope`, and
+`Qwen` for vendor defaults. Native clients are available for `Anthropic`,
+`Gemini`, and `Ollama` where the provider protocol is materially different from
+OpenAI-compatible chat completions.
+
+Host applications can query `list_llm_providers()`,
+`find_llm_provider()`, `make_default_llm_config()`, and
+`normalize_llm_client_config()` to populate provider settings UI without
+duplicating Wuwe's default endpoints or capability metadata.
+They can then call `make_llm_client()` from
+`<wuwe/agent/llm/llm_provider_factory.h>` to construct a provider without
+including the heavy `<wuwe/wuwe.h>` aggregation header in UI-facing translation
+units.
+
+See [LLM Providers](docs/llm-providers.md) for the provider architecture and
+future native-client extension path.
+
 ## HTTP Backends
 
 Wuwe's network layer is built behind the `http_client` abstraction. The default

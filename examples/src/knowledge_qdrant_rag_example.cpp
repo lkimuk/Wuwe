@@ -204,7 +204,7 @@ int main(int argc, char** argv) {
     retriever->set_reranker(std::make_shared<knowledge::mmr_knowledge_reranker>());
     if (options.query_rewrite) {
       retriever->set_query_rewriter(std::make_shared<knowledge::llm_knowledge_query_rewriter>(
-        std::make_shared<wuwe::openrouter_llm_client>(wuwe::llm_client_config {
+        std::make_shared<wuwe::openai_compatible_llm_client>(wuwe::llm_client_config {
           .base_url = options.embedding_base_url,
           .api_key = options.embedding_api_key,
           .model = options.chat_model,
@@ -228,12 +228,12 @@ int main(int argc, char** argv) {
     }
 
     auto chat_client = (options.generate_answer || options.llm_summary)
-                         ? std::make_shared<wuwe::openrouter_llm_client>(wuwe::llm_client_config {
+                         ? std::make_shared<wuwe::openai_compatible_llm_client>(wuwe::llm_client_config {
                              .base_url = options.embedding_base_url,
                              .api_key = options.embedding_api_key,
                              .model = options.chat_model,
                            })
-                         : std::shared_ptr<wuwe::openrouter_llm_client> {};
+                         : std::shared_ptr<wuwe::openai_compatible_llm_client> {};
 
     knowledge::knowledge_rag_service service(
       retriever, knowledge::knowledge_document_loader::make_default(), chat_client);

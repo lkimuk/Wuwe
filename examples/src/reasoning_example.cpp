@@ -91,6 +91,7 @@ void run_live_react_reasoning() {
 
   wuwe::llm_config config {
     .base_url = env_or("OPENROUTER_BASE_URL", "https://openrouter.ai/api"),
+    .api_key = wuwe::llm_client_config::load_openrouter_api_key_from_env(),
     .model = env_or("OPENROUTER_CHAT_MODEL", "openai/gpt-oss-120b:free"),
     .timeout = 60000,
   };
