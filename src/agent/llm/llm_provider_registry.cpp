@@ -75,6 +75,7 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .display_name = "OpenAI",
       .protocol = llm_provider_protocol::openai_compatible,
       .default_base_url = "https://api.openai.com",
+      .default_chat_completions_path = "/v1/chat/completions",
       .api_key_env_names = {"OPENAI_API_KEY"},
       .capabilities = cloud_chat_capabilities(),
     },
@@ -82,6 +83,7 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .id = "OpenAICompatible",
       .display_name = "OpenAI-Compatible",
       .protocol = llm_provider_protocol::openai_compatible,
+      .default_chat_completions_path = "/v1/chat/completions",
       .base_url_required = true,
       .api_key_env_names = {"OPENAI_API_KEY"},
       .capabilities = cloud_chat_capabilities(),
@@ -91,6 +93,7 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .display_name = "OpenRouter",
       .protocol = llm_provider_protocol::openai_compatible,
       .default_base_url = "https://openrouter.ai/api",
+      .default_chat_completions_path = "/v1/chat/completions",
       .api_key_env_names = {"OPENROUTER_API_KEY", "OPENAI_API_KEY"},
       .capabilities = cloud_chat_capabilities(),
     },
@@ -123,6 +126,7 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .display_name = "DeepSeek",
       .protocol = llm_provider_protocol::openai_compatible,
       .default_base_url = "https://api.deepseek.com",
+      .default_chat_completions_path = "/v1/chat/completions",
       .api_key_env_names = {"DEEPSEEK_API_KEY", "OPENAI_API_KEY"},
       .capabilities = cloud_chat_capabilities(),
     },
@@ -131,6 +135,7 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .display_name = "DashScope",
       .protocol = llm_provider_protocol::openai_compatible,
       .default_base_url = "https://dashscope.aliyuncs.com/compatible-mode",
+      .default_chat_completions_path = "/v1/chat/completions",
       .api_key_env_names = {"DASHSCOPE_API_KEY", "QWEN_API_KEY", "OPENAI_API_KEY"},
       .capabilities = cloud_chat_capabilities(),
     },
@@ -139,7 +144,17 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .display_name = "Qwen",
       .protocol = llm_provider_protocol::openai_compatible,
       .default_base_url = "https://dashscope.aliyuncs.com/compatible-mode",
+      .default_chat_completions_path = "/v1/chat/completions",
       .api_key_env_names = {"QWEN_API_KEY", "DASHSCOPE_API_KEY", "OPENAI_API_KEY"},
+      .capabilities = cloud_chat_capabilities(),
+    },
+    {
+      .id = "Zhipu",
+      .display_name = "Zhipu GLM",
+      .protocol = llm_provider_protocol::openai_compatible,
+      .default_base_url = "https://open.bigmodel.cn/api/paas/v4",
+      .default_chat_completions_path = "/chat/completions",
+      .api_key_env_names = {"ZHIPU_API_KEY", "BIGMODEL_API_KEY"},
       .capabilities = cloud_chat_capabilities(),
     },
   };
@@ -165,6 +180,7 @@ std::optional<llm_client_config> make_default_llm_config(std::string_view provid
 llm_client_config make_default_llm_config(const llm_provider_info& provider) {
   llm_client_config config;
   config.base_url = provider.default_base_url;
+  config.chat_completions_path = provider.default_chat_completions_path;
   config.require_api_key = provider.api_key_required;
   if (config.load_api_key_from_environment) {
     config.api_key = load_first_env_value(provider.api_key_env_names);
@@ -187,6 +203,9 @@ llm_client_config normalize_llm_client_config(
   llm_client_config config) {
   if (config.base_url.empty()) {
     config.base_url = provider.default_base_url;
+  }
+  if (config.chat_completions_path.empty()) {
+    config.chat_completions_path = provider.default_chat_completions_path;
   }
   config.require_api_key = provider.api_key_required && config.require_api_key;
   if (config.api_key.empty() && config.load_api_key_from_environment) {

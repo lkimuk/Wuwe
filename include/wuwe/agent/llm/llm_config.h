@@ -77,6 +77,7 @@ struct llm_client_config {
   }
 
   std::string base_url;
+  std::string chat_completions_path;
   std::string api_key;
   bool require_api_key { true };
   bool load_api_key_from_environment { true };

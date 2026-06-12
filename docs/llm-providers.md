@@ -11,7 +11,8 @@ vendor's product defaults unless those defaults are part of the protocol.
 
 `openai_compatible_llm_client` implements OpenAI-compatible chat completions:
 
-- `POST /v1/chat/completions`,
+- `POST <base_url><chat_completions_path>`, defaulting to
+  `/v1/chat/completions`,
 - OpenAI-style chat messages,
 - OpenAI-style tool calls,
 - OpenAI-compatible SSE streaming,
@@ -19,7 +20,8 @@ vendor's product defaults unless those defaults are part of the protocol.
 
 Use it for OpenAI-compatible services such as OpenAI, vLLM, LM Studio,
 OpenRouter-compatible gateways, DeepSeek-compatible endpoints, Qwen-compatible
-gateways, and local servers that expose the same API shape.
+gateways, Zhipu GLM/BigModel-compatible endpoints, and local servers that
+expose the same API shape.
 
 The client is protocol-neutral. It does not add OpenRouter-specific headers by
 default.
@@ -58,7 +60,8 @@ The registry exposes:
 - stable factory/provider ids,
 - display names for UI surfaces,
 - protocol type,
-- default base URL and whether the URL is required,
+- default base URL, default chat-completions path, and whether the URL is
+  required,
 - API-key policy and supported environment variable names,
 - streaming/tool/local-runtime capabilities,
 - optional model recommendations when Wuwe carries a stable model catalog for
@@ -70,6 +73,7 @@ apply Wuwe defaults while preserving explicit user overrides:
 ```cpp
 wuwe::llm_client_config config;
 config.base_url = user_override_url;
+config.chat_completions_path = user_override_path;
 config.model = user_selected_model;
 
 auto normalized = wuwe::normalize_llm_client_config("OpenAI", std::move(config));
@@ -164,6 +168,25 @@ auto dashscope = factory.create_shared("DashScope", config);
 auto qwen = factory.create_shared("Qwen", config);
 ```
 
+### `zhipu_llm_client`
+
+`zhipu_llm_client` is a Zhipu GLM/BigModel preset over the
+OpenAI-compatible protocol client.
+
+It provides:
+
+- default base URL `https://open.bigmodel.cn/api/paas/v4`,
+- default chat-completions path `/chat/completions`,
+- `ZHIPU_API_KEY` preference with `BIGMODEL_API_KEY` fallback,
+- the same tool-call, streaming, cancellation, retry, and error behavior as
+  `openai_compatible_llm_client`.
+
+Factory key:
+
+```cpp
+auto client = factory.create_shared("Zhipu", config);
+```
+
 ## Native Provider Clients
 
 Native clients implement providers whose protocol semantics are not cleanly
@@ -245,7 +268,8 @@ Other provider-specific helpers are:
 - `load_gemini_api_key_from_env()` -> `GEMINI_API_KEY`, then `GOOGLE_API_KEY`,
 - `load_deepseek_api_key_from_env()` -> `DEEPSEEK_API_KEY`, then `OPENAI_API_KEY`,
 - `load_dashscope_api_key_from_env()` -> `DASHSCOPE_API_KEY`, then
-  `QWEN_API_KEY`, then `OPENAI_API_KEY`.
+  `QWEN_API_KEY`, then `OPENAI_API_KEY`,
+- Zhipu provider metadata prefers `ZHIPU_API_KEY`, then `BIGMODEL_API_KEY`.
 
 Local OpenAI-compatible servers can set:
 

@@ -61,6 +61,13 @@ Use `list_llm_providers()`, `find_llm_provider()`,
 state and apply Wuwe-owned defaults. Use `make_llm_client()` or
 `llm_client_factory` to construct the selected provider.
 
+Provider metadata includes both default base URLs and provider-specific
+chat-completions paths, so ReArk should not maintain a parallel provider URL
+table. The built-in OpenAI-compatible presets include `Zhipu` for Zhipu
+GLM/BigModel, with base URL `https://open.bigmodel.cn/api/paas/v4`, chat path
+`/chat/completions`, and API key environment names `ZHIPU_API_KEY` then
+`BIGMODEL_API_KEY`.
+
 ReArk should avoid including `<wuwe/wuwe.h>` in provider-selection translation
 units. The aggregation header remains available for convenience, but Wuwe no
 longer performs LLM factory registration from that public header. This keeps

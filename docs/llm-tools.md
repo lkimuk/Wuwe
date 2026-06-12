@@ -35,7 +35,7 @@ auto runner = client->bind_tools<get_weather>();
 ```
 
 Use provider keys such as `OpenAI`, `OpenRouter`, `DeepSeek`, `DashScope`,
-`Qwen`, `Anthropic`, `Gemini`, or `Ollama` when you want Wuwe's provider
+`Qwen`, `Zhipu`, `Anthropic`, `Gemini`, or `Ollama` when you want Wuwe's provider
 defaults. Tool schemas stay on the shared `llm_client` abstraction; each
 provider client maps them to its native protocol.
 

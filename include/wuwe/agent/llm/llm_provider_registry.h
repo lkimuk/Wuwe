@@ -32,6 +32,7 @@ struct llm_provider_info {
   std::string display_name;
   llm_provider_protocol protocol { llm_provider_protocol::openai_compatible };
   std::string default_base_url;
+  std::string default_chat_completions_path;
   bool base_url_required { false };
   bool api_key_required { true };
   std::vector<std::string> api_key_env_names;

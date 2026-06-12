@@ -127,6 +127,7 @@ void test_factory_registers_protocol_and_provider_clients() {
          "DeepSeek",
          "DashScope",
          "Qwen",
+         "Zhipu",
        }) {
     auto client = factory.create_shared(key, wuwe::llm_client_config {
       .api_key = "",
@@ -141,12 +142,14 @@ void test_factory_registers_protocol_and_provider_clients() {
 
 void test_provider_registry_exposes_default_metadata_and_config() {
   const auto& providers = wuwe::list_llm_providers();
-  require(providers.size() >= 9, "provider registry should expose built-in providers");
+  require(providers.size() >= 10, "provider registry should expose built-in providers");
 
   const auto* openai = wuwe::find_llm_provider("OpenAI");
   require(openai != nullptr, "provider registry should expose OpenAI");
   require(openai->default_base_url == "https://api.openai.com",
     "OpenAI metadata should expose its default base URL");
+  require(openai->default_chat_completions_path == "/v1/chat/completions",
+    "OpenAI metadata should expose its default chat completions path");
   require(openai->protocol == wuwe::llm_provider_protocol::openai_compatible,
     "OpenAI metadata should expose its protocol");
   require(openai->capabilities.streaming && openai->capabilities.tools,
@@ -175,6 +178,8 @@ void test_provider_registry_exposes_default_metadata_and_config() {
     "provider registry should build default config for known providers");
   require(anthropic_config->base_url == "https://api.anthropic.com",
     "default config should carry provider base URL");
+  require(anthropic_config->chat_completions_path.empty(),
+    "native provider default config should not expose an OpenAI chat path");
   require(anthropic_config->require_api_key,
     "default config should carry provider API-key policy");
 
@@ -209,6 +214,26 @@ void test_provider_registry_exposes_default_metadata_and_config() {
   require(qwen->api_key_env_names.size() >= 2 && qwen->api_key_env_names[0] == "QWEN_API_KEY",
     "Qwen metadata should prefer QWEN_API_KEY");
 
+  const auto* zhipu = wuwe::find_llm_provider("Zhipu");
+  require(zhipu != nullptr, "provider registry should expose Zhipu");
+  require(zhipu->display_name == "Zhipu GLM",
+    "Zhipu metadata should expose a user-facing display name");
+  require(zhipu->default_base_url == "https://open.bigmodel.cn/api/paas/v4",
+    "Zhipu metadata should expose the BigModel base URL");
+  require(zhipu->default_chat_completions_path == "/chat/completions",
+    "Zhipu metadata should expose its non-v1 chat completions path");
+  require(zhipu->api_key_env_names.size() >= 2 &&
+      zhipu->api_key_env_names[0] == "ZHIPU_API_KEY" &&
+      zhipu->api_key_env_names[1] == "BIGMODEL_API_KEY",
+    "Zhipu metadata should expose stable API key env names");
+
+  const auto zhipu_config = wuwe::make_default_llm_config("Zhipu");
+  require(zhipu_config.has_value(), "provider registry should build default config for Zhipu");
+  require(zhipu_config->base_url == "https://open.bigmodel.cn/api/paas/v4",
+    "Zhipu default config should carry the BigModel base URL");
+  require(zhipu_config->chat_completions_path == "/chat/completions",
+    "Zhipu default config should carry the provider-specific chat path");
+
   require(!wuwe::find_llm_provider("Missing"),
     "provider registry should report missing providers");
   require(!wuwe::make_default_llm_config("Missing").has_value(),
@@ -232,6 +257,32 @@ void test_openai_compatible_provider_presets() {
     R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})";
   wuwe::llm_request request;
   request.messages.push_back({ .role = "user", .content = "hello" });
+
+  auto custom_path_http = std::make_shared<capture_http_client>(openai_body);
+  wuwe::openai_compatible_llm_client custom_path_client({
+    .base_url = "https://gateway.example/api",
+    .chat_completions_path = "custom/chat",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "compatible-test",
+  }, custom_path_http);
+  (void)custom_path_client.complete(request);
+  require(custom_path_http->requests.front().url ==
+      "https://gateway.example/api/custom/chat",
+    "OpenAI-compatible client should honor a custom chat completions path");
+
+  auto trailing_slash_http = std::make_shared<capture_http_client>(openai_body);
+  wuwe::openai_compatible_llm_client trailing_slash_client({
+    .base_url = "https://gateway.example/api/",
+    .chat_completions_path = "/custom/chat",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "compatible-test",
+  }, trailing_slash_http);
+  (void)trailing_slash_client.complete(request);
+  require(trailing_slash_http->requests.front().url ==
+      "https://gateway.example/api/custom/chat",
+    "OpenAI-compatible client should avoid double slashes when joining URL paths");
 
   auto openai_http = std::make_shared<capture_http_client>(openai_body);
   wuwe::openai_llm_client openai({
@@ -274,6 +325,39 @@ void test_openai_compatible_provider_presets() {
   require(qwen_http->requests.front().url ==
       "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
     "Qwen preset should use the DashScope compatible-mode base URL");
+
+  auto zhipu_http = std::make_shared<capture_http_client>(openai_body);
+  wuwe::zhipu_llm_client zhipu({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "glm-test",
+  }, zhipu_http);
+  (void)zhipu.complete(request);
+  require(zhipu_http->requests.front().url ==
+      "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    "Zhipu preset should use the BigModel v4 chat completions URL");
+
+  auto zhipu_stream_http = std::make_shared<capture_http_client>(
+    "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"
+    "data: [DONE]\n\n");
+  wuwe::zhipu_llm_client zhipu_stream({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "glm-test",
+  }, zhipu_stream_http);
+  std::vector<wuwe::llm_stream_event> events;
+  wuwe::llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const wuwe::llm_stream_event& event) {
+    events.push_back(event);
+  };
+  const auto zhipu_stream_response = zhipu_stream.complete_stream(request, callbacks);
+  require(!zhipu_stream_response.error_code,
+    "Zhipu preset should reuse OpenAI-compatible streaming parsing");
+  require(zhipu_stream_response.content == "hi",
+    "Zhipu preset should aggregate OpenAI-compatible streaming content");
+  require(zhipu_stream_http->requests.front().url ==
+      "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    "Zhipu streaming should use the BigModel v4 chat completions URL");
 }
 
 void test_native_provider_clients_parse_text_and_tools() {

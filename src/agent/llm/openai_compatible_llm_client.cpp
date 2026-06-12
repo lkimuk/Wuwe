@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <map>
+#include <string>
 #include <system_error>
 
 WUWE_NAMESPACE_BEGIN
@@ -87,6 +88,27 @@ std::error_code classify_openai_error(const std::error_code& transport_or_http_e
   return transport_or_http_error;
 }
 
+std::string build_chat_completions_url(const llm_client_config& config) {
+  const auto path = config.chat_completions_path.empty()
+                      ? std::string { "/v1/chat/completions" }
+                      : config.chat_completions_path;
+  if (config.base_url.empty()) {
+    return path.front() == '/' ? path : "/" + path;
+  }
+  const bool base_has_slash = config.base_url.back() == '/';
+  const bool path_has_slash = path.front() == '/';
+  if (base_has_slash && path_has_slash) {
+    return config.base_url + path.substr(1);
+  }
+  if (!base_has_slash && !path_has_slash) {
+    return config.base_url + "/" + path;
+  }
+  if (path_has_slash) {
+    return config.base_url + path;
+  }
+  return config.base_url + path;
+}
+
 } // namespace
 
 openai_compatible_llm_client::openai_compatible_llm_client(llm_client_config config)
@@ -126,7 +148,7 @@ llm_response openai_compatible_llm_client::complete(const llm_request& request, 
 
   const http_request req {
     .method = "POST",
-    .url = config_.base_url + "/v1/chat/completions",
+    .url = build_chat_completions_url(config_),
     .headers = build_headers(),
     .body = payload.dump(),
     .timeout = config_.timeout,
@@ -198,7 +220,7 @@ llm_response openai_compatible_llm_client::complete_stream(
 
   const http_request req {
     .method = "POST",
-    .url = config_.base_url + "/v1/chat/completions",
+    .url = build_chat_completions_url(config_),
     .headers = build_headers(),
     .body = payload.dump(),
     .timeout = config_.timeout,

@@ -37,6 +37,7 @@ void register_builtin_llm_clients() {
     register_llm_client<deepseek_llm_client>("DeepSeek");
     register_llm_client<dashscope_llm_client>("DashScope");
     register_llm_client<qwen_llm_client>("Qwen");
+    register_llm_client<zhipu_llm_client>("Zhipu");
     return true;
   }();
   (void)registered;
