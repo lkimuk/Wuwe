@@ -78,6 +78,7 @@ enum class reasoning_error_code {
   timeout,
   model_call_budget_exceeded,
   tool_call_budget_exceeded,
+  tool_round_budget_exceeded,
   reflection_budget_exceeded,
   planning_budget_exceeded,
   missing_api_key,
@@ -104,6 +105,8 @@ inline std::string to_string(reasoning_error_code code) {
       return "model_call_budget_exceeded";
     case reasoning_error_code::tool_call_budget_exceeded:
       return "tool_call_budget_exceeded";
+    case reasoning_error_code::tool_round_budget_exceeded:
+      return "tool_round_budget_exceeded";
     case reasoning_error_code::reflection_budget_exceeded:
       return "reflection_budget_exceeded";
     case reasoning_error_code::planning_budget_exceeded:
@@ -347,6 +350,8 @@ struct reasoning_trace_record {
 struct reasoning_usage {
   std::size_t model_calls { 0 };
   std::size_t tool_calls { 0 };
+  std::size_t tool_rounds { 0 };
+  std::size_t max_tool_rounds { 0 };
   std::size_t reflection_calls { 0 };
   std::size_t plan_steps { 0 };
 };
@@ -413,6 +418,8 @@ inline nlohmann::json reasoning_usage_to_json(const reasoning_usage& usage) {
   return {
     { "model_calls", usage.model_calls },
     { "tool_calls", usage.tool_calls },
+    { "tool_rounds", usage.tool_rounds },
+    { "max_tool_rounds", usage.max_tool_rounds },
     { "reflection_calls", usage.reflection_calls },
     { "plan_steps", usage.plan_steps },
   };

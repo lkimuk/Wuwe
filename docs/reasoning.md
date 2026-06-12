@@ -36,6 +36,9 @@ Implemented:
   cancellation.
 - Stable `reasoning_error_code` values with underlying LLM/provider error
   preservation.
+- Agent tool-round exhaustion is mapped to
+  `reasoning_error_code::tool_round_budget_exceeded` instead of leaking
+  generic standard-library resource messages.
 - Lightweight policy selection through `select_policy(...)`.
 - Default agentic runner builders that assemble reasonable Planning,
   Reflection, Memory, Tool, and LLM components.
@@ -407,6 +410,9 @@ session-replay storage, and golden-trace regression tests.
 
 - `model_calls`: provider calls that were actually allowed to start,
 - `tool_calls`: tool calls that were actually allowed to start,
+- `tool_rounds`: ReAct model/tool rounds consumed before completion or
+  terminal failure,
+- `max_tool_rounds`: configured ReAct round budget for the run,
 - `reflection_calls`: reflection reviews that were actually started,
 - `plan_steps`: planning steps started or reported by Planning.
 
@@ -421,6 +427,8 @@ happened and in what order"; usage answers "how much work was consumed."
   calls inside ReAct loops.
 - `max_tool_calls`: limits tool execution before the tool is invoked.
 - `max_tool_rounds`: limits ReAct tool/model rounds in `llm_agent_runner`.
+  Exhaustion returns `tool_round_budget_exceeded` with last tool/model
+  metadata instead of a generic resource error.
 - `max_reflection_attempts`: limits reflection reviews in
   `reflect_and_retry`.
 - `max_steps`: limits plan execution steps.
@@ -531,6 +539,7 @@ consistent.
 - default agentic runner construction,
 - model-call budget enforcement,
 - tool-call budget enforcement before invocation,
+- tool-round budget exhaustion mapping and JSON usage export,
 - structured trace records,
 - usage counters,
 - plan execution through Planning.

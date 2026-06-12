@@ -129,6 +129,31 @@ public:
   int calls { 0 };
 };
 
+class endless_tool_call_client final : public llm_client {
+public:
+  llm_response complete(const llm_request& request) override {
+    return complete(request, {});
+  }
+
+  llm_response complete(const llm_request& request, std::stop_token) override {
+    ++calls;
+    requests.push_back(request);
+    return {
+      .content = "still needs a tool",
+      .tool_calls = {
+        {
+          .id = "call-" + std::to_string(calls),
+          .name = "echo_text",
+          .arguments_json = R"({"text":"again"})",
+        },
+      },
+    };
+  }
+
+  int calls { 0 };
+  std::vector<llm_request> requests;
+};
+
 class streaming_capture_http_client final : public http_client {
 public:
   explicit streaming_capture_http_client(std::vector<std::string> chunks)
@@ -312,6 +337,40 @@ void test_runner_callbacks_and_stop_token_reach_provider() {
   require(events[1] == "tool_result:echo_text:from tool", "runner should emit tool result");
   require(events[2] == "delta:final answer", "runner should emit final content delta");
   require(events[3] == "done:final answer", "runner should emit done");
+}
+
+void test_runner_reports_tool_round_budget_exhaustion_with_stable_error() {
+  endless_tool_call_client client;
+  auto provider = std::make_shared<tool_provider<echo_text>>();
+  llm_agent_runner runner(client, provider, 1);
+
+  std::error_code callback_error;
+  std::string callback_message;
+  llm_agent_run_options options;
+  options.callbacks.on_error = [&](std::error_code error, std::string_view message) {
+    callback_error = error;
+    callback_message = std::string(message);
+  };
+
+  const auto response = runner.complete("keep using tools", std::move(options));
+  require(response.error_code == agent::llm_error_code::agent_loop_budget_exceeded,
+    "runner should report a stable loop budget error");
+  require(callback_error == agent::llm_error_code::agent_loop_budget_exceeded,
+    "runner error callback should receive the stable loop budget error");
+  require(callback_message.find("tool round budget") != std::string::npos,
+    "runner error callback should explain the exhausted tool round budget");
+  require(response.stop_reason == "tool_round_budget_exceeded",
+    "runner should expose a stable stop reason");
+  require(response.metadata.at("used_tool_rounds") == "1",
+    "runner should report used tool rounds");
+  require(response.metadata.at("max_tool_rounds") == "1",
+    "runner should report max tool rounds");
+  require(response.metadata.at("last_tool_call") == "echo_text",
+    "runner should report last tool call");
+  require(response.metadata.at("last_model_response") == "still needs a tool",
+    "runner should report last model response before replacing user-facing content");
+  require(response.error_code.message().find("resource unavailable") == std::string::npos,
+    "runner should not leak resource-unavailable wording");
 }
 
 void test_runner_pre_cancelled_request_does_not_call_model() {
@@ -544,6 +603,8 @@ int main() {
       test_composite_tool_provider_preserves_stop_token);
     run("runner callbacks and stop token reach provider",
       test_runner_callbacks_and_stop_token_reach_provider);
+    run("runner reports tool round budget exhaustion with stable error",
+      test_runner_reports_tool_round_budget_exhaustion_with_stable_error);
     run("runner pre-cancelled request does not call model",
       test_runner_pre_cancelled_request_does_not_call_model);
     run("async runner can be cancelled by handle", test_async_runner_can_be_cancelled_by_handle);

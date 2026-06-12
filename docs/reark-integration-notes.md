@@ -103,6 +103,21 @@ Relevant async capabilities:
 - stable `reasoning_error_code` values with underlying LLM/provider errors
   preserved on the result.
 
+Agent/tool loop exhaustion is now modeled explicitly. If a ReAct run reaches
+`max_tool_rounds` before the model produces a final answer, Wuwe returns:
+
+- LLM runtime: `llm_error_code::agent_loop_budget_exceeded`,
+- Reasoning facade: `reasoning_error_code::tool_round_budget_exceeded`,
+- `stop_reason = "tool_round_budget_exceeded"`,
+- usage fields `tool_rounds` and `max_tool_rounds`,
+- trace/final-response metadata for `last_tool_call`, `last_tool_result`, and
+  `last_model_response`.
+
+ReArk should key UI behavior off those stable codes instead of displaying
+`std::error_code::message()`. The old misleading text
+`resource unavailable try again` should no longer be surfaced for tool-loop
+budget exhaustion.
+
 Reasoning events, streaming deltas, trace updates, and final results are still
 emitted from the runner's execution thread. ReArk should marshal those
 callbacks back to its UI thread before updating UI state.

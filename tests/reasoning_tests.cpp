@@ -520,6 +520,85 @@ void tool_budget_stops_tool_before_invocation() {
   require(result.usage.tool_calls == 0, "tool budget prevents tool invocation");
 }
 
+void tool_round_budget_maps_to_stable_reasoning_error() {
+  scripted_llm_client client({
+    {
+      .content = "need tool",
+      .tool_calls = {
+        {
+          .id = "call-1",
+          .name = "echo_tool",
+          .arguments_json = R"({"text":"from tool"})",
+        },
+      },
+    },
+    {
+      .content = "need tool again",
+      .tool_calls = {
+        {
+          .id = "call-2",
+          .name = "echo_tool",
+          .arguments_json = R"({"text":"again"})",
+        },
+      },
+    },
+  });
+
+  auto provider = std::make_shared<tool_provider<echo_tool>>();
+  auto runner = reasoning::reasoning_runner::with_tools(client, provider);
+  std::atomic<bool> saw_error { false };
+
+  auto result = runner.run({
+      .input = "use tools until exhausted",
+      .policy = {
+        .mode = reasoning::reasoning_mode::react,
+        .budget = {
+          .max_model_calls = 4,
+          .max_tool_calls = 4,
+          .max_tool_rounds = 1,
+        },
+      },
+    },
+    {
+      .callbacks = {
+        .on_error = [&](const reasoning::reasoning_error& error) {
+          saw_error = error.code ==
+                        reasoning::reasoning_error_code::tool_round_budget_exceeded &&
+                      error.underlying_error ==
+                        agent::make_error_code(
+                          agent::llm_error_code::agent_loop_budget_exceeded);
+        },
+      },
+    });
+
+  require(!result.completed, "tool round budget should fail reasoning");
+  require(result.reasoning_error ==
+      reasoning::reasoning_error_code::tool_round_budget_exceeded,
+    "reasoning should expose a stable tool-round budget error");
+  require(result.underlying_error ==
+      agent::make_error_code(agent::llm_error_code::agent_loop_budget_exceeded),
+    "reasoning should preserve the underlying agent-loop budget error");
+  require(result.error.find("tool round budget") != std::string::npos,
+    "reasoning should expose a clear developer message");
+  require(result.usage.tool_rounds == 1, "reasoning should record used tool rounds");
+  require(result.usage.max_tool_rounds == 1, "reasoning should record max tool rounds");
+  require(result.final_response.stop_reason == "tool_round_budget_exceeded",
+    "reasoning should preserve the runtime stop reason");
+  require(result.final_response.metadata.at("last_tool_call") == "echo_tool",
+    "reasoning should preserve last tool call metadata");
+  require(result.trace.back().metadata.at("stop_reason") == "tool_round_budget_exceeded",
+    "terminal trace should include stop reason metadata");
+  require(saw_error.load(), "reasoning should invoke on_error with stable code");
+
+  const auto json = reasoning::reasoning_result_to_json(result);
+  require(json.at("reasoning_error") == "tool_round_budget_exceeded",
+    "reasoning JSON should export the stable error string");
+  require(json.at("usage").at("tool_rounds") == 1,
+    "reasoning JSON should export used tool rounds");
+  require(json.at("usage").at("max_tool_rounds") == 1,
+    "reasoning JSON should export max tool rounds");
+}
+
 void plan_execute_mode_delegates_to_planning() {
   auto planner = std::make_shared<planning::static_planner>(std::vector<planning::plan_step> {
     {
@@ -589,6 +668,8 @@ int main() {
     run("model budget stops retry before second model call",
       model_budget_stops_retry_before_second_model_call);
     run("tool budget stops tool before invocation", tool_budget_stops_tool_before_invocation);
+    run("tool round budget maps to stable reasoning error",
+      tool_round_budget_maps_to_stable_reasoning_error);
     run("plan execute mode delegates to planning", plan_execute_mode_delegates_to_planning);
   }
   catch (const std::exception& ex) {

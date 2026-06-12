@@ -20,7 +20,8 @@ enum class llm_error_code {
   api_error,
   invalid_response,
   empty_response,
-  timeout
+  timeout,
+  agent_loop_budget_exceeded
 };
 
 [[nodiscard]] const ::std::error_category& llm_category() noexcept;

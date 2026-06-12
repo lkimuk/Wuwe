@@ -151,6 +151,7 @@ public:
     auto state = std::make_shared<run_state>();
     state->started = started;
     state->budget = request.policy.budget;
+    state->usage.max_tool_rounds = request.policy.budget.max_tool_rounds;
     state->callbacks = std::move(run_options.callbacks);
     state->stop_token = run_options.stop_token;
 
@@ -213,6 +214,7 @@ public:
       .message = result.completed ? result.content : result.error,
       .result = &result,
       .elapsed = result.elapsed,
+      .metadata = result.final_response.metadata,
     }, state.get());
     result.trace = std::move(state->trace);
     result.usage = state->usage;
@@ -299,7 +301,13 @@ private:
       result.underlying_error = response.error_code;
       result.reasoning_error = map_underlying_error(response.error_code);
       result.error_code = make_error_code(result.reasoning_error);
-      result.error = response.error_code.message();
+      result.error = response.content.empty() ? response.error_code.message() : response.content;
+    }
+    if (auto tool_rounds = metadata_size(response.metadata, "used_tool_rounds")) {
+      state->usage.tool_rounds = (std::max)(state->usage.tool_rounds, *tool_rounds);
+    }
+    if (auto max_tool_rounds = metadata_size(response.metadata, "max_tool_rounds")) {
+      state->usage.max_tool_rounds = (std::max)(state->usage.max_tool_rounds, *max_tool_rounds);
     }
     result.steps.push_back({
       .id = "model-1",
@@ -307,6 +315,7 @@ private:
       .input = std::move(input),
       .output = result.content,
       .error = result.error,
+      .metadata = response.metadata,
     });
     if (state->budget_exceeded) {
       result.completed = false;
@@ -770,6 +779,11 @@ private:
         code == std::make_error_code(std::errc::timed_out)) {
       return reasoning_error_code::timeout;
     }
+    if (code ==
+        ::wuwe::agent::make_error_code(
+          ::wuwe::agent::llm_error_code::agent_loop_budget_exceeded)) {
+      return reasoning_error_code::tool_round_budget_exceeded;
+    }
     if (code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::transport_error) ||
         code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::http_error) ||
         code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::api_error) ||
@@ -778,6 +792,21 @@ private:
       return reasoning_error_code::transport_failed;
     }
     return reasoning_error_code::unknown;
+  }
+
+  static std::optional<std::size_t> metadata_size(
+    const std::map<std::string, std::string>& metadata,
+    const std::string& key) {
+    const auto it = metadata.find(key);
+    if (it == metadata.end()) {
+      return std::nullopt;
+    }
+    try {
+      return static_cast<std::size_t>(std::stoull(it->second));
+    }
+    catch (...) {
+      return std::nullopt;
+    }
   }
 
   static reasoning_error_code reasoning_error_from_plan_stop(

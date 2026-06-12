@@ -6,6 +6,7 @@
 #include <future>
 #include <memory>
 #include <stop_token>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -229,6 +230,10 @@ private:
     }
     observe_assistant_response(response);
 
+    int used_tool_rounds = 0;
+    llm_tool_call last_tool_call;
+    llm_tool_result last_tool_result;
+
     for (int round = 0; round < max_tool_rounds_; ++round) {
       if (is_cancelled()) {
         return cancelled_response(options.callbacks);
@@ -237,6 +242,7 @@ private:
         emit_done(options.callbacks, response);
         return response;
       }
+      ++used_tool_rounds;
 
       chat_message assistant_message {
         .role = "assistant",
@@ -254,7 +260,9 @@ private:
           return cancelled_response(options.callbacks);
         }
         emit_tool_start(options.callbacks, call);
+        last_tool_call = call;
         const llm_tool_result tool_result = invoke_(call.name, call.arguments_json, client_stop_token);
+        last_tool_result = tool_result;
         if (is_cancelled()) {
           return cancelled_response(options.callbacks);
         }
@@ -284,7 +292,17 @@ private:
       observe_assistant_response(response);
     }
 
-    response.error_code = std::make_error_code(std::errc::resource_unavailable_try_again);
+    response.error_code = agent::make_error_code(agent::llm_error_code::agent_loop_budget_exceeded);
+    response.stop_reason = "tool_round_budget_exceeded";
+    response.metadata["stop_reason"] = response.stop_reason;
+    response.metadata["used_tool_rounds"] = std::to_string(used_tool_rounds);
+    response.metadata["max_tool_rounds"] = std::to_string(max_tool_rounds_);
+    response.metadata["last_tool_call"] = last_tool_call.name;
+    response.metadata["last_tool_call_id"] = last_tool_call.id;
+    response.metadata["last_tool_arguments"] = last_tool_call.arguments_json;
+    response.metadata["last_tool_result"] = last_tool_result.content;
+    response.metadata["last_model_response"] = response.content;
+    response.content = "Agent tool round budget exceeded before producing a final answer.";
     emit_error(options.callbacks, response);
     return response;
   }

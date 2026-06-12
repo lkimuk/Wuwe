@@ -2,6 +2,7 @@
 #define WUWE_AGENT_LLM_TYPES_H
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -64,7 +65,9 @@ struct llm_response {
   std::error_code error_code;
   llm_usage usage;
   std::string finish_reason;
+  std::string stop_reason;
   std::vector<llm_tool_call> tool_calls;
+  std::map<std::string, std::string> metadata;
 
   explicit operator bool() const noexcept {
     return !error_code;

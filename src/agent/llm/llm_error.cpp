@@ -49,6 +49,8 @@ public:
         return "Empty response";
       case llm_error_code::timeout:
         return "Timeout";
+      case llm_error_code::agent_loop_budget_exceeded:
+        return "Agent tool round budget exceeded before producing a final answer";
       default:
         return "Unknown LLM error";
     }

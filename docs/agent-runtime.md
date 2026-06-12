@@ -78,6 +78,21 @@ Cancelled runs return:
 response.error_code == wuwe::agent::llm_error_code::cancelled
 ```
 
+When the model keeps requesting tools until `max_tool_rounds` is exhausted,
+the runner returns a stable Wuwe error instead of a generic standard-library
+resource error:
+
+```cpp
+response.error_code == wuwe::agent::llm_error_code::agent_loop_budget_exceeded
+response.stop_reason == "tool_round_budget_exceeded"
+```
+
+The response metadata includes `used_tool_rounds`, `max_tool_rounds`,
+`last_tool_call`, `last_tool_call_id`, `last_tool_arguments`,
+`last_tool_result`, and `last_model_response`. Host applications should use
+the error code or `stop_reason` for UI classification and treat the message as
+a developer diagnostic.
+
 OpenAI-compatible clients report missing credentials before network I/O when
 `llm_client_config::require_api_key` is true. Set it to false for local compatible servers. If the
 host must guarantee that no environment API key is attached, also set
