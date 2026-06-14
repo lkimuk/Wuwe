@@ -41,6 +41,25 @@ std::error_code classify_ollama_error(const std::error_code& transport_or_http_e
   return transport_or_http_error;
 }
 
+std::string ollama_error_message(const std::error_code& error_code, const json& body) {
+  if (body.is_object() && body.contains("error")) {
+    if (body["error"].is_string()) {
+      return body["error"].get<std::string>();
+    }
+    if (body["error"].is_object()) {
+      const auto& error = body["error"];
+      if (error.contains("message") && error["message"].is_string()) {
+        return error["message"].get<std::string>();
+      }
+    }
+    return "Ollama API error.";
+  }
+  if (error_code) {
+    return "Ollama streaming request failed: " + error_code.message();
+  }
+  return "Ollama streaming request failed.";
+}
+
 void append_tool_calls(llm_response& result, const json& message) {
   if (!message.contains("tool_calls") || !message["tool_calls"].is_array()) {
     return;
@@ -245,6 +264,8 @@ llm_response ollama_llm_client::complete_stream(
   bool emitted_output = false;
   bool saw_event = false;
   bool saw_done = false;
+  bool ignored_stream_transport_error = false;
+  bool ignored_invalid_stream_event = false;
   const auto process_line = [&](std::string line) {
     if (line.empty()) {
       return true;
@@ -252,14 +273,19 @@ llm_response ollama_llm_client::complete_stream(
     saw_event = true;
     const auto data = json::parse(line, nullptr, false);
     if (data.is_discarded() || !data.is_object()) {
-      result.content = std::move(line);
+      if (emitted_output) {
+        ignored_invalid_stream_event = true;
+        result.metadata["ignored_invalid_stream_event"] = "true";
+        return true;
+      }
+      result.content = "Invalid Ollama streaming event.";
       result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
       return false;
     }
     if (data.contains("error")) {
-      result.content = data["error"].is_string() ? data["error"].get<std::string>() : line;
       result.error_code =
         classify_ollama_error(agent::make_error_code(agent::llm_error_code::api_error), data);
+      result.content = ollama_error_message(result.error_code, data);
       return false;
     }
     if (data.contains("message") && data["message"].is_object()) {
@@ -358,12 +384,23 @@ llm_response ollama_llm_client::complete_stream(
   }
   else if (response.error_code && !result.error_code) {
     const auto body = json::parse(response.body, nullptr, false);
-    result.content = response.body;
     result.error_code =
       classify_ollama_error(response.error_code, body.is_discarded() ? json::object() : body);
+    if (emitted_output && saw_event) {
+      result.error_code.clear();
+      ignored_stream_transport_error = true;
+      result.metadata["ignored_stream_transport_error"] = response.error_code.message();
+    }
+    else {
+      result.content = ollama_error_message(
+        result.error_code,
+        body.is_discarded() ? json::object() : body);
+    }
   }
-  else if (!result.error_code && (!saw_event || !saw_done)) {
+  else if (!result.error_code &&
+           (!saw_event || (!saw_done && !(emitted_output && ignored_invalid_stream_event)))) {
     result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
+    result.content = "Ollama streaming response ended without a complete message.";
   }
   if (result.error_code) {
     emit_stream_event(callbacks, {
@@ -372,6 +409,9 @@ llm_response ollama_llm_client::complete_stream(
       .error_code = result.error_code,
       .message = result.content,
     });
+  }
+  else if ((ignored_stream_transport_error || ignored_invalid_stream_event) && !saw_done) {
+    emit_stream_event(callbacks, { .type = llm_stream_event_type::done, .response = result });
   }
   return result;
 }

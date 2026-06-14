@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <map>
+#include <sstream>
 #include <string>
 #include <system_error>
 
@@ -86,6 +87,37 @@ std::error_code classify_openai_error(const std::error_code& transport_or_http_e
   }
 
   return transport_or_http_error;
+}
+
+std::string openai_error_message(const std::error_code& error_code, const json& body) {
+  if (body.is_object() && body.contains("error") && body["error"].is_object()) {
+    const auto& error = body["error"];
+    if (error.contains("message") && error["message"].is_string()) {
+      return error["message"].get<std::string>();
+    }
+    const auto type = error.value("type", std::string {});
+    const auto code = error.value("code", std::string {});
+    if (!type.empty() || !code.empty()) {
+      std::ostringstream message;
+      message << "OpenAI-compatible API error";
+      if (!type.empty()) {
+        message << " (" << type << ")";
+      }
+      if (!code.empty()) {
+        message << ": " << code;
+      }
+      return message.str();
+    }
+  }
+
+  if (error_code) {
+    return "OpenAI-compatible streaming request failed: " + error_code.message();
+  }
+  return "OpenAI-compatible streaming request failed.";
+}
+
+std::string invalid_stream_event_message() {
+  return "Invalid OpenAI-compatible streaming event.";
 }
 
 std::string build_chat_completions_url(const llm_client_config& config) {
@@ -272,9 +304,13 @@ llm_response openai_compatible_llm_client::complete_stream(
 
       const auto data = json::parse(event.data, nullptr, false);
       if (data.is_discarded() || !data.is_object()) {
+        if (emitted_output) {
+          result.metadata["ignored_invalid_stream_event"] = "true";
+          return true;
+        }
         return fail_stream(
           agent::make_error_code(agent::llm_error_code::invalid_response),
-          event.data);
+          invalid_stream_event_message());
       }
 
       if (data.contains("error") && data["error"].is_object()) {
@@ -282,7 +318,9 @@ llm_response openai_compatible_llm_client::complete_stream(
           classify_openai_error(
             agent::make_error_code(agent::llm_error_code::api_error),
             data),
-          event.data);
+          openai_error_message(
+            agent::make_error_code(agent::llm_error_code::api_error),
+            data));
       }
 
       if (data.contains("usage") && data["usage"].is_object()) {
@@ -397,12 +435,21 @@ llm_response openai_compatible_llm_client::complete_stream(
     }
 
     if (response.error_code) {
-      result.content = response.body;
       const auto body = json::parse(response.body, nullptr, false);
       result.error_code =
         classify_openai_error(response.error_code, body.is_discarded() ? json::object() : body);
 
-      if (attempt < max_retries && !emitted_output &&
+      if (emitted_output && saw_sse_event) {
+        result.error_code.clear();
+        result.metadata["ignored_stream_transport_error"] = response.error_code.message();
+      }
+      else {
+        result.content = openai_error_message(
+          result.error_code,
+          body.is_discarded() ? json::object() : body);
+      }
+
+      if (result.error_code && attempt < max_retries && !emitted_output &&
           agent::llm_detail::is_retryable_error(result.error_code) &&
           agent::llm_detail::wait_for_retry(
             stop_token,
@@ -412,13 +459,15 @@ llm_response openai_compatible_llm_client::complete_stream(
         continue;
       }
 
-      emit_stream_event(callbacks, {
-        .type = llm_stream_event_type::error,
-        .response = result,
-        .error_code = result.error_code,
-        .message = result.content,
-      });
-      return result;
+      if (result.error_code) {
+        emit_stream_event(callbacks, {
+          .type = llm_stream_event_type::error,
+          .response = result,
+          .error_code = result.error_code,
+          .message = result.content,
+        });
+        return result;
+      }
     }
 
     if (!saw_sse_event) {
@@ -462,7 +511,7 @@ llm_response openai_compatible_llm_client::complete_stream(
 
     if (!saw_done && result.content.empty() && result.tool_calls.empty()) {
       result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
-      result.content = response.body;
+      result.content = "OpenAI-compatible streaming response ended without content, tool calls, or [DONE].";
       emit_stream_event(callbacks, {
         .type = llm_stream_event_type::error,
         .response = result,

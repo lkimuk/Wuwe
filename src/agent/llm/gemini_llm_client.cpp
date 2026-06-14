@@ -52,6 +52,23 @@ std::error_code classify_gemini_error(const std::error_code& transport_or_http_e
   return transport_or_http_error;
 }
 
+std::string gemini_error_message(const std::error_code& error_code, const json& body) {
+  if (body.is_object() && body.contains("error") && body["error"].is_object()) {
+    const auto& error = body["error"];
+    if (error.contains("message") && error["message"].is_string()) {
+      return error["message"].get<std::string>();
+    }
+    const auto status = error.value("status", std::string {});
+    if (!status.empty()) {
+      return "Gemini API error: " + status;
+    }
+  }
+  if (error_code) {
+    return "Gemini streaming request failed: " + error_code.message();
+  }
+  return "Gemini streaming request failed.";
+}
+
 std::string gemini_model_name(const std::string& model) {
   constexpr std::string_view prefix = "models/";
   if (model.rfind(prefix, 0) == 0) {
@@ -314,6 +331,7 @@ llm_response gemini_llm_client::complete_stream(
   bool emitted_output = false;
   bool saw_event = false;
   bool saw_done = false;
+  bool ignored_invalid_stream_event = false;
   const auto process_event = [&](const sse_event& event) {
     if (event.data.empty()) {
       return true;
@@ -321,14 +339,19 @@ llm_response gemini_llm_client::complete_stream(
     saw_event = true;
     const auto data = json::parse(event.data, nullptr, false);
     if (data.is_discarded() || !data.is_object()) {
-      result.content = event.data;
+      if (emitted_output) {
+        ignored_invalid_stream_event = true;
+        result.metadata["ignored_invalid_stream_event"] = "true";
+        return true;
+      }
+      result.content = "Invalid Gemini streaming event.";
       result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
       return false;
     }
     if (data.contains("error")) {
-      result.content = event.data;
       result.error_code =
         classify_gemini_error(agent::make_error_code(agent::llm_error_code::api_error), data);
+      result.content = gemini_error_message(result.error_code, data);
       return false;
     }
 
@@ -407,13 +430,23 @@ llm_response gemini_llm_client::complete_stream(
     result.error_code = agent::make_error_code(agent::llm_error_code::cancelled);
   }
   else if (response.error_code && !result.error_code) {
-    result.content = response.body;
     const auto body = json::parse(response.body, nullptr, false);
     result.error_code =
       classify_gemini_error(response.error_code, body.is_discarded() ? json::object() : body);
+    if (emitted_output && saw_event) {
+      result.error_code.clear();
+      result.metadata["ignored_stream_transport_error"] = response.error_code.message();
+    }
+    else {
+      result.content = gemini_error_message(
+        result.error_code,
+        body.is_discarded() ? json::object() : body);
+    }
   }
-  else if (!result.error_code && (!saw_event || !saw_done)) {
+  else if (!result.error_code &&
+           (!saw_event || (!saw_done && !(emitted_output && ignored_invalid_stream_event)))) {
     result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
+    result.content = "Gemini streaming response ended without a complete candidate.";
   }
   if (result.error_code) {
     emit_stream_event(callbacks, { .type = llm_stream_event_type::error, .response = result, .error_code = result.error_code, .message = result.content });

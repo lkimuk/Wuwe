@@ -53,6 +53,23 @@ std::error_code classify_anthropic_error(const std::error_code& transport_or_htt
   return transport_or_http_error;
 }
 
+std::string anthropic_error_message(const std::error_code& error_code, const json& body) {
+  if (body.is_object() && body.contains("error") && body["error"].is_object()) {
+    const auto& error = body["error"];
+    if (error.contains("message") && error["message"].is_string()) {
+      return error["message"].get<std::string>();
+    }
+    const auto type = error.value("type", std::string {});
+    if (!type.empty()) {
+      return "Anthropic API error: " + type;
+    }
+  }
+  if (error_code) {
+    return "Anthropic streaming request failed: " + error_code.message();
+  }
+  return "Anthropic streaming request failed.";
+}
+
 void emit_stream_event(const llm_stream_callbacks& callbacks, llm_stream_event event) {
   if (callbacks.on_event) {
     callbacks.on_event(event);
@@ -301,6 +318,8 @@ llm_response anthropic_llm_client::complete_stream(
   bool emitted_output = false;
   bool saw_event = false;
   bool saw_done = false;
+  bool ignored_stream_transport_error = false;
+  bool ignored_invalid_stream_event = false;
 
   const auto process_event = [&](const sse_event& event) {
     if (event.data.empty()) {
@@ -309,15 +328,20 @@ llm_response anthropic_llm_client::complete_stream(
     saw_event = true;
     const auto data = json::parse(event.data, nullptr, false);
     if (data.is_discarded() || !data.is_object()) {
-      result.content = event.data;
+      if (emitted_output) {
+        ignored_invalid_stream_event = true;
+        result.metadata["ignored_invalid_stream_event"] = "true";
+        return true;
+      }
+      result.content = "Invalid Anthropic streaming event.";
       result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
       return false;
     }
     const auto type = data.value("type", std::string {});
     if (type == "error") {
-      result.content = event.data;
       result.error_code =
         classify_anthropic_error(agent::make_error_code(agent::llm_error_code::api_error), data);
+      result.content = anthropic_error_message(result.error_code, data);
       return false;
     }
     if (type == "message_start" && data.contains("message") && data["message"].is_object()) {
@@ -437,13 +461,24 @@ llm_response anthropic_llm_client::complete_stream(
     result.error_code = agent::make_error_code(agent::llm_error_code::cancelled);
   }
   else if (response.error_code && !result.error_code) {
-    result.content = response.body;
     const auto body = json::parse(response.body, nullptr, false);
     result.error_code =
       classify_anthropic_error(response.error_code, body.is_discarded() ? json::object() : body);
+    if (emitted_output && saw_event) {
+      result.error_code.clear();
+      ignored_stream_transport_error = true;
+      result.metadata["ignored_stream_transport_error"] = response.error_code.message();
+    }
+    else {
+      result.content = anthropic_error_message(
+        result.error_code,
+        body.is_discarded() ? json::object() : body);
+    }
   }
-  else if (!result.error_code && (!saw_event || !saw_done)) {
+  else if (!result.error_code &&
+           (!saw_event || (!saw_done && !(emitted_output && ignored_invalid_stream_event)))) {
     result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
+    result.content = "Anthropic streaming response ended without a complete message.";
   }
   if (result.error_code) {
     emit_stream_event(callbacks, {
@@ -452,6 +487,9 @@ llm_response anthropic_llm_client::complete_stream(
       .error_code = result.error_code,
       .message = result.content,
     });
+  }
+  else if ((ignored_stream_transport_error || ignored_invalid_stream_event) && !saw_done) {
+    emit_stream_event(callbacks, { .type = llm_stream_event_type::done, .response = result });
   }
   return result;
 }

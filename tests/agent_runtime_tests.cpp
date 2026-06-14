@@ -192,6 +192,45 @@ private:
   http_response response_;
 };
 
+class streaming_error_after_chunks_http_client final : public http_client {
+public:
+  explicit streaming_error_after_chunks_http_client(std::vector<std::string> chunks)
+      : chunks_(std::move(chunks)) {
+  }
+
+  http_response send(const http_request& request) override {
+    requests.push_back(request);
+    return {};
+  }
+
+  http_response send_stream(
+    const http_request& request,
+    const http_stream_chunk_callback& on_chunk,
+    std::stop_token stop_token = {}) override {
+    requests.push_back(request);
+    if (stop_token.stop_requested()) {
+      return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
+    }
+
+    std::string body;
+    for (const auto& chunk : chunks_) {
+      body += chunk;
+      if (on_chunk && !on_chunk(chunk)) {
+        return { .error_code = std::make_error_code(std::errc::operation_canceled),
+          .body = body };
+      }
+    }
+
+    return { .error_code = std::make_error_code(std::errc::connection_reset),
+      .body = body };
+  }
+
+  std::vector<http_request> requests;
+
+private:
+  std::vector<std::string> chunks_;
+};
+
 class stop_aware_provider {
 public:
   std::vector<llm_tool> tools() const {
@@ -504,6 +543,99 @@ void test_openrouter_streaming_content_and_tool_call_accumulation() {
   require(payload.value("stream", false), "streaming request should set stream=true");
 }
 
+void test_openai_compatible_streaming_ignores_tail_transport_error_after_output() {
+  auto http = std::make_shared<streaming_error_after_chunks_http_client>(
+    std::vector<std::string> {
+      "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\","
+      "\"choices\":[{\"delta\":{\"content\":\"DeepSeek answer\"},"
+      "\"finish_reason\":null}]}\n\n",
+      "data: {\"id\":\"chunk-2\",\"object\":\"chat.completion.chunk\","
+      "\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    });
+
+  openai_compatible_llm_client client({
+    .base_url = "https://deepseek-compatible.example",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "deepseek-test-model",
+    .max_retries = 0,
+  }, http);
+
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<llm_stream_event> events;
+  llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  const auto response = client.complete_stream(request, callbacks);
+  require(!response.error_code,
+    "streaming response with valid output should not fail on a tail transport error");
+  require(response.content == "DeepSeek answer",
+    "streaming response should retain parsed content");
+  require(!contains(response.content, "data:"),
+    "streaming response should not expose raw SSE frames as content");
+  require(response.metadata.count("ignored_stream_transport_error") == 1,
+    "streaming response should record ignored tail transport error metadata");
+
+  int errors = 0;
+  int done = 0;
+  for (const auto& event : events) {
+    if (event.type == llm_stream_event_type::error) {
+      ++errors;
+      require(!contains(event.message, "data:"),
+        "streaming error callbacks should not expose raw SSE frames");
+    }
+    if (event.type == llm_stream_event_type::done) {
+      ++done;
+    }
+  }
+  require(errors == 0, "valid streamed output should suppress tail transport error callbacks");
+  require(done == 1, "valid streamed output should emit a single done event");
+}
+
+void test_openai_compatible_streaming_invalid_event_uses_sanitized_error() {
+  auto http = std::make_shared<streaming_capture_http_client>(
+    std::vector<std::string> {
+      "data: not-json\n\n",
+    });
+
+  openai_compatible_llm_client client({
+    .base_url = "https://compatible.example",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, http);
+
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<llm_stream_event> events;
+  llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  const auto response = client.complete_stream(request, callbacks);
+  require(response.error_code == agent::llm_error_code::invalid_response,
+    "invalid streaming event should fail with invalid_response");
+  require(!contains(response.content, "data:") && !contains(response.content, "not-json"),
+    "invalid streaming event should not expose raw SSE data");
+
+  int errors = 0;
+  for (const auto& event : events) {
+    if (event.type == llm_stream_event_type::error) {
+      ++errors;
+      require(!contains(event.message, "data:") && !contains(event.message, "not-json"),
+        "invalid streaming error callback should not expose raw SSE data");
+    }
+  }
+  require(errors == 1, "invalid streaming event should emit one sanitized error");
+}
+
 void test_openai_compatible_and_openrouter_config_boundaries() {
   llm_request request;
   request.messages.push_back({ .role = "user", .content = "hello" });
@@ -612,6 +744,10 @@ int main() {
       test_sse_parser_handles_split_and_batched_events);
     run("OpenRouter streaming content and tool call accumulation",
       test_openrouter_streaming_content_and_tool_call_accumulation);
+    run("OpenAI-compatible streaming ignores tail transport error after output",
+      test_openai_compatible_streaming_ignores_tail_transport_error_after_output);
+    run("OpenAI-compatible streaming invalid event uses sanitized error",
+      test_openai_compatible_streaming_invalid_event_uses_sanitized_error);
     run("OpenAI-compatible and OpenRouter config boundaries",
       test_openai_compatible_and_openrouter_config_boundaries);
     run("OpenAI-compatible client reports missing api key without network",

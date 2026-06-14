@@ -68,6 +68,36 @@ private:
   std::size_t next_ { 0 };
 };
 
+class streaming_error_http_client final : public wuwe::http_client {
+public:
+  explicit streaming_error_http_client(std::string body)
+      : body_(std::move(body)) {}
+
+  wuwe::http_response send(const wuwe::http_request& request) override {
+    requests.push_back(request);
+    return {};
+  }
+
+  wuwe::http_response send_stream(
+    const wuwe::http_request& request,
+    const wuwe::http_stream_chunk_callback& on_chunk,
+    std::stop_token = {}) override {
+    requests.push_back(request);
+    if (on_chunk && !body_.empty()) {
+      on_chunk(body_);
+    }
+    return {
+      .error_code = std::make_error_code(std::errc::connection_reset),
+      .body = body_,
+    };
+  }
+
+  std::vector<wuwe::http_request> requests;
+
+private:
+  std::string body_;
+};
+
 bool has_request_header(const wuwe::http_request& request, std::string_view name) {
   for (const auto& [key, value] : request.headers) {
     if (wuwe::http_header_name_equals(key, name) && !value.empty()) {
@@ -496,6 +526,178 @@ void test_native_provider_streaming_success_and_incomplete_streams() {
     "Ollama incomplete stream should fail");
 }
 
+void test_native_provider_streaming_sanitizes_tail_errors_after_output() {
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<wuwe::llm_stream_event> events;
+  wuwe::llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const wuwe::llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  auto anthropic_http = std::make_shared<streaming_error_http_client>(
+    "event: content_block_delta\n"
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n");
+  wuwe::anthropic_llm_client anthropic({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "claude-test",
+  }, anthropic_http);
+  auto anthropic_response = anthropic.complete_stream(request, callbacks);
+  require(!anthropic_response.error_code,
+    "Anthropic stream should ignore tail transport error after output");
+  require(anthropic_response.content == "hi", "Anthropic stream should retain parsed output");
+  require(anthropic_response.metadata.count("ignored_stream_transport_error") == 1,
+    "Anthropic stream should record ignored tail transport error");
+
+  auto gemini_http = std::make_shared<streaming_error_http_client>(
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\n");
+  wuwe::gemini_llm_client gemini({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "gemini-test",
+  }, gemini_http);
+  auto gemini_response = gemini.complete_stream(request, callbacks);
+  require(!gemini_response.error_code,
+    "Gemini stream should ignore tail transport error after output");
+  require(gemini_response.content == "hi", "Gemini stream should retain parsed output");
+  require(gemini_response.metadata.count("ignored_stream_transport_error") == 1,
+    "Gemini stream should record ignored tail transport error");
+
+  auto ollama_http = std::make_shared<streaming_error_http_client>(
+    "{\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":false}\n");
+  wuwe::ollama_llm_client ollama({
+    .model = "llama-test",
+  }, ollama_http);
+  auto ollama_response = ollama.complete_stream(request, callbacks);
+  require(!ollama_response.error_code,
+    "Ollama stream should ignore tail transport error after output");
+  require(ollama_response.content == "hi", "Ollama stream should retain parsed output");
+  require(ollama_response.metadata.count("ignored_stream_transport_error") == 1,
+    "Ollama stream should record ignored tail transport error");
+
+  for (const auto& event : events) {
+    require(event.type != wuwe::llm_stream_event_type::error,
+      "tail transport errors after output should not emit error events");
+  }
+}
+
+void test_native_provider_streaming_invalid_events_are_sanitized() {
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<wuwe::llm_stream_event> events;
+  wuwe::llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const wuwe::llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  auto anthropic_http = std::make_shared<capture_http_client>("data: not-json\n\n");
+  wuwe::anthropic_llm_client anthropic({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "claude-test",
+  }, anthropic_http);
+  auto anthropic_response = anthropic.complete_stream(request, callbacks);
+  require(anthropic_response.error_code == wuwe::agent::llm_error_code::invalid_response,
+    "Anthropic invalid stream should fail");
+  require(anthropic_response.content.find("not-json") == std::string::npos,
+    "Anthropic invalid stream should not expose raw event data");
+
+  auto gemini_http = std::make_shared<capture_http_client>("data: not-json\n\n");
+  wuwe::gemini_llm_client gemini({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "gemini-test",
+  }, gemini_http);
+  auto gemini_response = gemini.complete_stream(request, callbacks);
+  require(gemini_response.error_code == wuwe::agent::llm_error_code::invalid_response,
+    "Gemini invalid stream should fail");
+  require(gemini_response.content.find("not-json") == std::string::npos,
+    "Gemini invalid stream should not expose raw event data");
+
+  auto ollama_http = std::make_shared<capture_http_client>("not-json\n");
+  wuwe::ollama_llm_client ollama({
+    .model = "llama-test",
+  }, ollama_http);
+  auto ollama_response = ollama.complete_stream(request, callbacks);
+  require(ollama_response.error_code == wuwe::agent::llm_error_code::invalid_response,
+    "Ollama invalid stream should fail");
+  require(ollama_response.content.find("not-json") == std::string::npos,
+    "Ollama invalid stream should not expose raw event data");
+
+  for (const auto& event : events) {
+    if (event.type == wuwe::llm_stream_event_type::error) {
+      require(event.message.find("not-json") == std::string::npos,
+        "invalid stream error callbacks should not expose raw event data");
+    }
+  }
+}
+
+void test_native_provider_streaming_ignores_invalid_tail_events_after_output() {
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<wuwe::llm_stream_event> events;
+  wuwe::llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const wuwe::llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  auto anthropic_http = std::make_shared<capture_http_client>(
+    "event: content_block_delta\n"
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+    "data: not-json\n\n");
+  wuwe::anthropic_llm_client anthropic({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "claude-test",
+  }, anthropic_http);
+  auto anthropic_response = anthropic.complete_stream(request, callbacks);
+  require(!anthropic_response.error_code,
+    "Anthropic stream should ignore invalid tail event after output");
+  require(anthropic_response.content == "hi",
+    "Anthropic stream should retain output before invalid tail event");
+  require(anthropic_response.metadata.count("ignored_invalid_stream_event") == 1,
+    "Anthropic stream should record ignored invalid tail event");
+
+  auto gemini_http = std::make_shared<capture_http_client>(
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\n"
+    "data: not-json\n\n");
+  wuwe::gemini_llm_client gemini({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "gemini-test",
+  }, gemini_http);
+  auto gemini_response = gemini.complete_stream(request, callbacks);
+  require(!gemini_response.error_code,
+    "Gemini stream should ignore invalid tail event after output");
+  require(gemini_response.content == "hi",
+    "Gemini stream should retain output before invalid tail event");
+  require(gemini_response.metadata.count("ignored_invalid_stream_event") == 1,
+    "Gemini stream should record ignored invalid tail event");
+
+  auto ollama_http = std::make_shared<capture_http_client>(
+    "{\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":false}\n"
+    "not-json\n");
+  wuwe::ollama_llm_client ollama({
+    .model = "llama-test",
+  }, ollama_http);
+  auto ollama_response = ollama.complete_stream(request, callbacks);
+  require(!ollama_response.error_code,
+    "Ollama stream should ignore invalid tail event after output");
+  require(ollama_response.content == "hi",
+    "Ollama stream should retain output before invalid tail event");
+  require(ollama_response.metadata.count("ignored_invalid_stream_event") == 1,
+    "Ollama stream should record ignored invalid tail event");
+
+  for (const auto& event : events) {
+    require(event.type != wuwe::llm_stream_event_type::error,
+      "invalid tail events after output should not emit error events");
+  }
+}
+
 void test_native_provider_retries_before_output() {
   wuwe::llm_request request;
   request.messages.push_back({ .role = "user", .content = "hello" });
@@ -531,6 +733,9 @@ int main() {
     test_openai_compatible_provider_presets();
     test_native_provider_clients_parse_text_and_tools();
     test_native_provider_streaming_success_and_incomplete_streams();
+    test_native_provider_streaming_sanitizes_tail_errors_after_output();
+    test_native_provider_streaming_invalid_events_are_sanitized();
+    test_native_provider_streaming_ignores_invalid_tail_events_after_output();
     test_native_provider_retries_before_output();
   }
   catch (const std::exception& ex) {
