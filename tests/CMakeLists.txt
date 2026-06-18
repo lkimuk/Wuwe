@@ -85,6 +85,21 @@ wuwe_copy_runtime_dlls(reasoning_tests)
 
 add_test(NAME reasoning_tests COMMAND reasoning_tests)
 
+add_executable(execution_tests
+    execution_tests.cpp
+)
+
+target_link_libraries(execution_tests PRIVATE wuwe)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    target_compile_definitions(execution_tests PRIVATE
+        WUWE_EXECUTION_TEST_PYTHON="${Python3_EXECUTABLE}"
+    )
+endif()
+wuwe_copy_runtime_dlls(execution_tests)
+
+add_test(NAME execution_tests COMMAND execution_tests)
+
 add_executable(mcp_tests
     mcp_tests.cpp
 )

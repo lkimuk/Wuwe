@@ -3,6 +3,11 @@
 
 #include <wuwe/agent/core/message.hpp>
 #include <wuwe/agent/core/observability.hpp>
+#include <wuwe/agent/approval/approval_module.hpp>
+#include <wuwe/agent/audit/audit_module.hpp>
+#include <wuwe/agent/capability/capability.hpp>
+#include <wuwe/agent/capability/capability_policy.hpp>
+#include <wuwe/agent/execution/execution.hpp>
 #include <wuwe/agent/knowledge/knowledge.hpp>
 #include <wuwe/agent/llm/anthropic_llm_client.h>
 #include <wuwe/agent/llm/gemini_llm_client.h>
@@ -19,6 +24,7 @@
 #include <wuwe/agent/planning/planning.hpp>
 #include <wuwe/agent/reasoning/reasoning.hpp>
 #include <wuwe/agent/reflection/reflection.hpp>
+#include <wuwe/agent/sandbox/sandbox_module.hpp>
 #include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/print.h>
 #include <wuwe/net/cpr_http_client.h>

@@ -26,6 +26,19 @@ for auditing model, tool, reflection, and plan-step work.
 
 See [Reasoning](docs/reasoning.md) for the strategy boundary and API examples.
 
+## Controlled Local Execution
+
+Wuwe is adding a controlled local execution runtime for host-approved agent
+tools such as bounded Python snippets. The design treats execution as a
+high-risk capability with explicit policy, approval, audit, and replaceable
+sandbox backends instead of a reasoning-mode feature or product-specific
+helper. The current backend is a controlled process baseline; strong filesystem
+or network isolation requires a backend that explicitly advertises those
+features.
+
+See [Controlled Local Execution Runtime](docs/execution-runtime.md) for the
+architecture, threat model, Phase 1 scope, and ReArk integration plan.
+
 ## Packaging
 
 Wuwe ships as one complete package. The release archive includes the C++ SDK,

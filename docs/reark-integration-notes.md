@@ -187,6 +187,197 @@ that implement `invoke(name, arguments_json, stop_token)`.
 Public Wuwe headers no longer expose `emit(...)` as a method name in the
 Reasoning/Planning/Reflection event path, reducing Qt macro friction for ReArk.
 
+### Controlled Local Execution For ReArk Agents
+
+Wuwe now has the first baseline of a controlled local execution runtime that
+ReArk can use for bounded Python-based reverse-engineering calculations. This
+is intended for tasks such as decoding bytes, testing crypto hypotheses,
+transforming constants, validating generated scripts, and returning
+stdout/stderr to the agent for follow-up analysis.
+
+This is not a strong OS sandbox yet. The current backend is
+`controlled_process`: Wuwe controls interpreter selection, environment,
+working directory, stdin/stdout/stderr, timeout, cancellation, and process
+lifecycle, but it does not claim to enforce complete network or filesystem
+isolation against code running with the current OS user privileges.
+
+For this backend, `network: false` and `file_write: false` mean the model cannot
+ask the tool to enable those capabilities and Wuwe will not treat them as
+approved capabilities. They are not kernel-enforced Python restrictions. ReArk
+should keep the workdir task-local, pass selected bytes/text through
+`stdin_text`, and avoid placing unrelated sensitive files in locations reachable
+by the execution user until Wuwe provides a backend that advertises explicit
+network and filesystem restriction features.
+
+Available Wuwe pieces:
+
+- `wuwe::agent::capability`: stable capability names such as
+  `process.python`, `process.shell`, `filesystem.write`, and
+  `network.outbound`.
+- `wuwe::agent::approval`: host approval request and decision contracts for
+  high-risk capability escalation.
+- `wuwe::agent::audit`: structured audit events and sinks for attempted,
+  denied, approved, started, completed, failed, timed-out, and cancelled
+  executions.
+- `wuwe::agent::sandbox`: explicit isolation levels including
+  `controlled_process`, `restricted_process`, `container`, and `wasm`.
+- `wuwe::agent::execution`: request/result/policy/runtime/backend contracts,
+  `controlled_process_backend`, and `execution_tool_provider`.
+
+The first backend supports Windows Python snippets through `CreateProcessW`
+without invoking a system shell. It writes the snippet to a temporary script in
+the execution workdir, passes optional stdin through a pipe, captures
+stdout/stderr with byte limits, marks truncation, supports timeout/cancel, and
+returns structured launch, backend, policy, input-limit, and approval failures.
+The Windows implementation uses a restricted process handle inheritance list so
+the child receives only its standard IO handles, not arbitrary inheritable
+handles from the host process.
+
+The first agent-facing tool is intentionally narrow:
+
+```text
+run_python_snippet(code, stdin_text?, timeout_ms?)
+```
+
+ReArk should expose a product-specific name such as:
+
+```text
+run_analysis_script(code, stdin_text?, timeout_ms?)
+```
+
+The model must not be allowed to set permissions, environment variables,
+interpreter paths, network access, file-write access, or shell commands through
+tool arguments. ReArk should configure those through host-owned
+`execution_policy`.
+
+Recommended ReArk policy for the first integration:
+
+```text
+language: python
+backend: controlled_process
+tool name: run_analysis_script
+shell: false
+network: false
+file_write: false
+env: empty or explicit allowlist only
+timeout: 3000-5000 ms
+stdout/stderr: 65536 bytes each
+max_code_bytes: 65536
+max_stdin_bytes: 1048576
+max_total_input_bytes: 1114112
+max_arguments_bytes: 131072
+workdir: ReArk analysis temp directory
+stdin: selected bytes, constants, resource data, or decompiled text
+```
+
+Example integration shape:
+
+```cpp
+namespace execution = wuwe::agent::execution;
+
+auto execution_runtime = std::make_unique<execution::execution_runtime>(
+  execution::make_controlled_process_backend({
+    .python_interpreter = reark_python_path,
+    .fallback_workdir = reark_analysis_temp_dir,
+  }),
+  execution::execution_policy {
+    .allowed_languages = { execution::execution_language::python },
+    .default_workdir = reark_analysis_temp_dir,
+    .max_limits = {
+      .timeout = std::chrono::milliseconds(5000),
+      .max_stdout_bytes = 65536,
+      .max_stderr_bytes = 65536,
+      .max_code_bytes = 65536,
+      .max_stdin_bytes = 1048576,
+      .max_total_input_bytes = 1114112,
+    },
+    .allow_network = false,
+    .allow_file_read = false,
+    .allow_file_write = false,
+    .allow_shell = false,
+    .allowed_env = {},
+  },
+  reark_audit_sink,
+  reark_approval_service);
+
+auto execution_tools =
+  std::make_shared<execution::execution_tool_provider>(
+    *execution_runtime,
+    execution::execution_tool_options {
+      .tool_name = "run_analysis_script",
+      .description =
+        "Run a short Python analysis script with bounded input, output, and timeout.",
+      .max_arguments_bytes = 131072,
+      .allow_empty_stdin = true,
+      .allow_additional_arguments = false,
+      .reject_timeout_outside_limits = true,
+    });
+
+auto tools = wuwe::compose_tool_providers(
+  reark_tools,
+  execution_tools,
+  knowledge_tools);
+```
+
+Lifetime requirement: ReArk must keep `execution_runtime`, its backend, audit
+sink, and approval service alive for as long as the composed tool provider can
+be invoked. The tool provider stores a non-owning reference to the runtime.
+
+The tool provider now exposes a policy-aligned JSON schema. The schema only
+contains `code`, `stdin_text`, and `timeout_ms`, sets `additionalProperties` to
+`false` by default, and publishes `maxLength`/`minimum`/`maximum` values from
+the host policy and tool options. Provider-level validation rejects oversized
+raw argument JSON before parsing, rejects unknown fields, and rejects timeout
+hints outside the exposed bounds before the backend can launch.
+
+ReArk owns:
+
+- whether controlled execution is enabled,
+- Python interpreter selection or packaging,
+- analysis workdir selection,
+- selected input packaging into `stdin_text`,
+- user approval UI,
+- audit persistence policy,
+- UI rendering of stdout/stderr, timeout, cancellation, and truncation.
+
+Audit coverage now includes provider-level argument rejections such as
+`arguments_limit`, `schema_invalid`, and `timeout_limit`, plus runtime policy
+denials, approval decisions, launch/backend failures, timeout, cancellation,
+and completion. Execution-finished audit events also include backend name,
+isolation level, and whether file/network deny is enforced by the active
+backend.
+
+Wuwe owns:
+
+- execution API contracts,
+- policy evaluation and limit clamping,
+- approval request shape,
+- audit event shape,
+- no-shell controlled process launch,
+- stdin/stdout/stderr capture,
+- timeout and cancellation,
+- tool provider integration with ReAct and Planning.
+
+Initial ReArk verification:
+
+- Register `run_analysis_script` and confirm the tool schema only exposes
+  `code`, `stdin_text`, and `timeout_ms`.
+- Run a small Python transform over selected hex/base64 input and verify stdout
+  returns to the agent.
+- Verify timeout returns `timed_out=true`.
+- Verify cancellation returns `cancelled=true`.
+- Verify long stdout/stderr are truncated and marked.
+- Verify oversized `code`, oversized `stdin_text`, and oversized total input
+  return `policy_denied` before Python starts.
+- Verify no host environment variables are inherited unless explicitly
+  allowlisted.
+- Verify denied or failed attempts emit audit events.
+
+Next Wuwe-side enhancements after ReArk feedback should be tracked separately:
+process-tree cleanup hardening, read/write root canonicalization, Windows
+restricted-process support, CPU/memory limits, container backend, and WASM
+backend.
+
 ### Knowledge And URL Loading
 
 The Knowledge Retrieval module now supports local files, directories, URL/HTML

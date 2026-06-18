@@ -1,6 +1,17 @@
+#include <utility>
+
 #include <wuwe/wuwe.h>
 
 int main() {
+  wuwe::agent::execution::execution_policy policy;
+  policy.max_limits.max_code_bytes = 65536;
+  auto backend = wuwe::agent::execution::make_controlled_process_backend();
+  wuwe::agent::execution::execution_runtime runtime(std::move(backend), policy);
+  wuwe::agent::execution::execution_tool_provider execution_tools(runtime);
+  if (execution_tools.tools().empty()) {
+    return 1;
+  }
+
   wuwe::agent::mcp::mcp_server server;
   wuwe::agent::mcp::mcp_http_listener_options listener_options;
   listener_options.port = 0;
