@@ -75,8 +75,10 @@ WASM backend.
   - `restricted_process`: planned and unavailable.
   - `container`: planned and unavailable.
   - `wasm`: planned and unavailable.
-- Planned backends return structured `backend_error` results instead of
-  pretending to run.
+- Planned backend slots are descriptors only; they are not executable backend
+  factories.
+- `create("restricted_process")`, `create("container")`, and `create("wasm")`
+  return `nullptr` until real implementations are registered.
 - Planned backend contracts mark future enforcement as `planned`, not
   `enforced`.
 - Registry selection can require specific enforced capabilities such as process

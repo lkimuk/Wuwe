@@ -3,13 +3,93 @@
 #include <utility>
 
 #include <wuwe/agent/execution/controlled_process_backend.hpp>
-#include <wuwe/agent/execution/planned_execution_backends.hpp>
 
 namespace wuwe::agent::execution {
 namespace {
 
 bool is_enforced(sandbox::enforcement_level level) {
   return level == sandbox::enforcement_level::enforced;
+}
+
+sandbox::sandbox_enforcement_contract planned_restricted_contract() {
+  return {
+    .shell_execution = sandbox::enforcement_level::planned,
+    .timeout = sandbox::enforcement_level::planned,
+    .cancellation = sandbox::enforcement_level::planned,
+    .stdout_limit = sandbox::enforcement_level::planned,
+    .stderr_limit = sandbox::enforcement_level::planned,
+    .environment_allowlist = sandbox::enforcement_level::planned,
+    .working_directory = sandbox::enforcement_level::planned,
+    .process_tree_cleanup = sandbox::enforcement_level::planned,
+    .process_count_limit = sandbox::enforcement_level::planned,
+    .cpu_time_limit = sandbox::enforcement_level::planned,
+    .memory_limit = sandbox::enforcement_level::planned,
+    .filesystem_read_deny = sandbox::enforcement_level::planned,
+    .filesystem_write_deny = sandbox::enforcement_level::planned,
+    .network_deny = sandbox::enforcement_level::planned,
+  };
+}
+
+sandbox::sandbox_enforcement_contract planned_wasm_contract() {
+  return {
+    .shell_execution = sandbox::enforcement_level::not_applicable,
+    .timeout = sandbox::enforcement_level::planned,
+    .cancellation = sandbox::enforcement_level::planned,
+    .stdout_limit = sandbox::enforcement_level::planned,
+    .stderr_limit = sandbox::enforcement_level::planned,
+    .environment_allowlist = sandbox::enforcement_level::not_applicable,
+    .working_directory = sandbox::enforcement_level::planned,
+    .process_tree_cleanup = sandbox::enforcement_level::not_applicable,
+    .process_count_limit = sandbox::enforcement_level::not_applicable,
+    .cpu_time_limit = sandbox::enforcement_level::planned,
+    .memory_limit = sandbox::enforcement_level::planned,
+    .filesystem_read_deny = sandbox::enforcement_level::planned,
+    .filesystem_write_deny = sandbox::enforcement_level::planned,
+    .network_deny = sandbox::enforcement_level::planned,
+  };
+}
+
+sandbox::sandbox_backend_info planned_backend_descriptor(
+  std::string name,
+  sandbox::isolation_level isolation,
+  sandbox::sandbox_enforcement_contract enforcement) {
+  return {
+    .name = std::move(name),
+    .isolation = isolation,
+    .available = false,
+    .unavailable_reason =
+      sandbox::to_string(isolation) + " backend is planned but not implemented in this build",
+    .features = {
+      sandbox::sandbox_feature::environment_allowlist,
+      sandbox::sandbox_feature::working_directory,
+      sandbox::sandbox_feature::stdout_capture,
+      sandbox::sandbox_feature::stderr_capture,
+      sandbox::sandbox_feature::timeout,
+      sandbox::sandbox_feature::cancellation,
+      sandbox::sandbox_feature::filesystem_read_restriction,
+      sandbox::sandbox_feature::filesystem_write_restriction,
+      sandbox::sandbox_feature::network_restriction,
+    },
+    .enforcement = std::move(enforcement),
+  };
+}
+
+sandbox::sandbox_backend_info planned_wasm_descriptor() {
+  auto info = planned_backend_descriptor(
+    "wasm",
+    sandbox::isolation_level::wasm,
+    planned_wasm_contract());
+  info.features = {
+    sandbox::sandbox_feature::working_directory,
+    sandbox::sandbox_feature::stdout_capture,
+    sandbox::sandbox_feature::stderr_capture,
+    sandbox::sandbox_feature::timeout,
+    sandbox::sandbox_feature::cancellation,
+    sandbox::sandbox_feature::filesystem_read_restriction,
+    sandbox::sandbox_feature::filesystem_write_restriction,
+    sandbox::sandbox_feature::network_restriction,
+  };
+  return info;
 }
 
 bool satisfies_requirements(
@@ -58,11 +138,16 @@ void execution_backend_registry::register_backend(std::string name, factory crea
   entries_.push_back({ .name = std::move(name), .create = std::move(create) });
 }
 
+void execution_backend_registry::register_descriptor(sandbox::sandbox_backend_info info) {
+  const auto name = info.name;
+  entries_.push_back({ .name = name, .descriptor = std::move(info) });
+}
+
 std::unique_ptr<execution_backend> execution_backend_registry::create(
   const std::string& name) const {
   for (const auto& entry : entries_) {
     if (entry.name == name) {
-      return entry.create();
+      return entry.create ? entry.create() : nullptr;
     }
   }
   return nullptr;
@@ -72,7 +157,14 @@ std::optional<sandbox::sandbox_backend_info> execution_backend_registry::describ
   const std::string& name) const {
   for (const auto& entry : entries_) {
     if (entry.name == name) {
-      if (auto backend = entry.create()) {
+      if (entry.descriptor.has_value()) {
+        return entry.descriptor;
+      }
+      if (entry.create) {
+        auto backend = entry.create();
+        if (backend == nullptr) {
+          return std::nullopt;
+        }
         return backend->info();
       }
       return std::nullopt;
@@ -85,7 +177,14 @@ std::vector<sandbox::sandbox_backend_info> execution_backend_registry::backends(
   std::vector<sandbox::sandbox_backend_info> result;
   result.reserve(entries_.size());
   for (const auto& entry : entries_) {
-    if (auto backend = entry.create()) {
+    if (entry.descriptor.has_value()) {
+      result.push_back(*entry.descriptor);
+    }
+    else if (entry.create) {
+      auto backend = entry.create();
+      if (backend == nullptr) {
+        continue;
+      }
       result.push_back(backend->info());
     }
   }
@@ -95,8 +194,8 @@ std::vector<sandbox::sandbox_backend_info> execution_backend_registry::backends(
 std::optional<std::string> execution_backend_registry::select_backend_name(
   const execution_backend_requirements& requirements) const {
   for (const auto& entry : entries_) {
-    if (auto backend = entry.create()) {
-      if (satisfies_requirements(backend->info(), requirements)) {
+    if (const auto info = describe(entry.name)) {
+      if (satisfies_requirements(*info, requirements)) {
         return entry.name;
       }
     }
@@ -115,15 +214,15 @@ execution_backend_registry make_default_execution_backend_registry() {
   registry.register_backend("controlled_process", [] {
     return make_controlled_process_backend();
   });
-  registry.register_backend("restricted_process", [] {
-    return make_restricted_process_backend();
-  });
-  registry.register_backend("container", [] {
-    return make_container_backend();
-  });
-  registry.register_backend("wasm", [] {
-    return make_wasm_backend();
-  });
+  registry.register_descriptor(planned_backend_descriptor(
+    "restricted_process",
+    sandbox::isolation_level::restricted_process,
+    planned_restricted_contract()));
+  registry.register_descriptor(planned_backend_descriptor(
+    "container",
+    sandbox::isolation_level::container,
+    planned_restricted_contract()));
+  registry.register_descriptor(planned_wasm_descriptor());
   return registry;
 }
 

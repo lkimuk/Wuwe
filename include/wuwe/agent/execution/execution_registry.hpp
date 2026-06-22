@@ -33,6 +33,7 @@ public:
   using factory = std::function<std::unique_ptr<execution_backend>()>;
 
   void register_backend(std::string name, factory create);
+  void register_descriptor(sandbox::sandbox_backend_info info);
 
   [[nodiscard]] std::unique_ptr<execution_backend> create(
     const std::string& name) const;
@@ -52,6 +53,7 @@ private:
   struct entry {
     std::string name;
     factory create;
+    std::optional<sandbox::sandbox_backend_info> descriptor;
   };
 
   std::vector<entry> entries_;

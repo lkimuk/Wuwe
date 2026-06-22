@@ -412,21 +412,18 @@ void test_backend_registry_selects_only_available_enforced_backends() {
   assert(registry.describe("missing") == std::nullopt);
 }
 
-void test_planned_backend_returns_structured_unavailable_result() {
-  auto backend = execution::make_restricted_process_backend();
-  const auto info = backend->info();
-  assert(!info.available);
-  assert(info.isolation == sandbox::isolation_level::restricted_process);
-
-  execution::execution_request request;
-  request.code = "print(1)";
-  const auto result = backend->run(request, {});
-
-  assert(result.termination_reason == execution::execution_termination_reason::backend_error);
-  assert(!result.error_message.empty());
-  assert(result.metadata.at("backend") == "restricted_process");
-  assert(result.metadata.at("backend_available") == "false");
-  assert(result.metadata.at("isolation") == "restricted_process");
+void test_planned_backend_descriptors_are_not_executable() {
+  auto registry = execution::make_default_execution_backend_registry();
+  const auto restricted = registry.describe("restricted_process");
+  assert(restricted.has_value());
+  assert(!restricted->available);
+  assert(restricted->isolation == sandbox::isolation_level::restricted_process);
+  assert(restricted->enforcement.filesystem_read_deny ==
+         sandbox::enforcement_level::planned);
+  assert(!restricted->unavailable_reason.empty());
+  assert(registry.create("restricted_process") == nullptr);
+  assert(registry.create("container") == nullptr);
+  assert(registry.create("wasm") == nullptr);
 }
 
 void test_controlled_process_contract_reflects_job_object_config() {
@@ -809,7 +806,7 @@ int main() {
   test_runtime_audit_records_clamped_limits();
   test_default_backend_registry_exposes_controlled_process();
   test_backend_registry_selects_only_available_enforced_backends();
-  test_planned_backend_returns_structured_unavailable_result();
+  test_planned_backend_descriptors_are_not_executable();
   test_controlled_process_contract_reflects_job_object_config();
   test_path_policy_rejects_prefix_trap();
   test_path_policy_handles_parent_traversal();
