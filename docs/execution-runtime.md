@@ -1,7 +1,8 @@
 # Controlled Local Execution Runtime
 
-Status: P0/P1 controlled-process baseline implemented; stronger restricted,
-container, and WASM backends remain future work.
+Status: P0/P1 controlled-process baseline implemented; P2/P3 backend contract
+and selection surfaces implemented; stronger restricted, container, and WASM
+execution backends remain future work.
 
 Use `<wuwe/agent/execution/execution.hpp>` as the planned module entry header.
 
@@ -36,7 +37,10 @@ Implemented in the first baseline:
 - code, stdin, and total input byte limits enforced before backend launch.
 - Backend enforcement contract metadata for process, resource, file, and
   network capabilities.
-- Default execution backend registry with `controlled_process`.
+- Backend availability metadata for planned or unavailable backends.
+- Default execution backend registry with `controlled_process`,
+  `restricted_process`, `container`, and `wasm` slots.
+- Registry selection by enforced backend requirements.
 - Host-side path boundary helpers for canonical root checks.
 - `execution_tool_provider` exposing `run_python_snippet` or a host-selected
   tool name such as `run_analysis_script`.
@@ -52,7 +56,8 @@ Still future work:
 - ReArk-side UI approval and audit persistence integration.
 
 See [Controlled Local Execution Stage Record](execution-platform-stage.md) for
-the current completed/not-completed checklist and backend enforcement contract.
+the current completed/not-completed checklist, registry behavior, and backend
+enforcement contract.
 
 ## Design Principles
 
@@ -647,7 +652,10 @@ Phase 1 should implement:
 - Job Object kill-on-close on Windows.
 - Job Object process count, CPU time, and memory limits on Windows.
 - Backend enforcement contract metadata.
-- Default backend registry.
+- Backend availability metadata.
+- Default backend registry with planned restricted/container/WASM slots.
+- Requirement-based backend selection that skips unavailable or under-enforced
+  backends.
 - Host-side canonical path/root boundary helpers.
 - stdout and stderr capture with byte limits.
 - stdout and stderr truncation flags.
@@ -668,6 +676,8 @@ would delay the usable execution path.
 
 ### Phase 2: Stronger Local Restrictions
 
+- Replace the planned `restricted_process` placeholder with an available
+  backend only when the configured backend can enforce its advertised contract.
 - Windows restricted backend using restricted tokens or AppContainer-style
   execution.
 - OS-enforced filesystem read/write restrictions.
@@ -677,6 +687,8 @@ would delay the usable execution path.
 
 ### Phase 3: Container Backend
 
+- Replace the planned `container` placeholder with an available backend only
+  when the configured container runtime can enforce its advertised contract.
 - Docker or containerd backend.
 - Network namespace control.
 - Read-only mounts.
@@ -686,6 +698,8 @@ would delay the usable execution path.
 
 ### Phase 4: WASM Backend
 
+- Replace the planned `wasm` placeholder with an available backend only when a
+  WASI runtime is integrated and policy limits are enforced.
 - WASI execution for small deterministic tools.
 - Capability-based filesystem preopens.
 - Stronger default no-network behavior.

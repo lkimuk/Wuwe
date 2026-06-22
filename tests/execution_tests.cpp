@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -365,15 +366,67 @@ void test_runtime_audit_records_clamped_limits() {
 void test_default_backend_registry_exposes_controlled_process() {
   auto registry = execution::make_default_execution_backend_registry();
   const auto backends = registry.backends();
-  assert(!backends.empty());
-  assert(backends.front().name == "controlled_process");
-  assert(backends.front().enforcement.process_tree_cleanup ==
+  assert(backends.size() >= 4);
+  assert(backends.at(0).name == "controlled_process");
+  assert(backends.at(0).available);
+  assert(backends.at(0).enforcement.process_tree_cleanup ==
          sandbox::enforcement_level::enforced);
-  assert(backends.front().enforcement.filesystem_read_deny ==
+  assert(backends.at(0).enforcement.filesystem_read_deny ==
          sandbox::enforcement_level::not_enforced);
+  assert(backends.at(1).name == "restricted_process");
+  assert(!backends.at(1).available);
+  assert(backends.at(1).enforcement.filesystem_read_deny ==
+         sandbox::enforcement_level::planned);
+  assert(backends.at(2).name == "container");
+  assert(!backends.at(2).available);
+  assert(backends.at(3).name == "wasm");
+  assert(!backends.at(3).available);
   auto backend = registry.create("controlled_process");
   assert(backend != nullptr);
   assert(registry.create("missing") == nullptr);
+}
+
+void test_backend_registry_selects_only_available_enforced_backends() {
+  auto registry = execution::make_default_execution_backend_registry();
+
+  execution::execution_backend_requirements controlled_requirements;
+  controlled_requirements.require_timeout = true;
+  controlled_requirements.require_process_tree_cleanup = true;
+  const auto controlled_name = registry.select_backend_name(controlled_requirements);
+  assert(controlled_name.has_value());
+  assert(*controlled_name == "controlled_process");
+  assert(registry.create_best(controlled_requirements) != nullptr);
+
+  execution::execution_backend_requirements strong_requirements;
+  strong_requirements.require_filesystem_read_deny = true;
+  strong_requirements.require_filesystem_write_deny = true;
+  strong_requirements.require_network_deny = true;
+  const auto strong_name = registry.select_backend_name(strong_requirements);
+  assert(!strong_name.has_value());
+  assert(registry.create_best(strong_requirements) == nullptr);
+
+  const auto restricted = registry.describe("restricted_process");
+  assert(restricted.has_value());
+  assert(!restricted->available);
+  assert(!restricted->unavailable_reason.empty());
+  assert(registry.describe("missing") == std::nullopt);
+}
+
+void test_planned_backend_returns_structured_unavailable_result() {
+  auto backend = execution::make_restricted_process_backend();
+  const auto info = backend->info();
+  assert(!info.available);
+  assert(info.isolation == sandbox::isolation_level::restricted_process);
+
+  execution::execution_request request;
+  request.code = "print(1)";
+  const auto result = backend->run(request, {});
+
+  assert(result.termination_reason == execution::execution_termination_reason::backend_error);
+  assert(!result.error_message.empty());
+  assert(result.metadata.at("backend") == "restricted_process");
+  assert(result.metadata.at("backend_available") == "false");
+  assert(result.metadata.at("isolation") == "restricted_process");
 }
 
 void test_controlled_process_contract_reflects_job_object_config() {
@@ -755,6 +808,8 @@ int main() {
   test_tool_provider_rejects_timeout_over_schema_limit();
   test_runtime_audit_records_clamped_limits();
   test_default_backend_registry_exposes_controlled_process();
+  test_backend_registry_selects_only_available_enforced_backends();
+  test_planned_backend_returns_structured_unavailable_result();
   test_controlled_process_contract_reflects_job_object_config();
   test_path_policy_rejects_prefix_trap();
   test_path_policy_handles_parent_traversal();

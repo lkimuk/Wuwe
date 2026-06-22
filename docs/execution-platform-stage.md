@@ -1,8 +1,8 @@
 # Controlled Local Execution Stage Record
 
-Status: P0 complete and pushed; P1 controlled-process hardening implemented
-locally for this stage; P2/P3 stronger sandbox and multi-backend work remains
-future work.
+Status: P0/P1 complete and pushed; P2/P3 platform contract and backend
+selection surfaces are implemented; P2/P3 strong OS/container/WASM execution
+backends remain future work.
 
 Date: 2026-06-22
 
@@ -66,6 +66,26 @@ WASM backend.
 - Tests cover default backend registry behavior, disabled Job Object contracts,
   resource limit clamping/audit metadata, path prefix traps, parent traversal,
   and child-process cleanup on timeout.
+
+## Completed In P2/P3 Platform Contract
+
+- Backend metadata now exposes `available` and `unavailable_reason`.
+- The default registry exposes four backend slots:
+  - `controlled_process`: available.
+  - `restricted_process`: planned and unavailable.
+  - `container`: planned and unavailable.
+  - `wasm`: planned and unavailable.
+- Planned backends return structured `backend_error` results instead of
+  pretending to run.
+- Planned backend contracts mark future enforcement as `planned`, not
+  `enforced`.
+- Registry selection can require specific enforced capabilities such as process
+  tree cleanup, CPU/memory limits, filesystem read/write deny, or network deny.
+- Registry selection skips unavailable backends.
+- Registry selection returns no backend when strong filesystem/network isolation
+  is required in the current build.
+- Package smoke now verifies the backend registry and selection API are visible
+  from the installed package.
 
 ## Not Completed
 

@@ -54,6 +54,8 @@ struct sandbox_enforcement_contract {
 struct sandbox_backend_info {
   std::string name;
   isolation_level isolation { isolation_level::none };
+  bool available { true };
+  std::string unavailable_reason;
   std::vector<sandbox_feature> features;
   sandbox_enforcement_contract enforcement;
 };

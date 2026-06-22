@@ -34,7 +34,9 @@ high-risk capability with explicit policy, approval, audit, and replaceable
 sandbox backends instead of a reasoning-mode feature or product-specific
 helper. The current backend is a controlled process baseline; strong filesystem
 or network isolation requires a backend that explicitly advertises those
-features.
+features. The backend registry exposes planned restricted-process, container,
+and WASM slots as unavailable until their enforcement contracts are actually
+implemented.
 
 See [Controlled Local Execution Runtime](docs/execution-runtime.md) for the
 architecture, threat model, controlled-process scope, and ReArk integration

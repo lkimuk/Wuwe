@@ -12,6 +12,18 @@ int main() {
     return 1;
   }
 
+  auto registry =
+    wuwe::agent::execution::make_default_execution_backend_registry();
+  wuwe::agent::execution::execution_backend_requirements requirements;
+  requirements.require_timeout = true;
+  if (registry.select_backend_name(requirements) != "controlled_process") {
+    return 1;
+  }
+  requirements.require_filesystem_read_deny = true;
+  if (registry.create_best(requirements) != nullptr) {
+    return 1;
+  }
+
   wuwe::agent::mcp::mcp_server server;
   wuwe::agent::mcp::mcp_http_listener_options listener_options;
   listener_options.port = 0;

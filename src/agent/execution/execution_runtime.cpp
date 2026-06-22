@@ -55,6 +55,10 @@ void add_backend_attributes(
   const auto info = backend->info();
   event.attributes["backend"] = info.name;
   event.attributes["isolation"] = sandbox::to_string(info.isolation);
+  event.attributes["backend_available"] = info.available ? "true" : "false";
+  if (!info.unavailable_reason.empty()) {
+    event.attributes["backend_unavailable_reason"] = info.unavailable_reason;
+  }
   event.attributes["shell_execution_enforcement"] =
     sandbox::to_string(info.enforcement.shell_execution);
   event.attributes["timeout_enforcement"] =

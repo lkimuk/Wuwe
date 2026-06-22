@@ -10,5 +10,6 @@
 #include <wuwe/agent/execution/execution_runtime.hpp>
 #include <wuwe/agent/execution/execution_tools.hpp>
 #include <wuwe/agent/execution/path_policy.hpp>
+#include <wuwe/agent/execution/planned_execution_backends.hpp>
 
 #endif // WUWE_AGENT_EXECUTION_EXECUTION_HPP

@@ -354,12 +354,20 @@ isolation level, process/resource enforcement, and whether file/network deny is
 enforced by the active backend. For `controlled_process`, file and network deny
 remain `not_enforced`.
 
+Wuwe's default execution backend registry now exposes backend availability and
+selection by enforced capability. In the current build, `controlled_process` is
+available; `restricted_process`, `container`, and `wasm` are visible as planned
+but unavailable backend slots. If ReArk requires enforced filesystem read/write
+denial or network denial for a task, registry selection returns no backend
+rather than silently downgrading to `controlled_process`.
+
 Wuwe owns:
 
 - execution API contracts,
 - policy evaluation and limit clamping,
 - approval request shape,
 - audit event shape,
+- backend availability and requirement selection,
 - no-shell controlled process launch,
 - stdin/stdout/stderr capture,
 - timeout and cancellation,
