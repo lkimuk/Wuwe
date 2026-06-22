@@ -11,6 +11,7 @@ namespace wuwe::agent::execution {
 struct controlled_process_backend_config {
   std::filesystem::path python_interpreter { "python" };
   std::filesystem::path fallback_workdir;
+  bool use_job_object { true };
 };
 
 class controlled_process_backend final : public execution_backend {

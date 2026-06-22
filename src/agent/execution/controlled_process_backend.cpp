@@ -73,6 +73,73 @@ private:
   HANDLE handle_ { nullptr };
 };
 
+execution_result last_error_result(
+  execution_termination_reason reason,
+  std::string message) {
+  const auto error = GetLastError();
+  if (error != ERROR_SUCCESS) {
+    message += " (win32_error=" + std::to_string(error) + ")";
+  }
+  return {
+    .termination_reason = reason,
+    .error_message = std::move(message),
+  };
+}
+
+void add_job_metadata(
+  execution_result& result,
+  const controlled_process_backend_config& config,
+  const execution_request& request) {
+  result.metadata["job_object_enabled"] = config.use_job_object ? "true" : "false";
+  result.metadata["process_tree_cleanup_enforcement"] =
+    config.use_job_object ? "enforced" : "not_enforced";
+  result.metadata["process_count_limit_enforcement"] =
+    config.use_job_object ? "enforced" : "not_enforced";
+  result.metadata["cpu_time_limit_enforcement"] =
+    config.use_job_object ? "enforced" : "not_enforced";
+  result.metadata["memory_limit_enforcement"] =
+    config.use_job_object ? "enforced" : "not_enforced";
+  result.metadata["max_process_count"] =
+    std::to_string(request.limits.max_process_count);
+  result.metadata["max_memory_bytes"] =
+    std::to_string(request.limits.max_memory_bytes);
+  result.metadata["max_cpu_time_ms"] =
+    std::to_string(request.limits.max_cpu_time.count());
+}
+
+bool configure_job_limits(
+  HANDLE job,
+  const execution_request& request,
+  std::string& error_message) {
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits {};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+  if (request.limits.max_process_count > 0) {
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+    limits.BasicLimitInformation.ActiveProcessLimit =
+      static_cast<DWORD>(request.limits.max_process_count);
+  }
+  if (request.limits.max_memory_bytes > 0) {
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+    limits.JobMemoryLimit = static_cast<SIZE_T>(request.limits.max_memory_bytes);
+  }
+  if (request.limits.max_cpu_time.count() > 0) {
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_TIME;
+    limits.BasicLimitInformation.PerJobUserTimeLimit.QuadPart =
+      request.limits.max_cpu_time.count() * 10000LL;
+  }
+
+  if (!SetInformationJobObject(
+        job,
+        JobObjectExtendedLimitInformation,
+        &limits,
+        sizeof(limits))) {
+    error_message = "failed to configure job object limits";
+    return false;
+  }
+  return true;
+}
+
 class process_thread_attribute_list {
 public:
   process_thread_attribute_list() = default;
@@ -453,6 +520,24 @@ execution_result launch_python_process(
     };
   }
   auto workdir_w = workdir.wstring();
+  unique_handle job_handle;
+  DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT |
+                         EXTENDED_STARTUPINFO_PRESENT;
+  if (config.use_job_object) {
+    job_handle.reset(CreateJobObjectW(nullptr, nullptr));
+    if (!job_handle.valid()) {
+      return last_error_result(
+        execution_termination_reason::launch_failed,
+        "failed to create job object");
+    }
+    std::string job_error;
+    if (!configure_job_limits(job_handle.get(), request, job_error)) {
+      return last_error_result(
+        execution_termination_reason::launch_failed,
+        job_error);
+    }
+    creation_flags |= CREATE_SUSPENDED;
+  }
 
   const auto created = CreateProcessW(
     nullptr,
@@ -460,7 +545,7 @@ execution_result launch_python_process(
     nullptr,
     nullptr,
     TRUE,
-    CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+    creation_flags,
     environment.data.data(),
     workdir_w.empty() ? nullptr : workdir_w.c_str(),
     &startup_ex.StartupInfo,
@@ -479,8 +564,23 @@ execution_result launch_python_process(
 
   unique_handle process_handle(process.hProcess);
   unique_handle thread_handle(process.hThread);
+  if (job_handle.valid()) {
+    if (!AssignProcessToJobObject(job_handle.get(), process_handle.get())) {
+      TerminateProcess(process_handle.get(), 1);
+      return last_error_result(
+        execution_termination_reason::launch_failed,
+        "failed to assign process to job object");
+    }
+    if (ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1)) {
+      TerminateJobObject(job_handle.get(), 1);
+      return last_error_result(
+        execution_termination_reason::launch_failed,
+        "failed to resume process after job assignment");
+    }
+  }
 
   execution_result result;
+  add_job_metadata(result, config, request);
   std::thread stdout_thread(
     read_pipe_to_string,
     stdout_read.release(),
@@ -511,7 +611,12 @@ execution_result launch_python_process(
 
     if (stop_token.stop_requested()) {
       cancelled = true;
-      TerminateProcess(process_handle.get(), 1);
+      if (job_handle.valid()) {
+        TerminateJobObject(job_handle.get(), 1);
+      }
+      else {
+        TerminateProcess(process_handle.get(), 1);
+      }
       terminated = true;
       break;
     }
@@ -519,7 +624,12 @@ execution_result launch_python_process(
     if (request.limits.timeout.count() > 0 &&
         std::chrono::steady_clock::now() - started >= request.limits.timeout) {
       timed_out = true;
-      TerminateProcess(process_handle.get(), 1);
+      if (job_handle.valid()) {
+        TerminateJobObject(job_handle.get(), 1);
+      }
+      else {
+        TerminateProcess(process_handle.get(), 1);
+      }
       terminated = true;
       break;
     }
@@ -572,6 +682,14 @@ controlled_process_backend::controlled_process_backend(
 }
 
 sandbox::sandbox_backend_info controlled_process_backend::info() const {
+  const auto job_enforcement =
+#ifdef _WIN32
+    config_.use_job_object ? sandbox::enforcement_level::enforced
+                           : sandbox::enforcement_level::not_enforced;
+#else
+    sandbox::enforcement_level::not_enforced;
+#endif
+
   return {
     .name = "controlled_process",
     .isolation = sandbox::isolation_level::controlled_process,
@@ -582,6 +700,22 @@ sandbox::sandbox_backend_info controlled_process_backend::info() const {
       sandbox::sandbox_feature::stderr_capture,
       sandbox::sandbox_feature::timeout,
       sandbox::sandbox_feature::cancellation,
+    },
+    .enforcement = {
+      .shell_execution = sandbox::enforcement_level::enforced,
+      .timeout = sandbox::enforcement_level::enforced,
+      .cancellation = sandbox::enforcement_level::enforced,
+      .stdout_limit = sandbox::enforcement_level::enforced,
+      .stderr_limit = sandbox::enforcement_level::enforced,
+      .environment_allowlist = sandbox::enforcement_level::enforced,
+      .working_directory = sandbox::enforcement_level::enforced,
+      .process_tree_cleanup = job_enforcement,
+      .process_count_limit = job_enforcement,
+      .cpu_time_limit = job_enforcement,
+      .memory_limit = job_enforcement,
+      .filesystem_read_deny = sandbox::enforcement_level::not_enforced,
+      .filesystem_write_deny = sandbox::enforcement_level::not_enforced,
+      .network_deny = sandbox::enforcement_level::not_enforced,
     },
   };
 }

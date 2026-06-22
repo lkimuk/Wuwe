@@ -2,6 +2,7 @@
 #define WUWE_AGENT_EXECUTION_EXECUTION_CORE_HPP
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -20,6 +21,9 @@ struct execution_limits {
   std::size_t max_code_bytes { 65536 };
   std::size_t max_stdin_bytes { 1048576 };
   std::size_t max_total_input_bytes { 1114112 };
+  std::size_t max_process_count { 8 };
+  std::uint64_t max_memory_bytes { 0 };
+  std::chrono::milliseconds max_cpu_time { 0 };
 };
 
 struct execution_request {

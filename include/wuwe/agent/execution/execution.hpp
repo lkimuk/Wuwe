@@ -6,7 +6,9 @@
 #include <wuwe/agent/execution/execution_codec.hpp>
 #include <wuwe/agent/execution/execution_core.hpp>
 #include <wuwe/agent/execution/execution_policy.hpp>
+#include <wuwe/agent/execution/execution_registry.hpp>
 #include <wuwe/agent/execution/execution_runtime.hpp>
 #include <wuwe/agent/execution/execution_tools.hpp>
+#include <wuwe/agent/execution/path_policy.hpp>
 
 #endif // WUWE_AGENT_EXECUTION_EXECUTION_HPP

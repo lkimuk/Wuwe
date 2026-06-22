@@ -37,7 +37,10 @@ or network isolation requires a backend that explicitly advertises those
 features.
 
 See [Controlled Local Execution Runtime](docs/execution-runtime.md) for the
-architecture, threat model, Phase 1 scope, and ReArk integration plan.
+architecture, threat model, controlled-process scope, and ReArk integration
+plan. See [Controlled Local Execution Stage Record](docs/execution-platform-stage.md)
+for the completed P0/P1 work, enforcement contract, and remaining sandbox
+roadmap.
 
 ## Packaging
 

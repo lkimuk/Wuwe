@@ -83,6 +83,21 @@ void clamp_limits(execution_limits& limits, const execution_limits& max_limits) 
         limits.max_total_input_bytes > max_limits.max_total_input_bytes)) {
     limits.max_total_input_bytes = max_limits.max_total_input_bytes;
   }
+  if (max_limits.max_process_count > 0 &&
+      (limits.max_process_count == 0 ||
+        limits.max_process_count > max_limits.max_process_count)) {
+    limits.max_process_count = max_limits.max_process_count;
+  }
+  if (max_limits.max_memory_bytes > 0 &&
+      (limits.max_memory_bytes == 0 ||
+        limits.max_memory_bytes > max_limits.max_memory_bytes)) {
+    limits.max_memory_bytes = max_limits.max_memory_bytes;
+  }
+  if (max_limits.max_cpu_time.count() > 0 &&
+      (limits.max_cpu_time.count() <= 0 ||
+        limits.max_cpu_time > max_limits.max_cpu_time)) {
+    limits.max_cpu_time = max_limits.max_cpu_time;
+  }
 }
 
 bool exceeds_total_input_limit(
@@ -236,6 +251,9 @@ execution_policy_evaluation evaluate_execution_policy(
     { "max_code_bytes", std::to_string(request.limits.max_code_bytes) },
     { "max_stdin_bytes", std::to_string(request.limits.max_stdin_bytes) },
     { "max_total_input_bytes", std::to_string(request.limits.max_total_input_bytes) },
+    { "max_process_count", std::to_string(request.limits.max_process_count) },
+    { "max_memory_bytes", std::to_string(request.limits.max_memory_bytes) },
+    { "max_cpu_time_ms", std::to_string(request.limits.max_cpu_time.count()) },
   };
   if (!request.workdir.empty()) {
     result.metadata["workdir"] = request.workdir.string();
@@ -270,6 +288,21 @@ execution_policy_evaluation evaluate_execution_policy(
     result.metadata["max_total_input_bytes_clamped"] = "true";
     result.metadata["requested_max_total_input_bytes"] =
       std::to_string(requested_limits.max_total_input_bytes);
+  }
+  if (requested_limits.max_process_count != request.limits.max_process_count) {
+    result.metadata["max_process_count_clamped"] = "true";
+    result.metadata["requested_max_process_count"] =
+      std::to_string(requested_limits.max_process_count);
+  }
+  if (requested_limits.max_memory_bytes != request.limits.max_memory_bytes) {
+    result.metadata["max_memory_bytes_clamped"] = "true";
+    result.metadata["requested_max_memory_bytes"] =
+      std::to_string(requested_limits.max_memory_bytes);
+  }
+  if (requested_limits.max_cpu_time != request.limits.max_cpu_time) {
+    result.metadata["max_cpu_time_clamped"] = "true";
+    result.metadata["requested_max_cpu_time_ms"] =
+      std::to_string(requested_limits.max_cpu_time.count());
   }
   if (result.decision == capability::capability_policy_decision::deny &&
       (result.reason.rfind("Execution denied: code is too large.", 0) == 0 ||

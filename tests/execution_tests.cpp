@@ -17,6 +17,18 @@
 namespace execution = wuwe::agent::execution;
 namespace sandbox = wuwe::agent::sandbox;
 
+std::string escape_python_string(std::string value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (const auto ch : value) {
+    if (ch == '\\' || ch == '\'') {
+      escaped.push_back('\\');
+    }
+    escaped.push_back(ch);
+  }
+  return escaped;
+}
+
 class recording_backend final : public execution::execution_backend {
 public:
   sandbox::sandbox_backend_info info() const override {
@@ -112,6 +124,39 @@ void test_runtime_clamps_limits_and_uses_env_allowlist() {
   assert(backend_ptr->last_request.env.size() == 1);
   assert(backend_ptr->last_request.env.at("SAFE_ENV") == "1");
   assert(!backend_ptr->last_request.env.contains("UNSAFE_ENV"));
+}
+
+void test_runtime_clamps_resource_limits_and_audits() {
+  auto backend = std::make_unique<recording_backend>();
+  auto* backend_ptr = backend.get();
+  wuwe::agent::audit::in_memory_audit_sink audit;
+
+  execution::execution_policy policy;
+  policy.max_limits.max_process_count = 2;
+  policy.max_limits.max_memory_bytes = 1024;
+  policy.max_limits.max_cpu_time = std::chrono::milliseconds(50);
+
+  execution::execution_runtime runtime(std::move(backend), policy, &audit);
+
+  execution::execution_request request;
+  request.code = "print(1)";
+  request.limits.max_process_count = 10;
+  request.limits.max_memory_bytes = 2048;
+  request.limits.max_cpu_time = std::chrono::milliseconds(500);
+  const auto result = runtime.run(request);
+
+  assert(result.termination_reason == execution::execution_termination_reason::exited);
+  assert(backend_ptr->calls == 1);
+  assert(backend_ptr->last_request.limits.max_process_count == 2);
+  assert(backend_ptr->last_request.limits.max_memory_bytes == 1024);
+  assert(backend_ptr->last_request.limits.max_cpu_time == std::chrono::milliseconds(50));
+  assert(result.metadata.at("max_process_count_clamped") == "true");
+  assert(result.metadata.at("max_memory_bytes_clamped") == "true");
+  assert(result.metadata.at("max_cpu_time_clamped") == "true");
+  const auto events = audit.events();
+  assert(events.front().attributes.at("max_process_count_clamped") == "true");
+  assert(events.front().attributes.at("max_memory_bytes_clamped") == "true");
+  assert(events.front().attributes.at("max_cpu_time_clamped") == "true");
 }
 
 void test_policy_denies_invalid_allowed_environment_before_backend() {
@@ -315,6 +360,65 @@ void test_runtime_audit_records_clamped_limits() {
   assert(result.metadata.at("requested_timeout_ms") == "1000");
   const auto events = audit.events();
   assert(events.front().attributes.at("timeout_clamped") == "true");
+}
+
+void test_default_backend_registry_exposes_controlled_process() {
+  auto registry = execution::make_default_execution_backend_registry();
+  const auto backends = registry.backends();
+  assert(!backends.empty());
+  assert(backends.front().name == "controlled_process");
+  assert(backends.front().enforcement.process_tree_cleanup ==
+         sandbox::enforcement_level::enforced);
+  assert(backends.front().enforcement.filesystem_read_deny ==
+         sandbox::enforcement_level::not_enforced);
+  auto backend = registry.create("controlled_process");
+  assert(backend != nullptr);
+  assert(registry.create("missing") == nullptr);
+}
+
+void test_controlled_process_contract_reflects_job_object_config() {
+  execution::controlled_process_backend backend({
+    .use_job_object = false,
+  });
+  const auto info = backend.info();
+
+  assert(info.enforcement.process_tree_cleanup ==
+         sandbox::enforcement_level::not_enforced);
+  assert(info.enforcement.process_count_limit ==
+         sandbox::enforcement_level::not_enforced);
+  assert(info.enforcement.cpu_time_limit ==
+         sandbox::enforcement_level::not_enforced);
+  assert(info.enforcement.memory_limit ==
+         sandbox::enforcement_level::not_enforced);
+  assert(info.enforcement.filesystem_read_deny ==
+         sandbox::enforcement_level::not_enforced);
+  assert(info.enforcement.network_deny ==
+         sandbox::enforcement_level::not_enforced);
+}
+
+void test_path_policy_rejects_prefix_trap() {
+  const auto base = std::filesystem::temp_directory_path() / "wuwe-path-base";
+  const auto sibling = std::filesystem::temp_directory_path() / "wuwe-path-base-other";
+  const auto allowed = base / "child.txt";
+  const auto rejected = sibling / "child.txt";
+
+  const auto allowed_result = execution::evaluate_path_boundary(allowed, { base });
+  const auto rejected_result = execution::evaluate_path_boundary(rejected, { base });
+
+  assert(allowed_result.allowed);
+  assert(!rejected_result.allowed);
+}
+
+void test_path_policy_handles_parent_traversal() {
+  const auto base = std::filesystem::temp_directory_path() / "wuwe-path-parent";
+  const auto allowed = base / "nested" / ".." / "child.txt";
+  const auto rejected = base / ".." / "wuwe-path-parent-other" / "child.txt";
+
+  const auto allowed_result = execution::evaluate_path_boundary(allowed, { base });
+  const auto rejected_result = execution::evaluate_path_boundary(rejected, { base });
+
+  assert(allowed_result.allowed);
+  assert(!rejected_result.allowed);
 }
 
 void test_runtime_normalizes_backend_exceptions() {
@@ -575,6 +679,41 @@ void test_controlled_process_backend_runs_concurrent_snippets() {
   assert(second_result.stdout_text.find("concurrent-2") != std::string::npos);
 }
 
+void test_controlled_process_backend_job_kills_child_process_on_timeout() {
+  const auto marker = std::filesystem::temp_directory_path() /
+                      "wuwe-execution-child-survived.txt";
+  std::error_code ignored;
+  std::filesystem::remove(marker, ignored);
+
+  execution::controlled_process_backend backend({
+    .python_interpreter = WUWE_EXECUTION_TEST_PYTHON,
+    .fallback_workdir =
+      std::filesystem::temp_directory_path() / "wuwe-execution-tests",
+    .use_job_object = true,
+  });
+
+  execution::execution_request request;
+  const auto marker_text = escape_python_string(marker.string());
+  request.code =
+    "import subprocess, sys\n"
+    "subprocess.Popen([sys.executable, '-c', "
+    "\"import time, pathlib; time.sleep(1); "
+    "pathlib.Path('" + marker_text + "').write_text('alive')\"])\n"
+    "while True:\n"
+    "    pass\n";
+  request.limits.timeout = std::chrono::milliseconds(100);
+  request.limits.max_process_count = 4;
+
+  const auto result = backend.run(request, {});
+  assert(result.termination_reason == execution::execution_termination_reason::timeout);
+  assert(result.metadata.at("job_object_enabled") == "true");
+  assert(result.metadata.at("process_tree_cleanup_enforcement") == "enforced");
+  assert(result.metadata.at("process_count_limit_enforcement") == "enforced");
+  assert(result.metadata.at("max_process_count") == "4");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  assert(!std::filesystem::exists(marker));
+}
+
 void test_tool_provider_runs_python_through_controlled_backend() {
   execution::execution_policy policy;
   policy.default_workdir =
@@ -606,6 +745,7 @@ void test_tool_provider_runs_python_through_controlled_backend() {
 int main() {
   test_policy_denies_disallowed_language();
   test_runtime_clamps_limits_and_uses_env_allowlist();
+  test_runtime_clamps_resource_limits_and_audits();
   test_policy_denies_invalid_allowed_environment_before_backend();
   test_approval_required_without_service_denies_before_backend();
   test_approval_allows_backend_and_audit_records_completion();
@@ -614,6 +754,10 @@ int main() {
   test_tool_provider_rejects_unknown_arguments_and_audits();
   test_tool_provider_rejects_timeout_over_schema_limit();
   test_runtime_audit_records_clamped_limits();
+  test_default_backend_registry_exposes_controlled_process();
+  test_controlled_process_contract_reflects_job_object_config();
+  test_path_policy_rejects_prefix_trap();
+  test_path_policy_handles_parent_traversal();
   test_runtime_normalizes_backend_exceptions();
   test_policy_denies_code_over_input_limit_before_backend();
   test_policy_denies_stdin_over_input_limit_before_backend();
@@ -627,6 +771,7 @@ int main() {
   test_controlled_process_backend_truncates_stdout_and_stderr();
   test_controlled_process_backend_cancels_python();
   test_controlled_process_backend_runs_concurrent_snippets();
+  test_controlled_process_backend_job_kills_child_process_on_timeout();
   test_tool_provider_runs_python_through_controlled_backend();
 #endif
 }

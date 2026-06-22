@@ -231,7 +231,9 @@ stdout/stderr with byte limits, marks truncation, supports timeout/cancel, and
 returns structured launch, backend, policy, input-limit, and approval failures.
 The Windows implementation uses a restricted process handle inheritance list so
 the child receives only its standard IO handles, not arbitrary inheritable
-handles from the host process.
+handles from the host process. When Job Objects are enabled, timeout and
+cancellation terminate the process tree, and Windows enforces configured
+process count, CPU time, and memory limits.
 
 The first agent-facing tool is intentionally narrow:
 
@@ -266,6 +268,9 @@ max_code_bytes: 65536
 max_stdin_bytes: 1048576
 max_total_input_bytes: 1114112
 max_arguments_bytes: 131072
+max_process_count: 8
+max_memory_bytes: host-selected, 0 means no Job Object memory limit
+max_cpu_time: host-selected, 0 means no Job Object CPU-time limit
 workdir: ReArk analysis temp directory
 stdin: selected bytes, constants, resource data, or decompiled text
 ```
@@ -290,6 +295,7 @@ auto execution_runtime = std::make_unique<execution::execution_runtime>(
       .max_code_bytes = 65536,
       .max_stdin_bytes = 1048576,
       .max_total_input_bytes = 1114112,
+      .max_process_count = 8,
     },
     .allow_network = false,
     .allow_file_read = false,
@@ -344,8 +350,9 @@ Audit coverage now includes provider-level argument rejections such as
 `arguments_limit`, `schema_invalid`, and `timeout_limit`, plus runtime policy
 denials, approval decisions, launch/backend failures, timeout, cancellation,
 and completion. Execution-finished audit events also include backend name,
-isolation level, and whether file/network deny is enforced by the active
-backend.
+isolation level, process/resource enforcement, and whether file/network deny is
+enforced by the active backend. For `controlled_process`, file and network deny
+remain `not_enforced`.
 
 Wuwe owns:
 
@@ -374,9 +381,8 @@ Initial ReArk verification:
 - Verify denied or failed attempts emit audit events.
 
 Next Wuwe-side enhancements after ReArk feedback should be tracked separately:
-process-tree cleanup hardening, read/write root canonicalization, Windows
-restricted-process support, CPU/memory limits, container backend, and WASM
-backend.
+Windows restricted-process support, OS-enforced read/write root restrictions,
+OS-enforced network denial, container backend, and WASM backend.
 
 ### Knowledge And URL Loading
 

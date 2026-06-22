@@ -1,6 +1,7 @@
 # Controlled Local Execution Runtime
 
-Status: design with Phase 1-4 baseline implementation.
+Status: P0/P1 controlled-process baseline implemented; stronger restricted,
+container, and WASM backends remain future work.
 
 Use `<wuwe/agent/execution/execution.hpp>` as the planned module entry header.
 
@@ -27,9 +28,16 @@ Implemented in the first baseline:
 - Host-owned environment allowlist.
 - Temporary script materialization in the execution workdir.
 - stdin, stdout, and stderr pipe handling.
-- Timeout and cancellation process termination.
+- Timeout and cancellation process-tree cleanup on Windows when Job Objects are
+  enabled.
+- Windows Job Object kill-on-close behavior.
+- Windows Job Object process count, CPU time, and memory limits.
 - stdout and stderr byte limits with truncation flags.
 - code, stdin, and total input byte limits enforced before backend launch.
+- Backend enforcement contract metadata for process, resource, file, and
+  network capabilities.
+- Default execution backend registry with `controlled_process`.
+- Host-side path boundary helpers for canonical root checks.
 - `execution_tool_provider` exposing `run_python_snippet` or a host-selected
   tool name such as `run_analysis_script`.
 - Focused `execution_tests`, including policy/runtime/tool behavior and Python
@@ -39,10 +47,12 @@ Still future work:
 
 - Strong OS sandboxing beyond `controlled_process`.
 - Cross-platform process backend implementations for Linux and macOS.
-- Path-root canonicalization enforcement for read/write roots.
-- CPU and memory limits.
+- Strong path-root enforcement inside executed code.
 - Container and WASM backends.
 - ReArk-side UI approval and audit persistence integration.
+
+See [Controlled Local Execution Stage Record](execution-platform-stage.md) for
+the current completed/not-completed checklist and backend enforcement contract.
 
 ## Design Principles
 
@@ -632,7 +642,13 @@ Phase 1 should implement:
 - Environment allowlist.
 - Timeout.
 - Cooperative cancellation through `std::stop_token`.
-- Process termination on timeout or cancellation.
+- Process-tree cleanup on timeout or cancellation on Windows when Job Objects
+  are enabled.
+- Job Object kill-on-close on Windows.
+- Job Object process count, CPU time, and memory limits on Windows.
+- Backend enforcement contract metadata.
+- Default backend registry.
+- Host-side canonical path/root boundary helpers.
 - stdout and stderr capture with byte limits.
 - stdout and stderr truncation flags.
 - Structured policy denial results.
@@ -652,10 +668,11 @@ would delay the usable execution path.
 
 ### Phase 2: Stronger Local Restrictions
 
-- Windows restricted backend using Job Objects and a restricted process model.
-- Process-tree cleanup guarantees.
-- Better CPU and memory limits where the platform supports them.
-- Stronger workdir and root restrictions.
+- Windows restricted backend using restricted tokens or AppContainer-style
+  execution.
+- OS-enforced filesystem read/write restrictions.
+- OS-enforced network denial.
+- Stronger workdir and root restrictions enforced inside executed code.
 - Optional explicit file materialization from host-provided inputs.
 
 ### Phase 3: Container Backend

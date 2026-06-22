@@ -30,6 +30,9 @@ audit::audit_event make_audit_event(
     { "timeout_ms", std::to_string(request.limits.timeout.count()) },
     { "max_stdout_bytes", std::to_string(request.limits.max_stdout_bytes) },
     { "max_stderr_bytes", std::to_string(request.limits.max_stderr_bytes) },
+    { "max_process_count", std::to_string(request.limits.max_process_count) },
+    { "max_memory_bytes", std::to_string(request.limits.max_memory_bytes) },
+    { "max_cpu_time_ms", std::to_string(request.limits.max_cpu_time.count()) },
     { "use_shell", request.use_shell ? "true" : "false" },
   };
   if (!request.workdir.empty()) {
@@ -52,26 +55,34 @@ void add_backend_attributes(
   const auto info = backend->info();
   event.attributes["backend"] = info.name;
   event.attributes["isolation"] = sandbox::to_string(info.isolation);
-  bool file_read_restriction = false;
-  bool file_write_restriction = false;
-  bool network_restriction = false;
-  for (const auto feature : info.features) {
-    if (feature == sandbox::sandbox_feature::filesystem_read_restriction) {
-      file_read_restriction = true;
-    }
-    else if (feature == sandbox::sandbox_feature::filesystem_write_restriction) {
-      file_write_restriction = true;
-    }
-    else if (feature == sandbox::sandbox_feature::network_restriction) {
-      network_restriction = true;
-    }
-  }
+  event.attributes["shell_execution_enforcement"] =
+    sandbox::to_string(info.enforcement.shell_execution);
+  event.attributes["timeout_enforcement"] =
+    sandbox::to_string(info.enforcement.timeout);
+  event.attributes["cancellation_enforcement"] =
+    sandbox::to_string(info.enforcement.cancellation);
+  event.attributes["stdout_limit_enforcement"] =
+    sandbox::to_string(info.enforcement.stdout_limit);
+  event.attributes["stderr_limit_enforcement"] =
+    sandbox::to_string(info.enforcement.stderr_limit);
+  event.attributes["environment_allowlist_enforcement"] =
+    sandbox::to_string(info.enforcement.environment_allowlist);
+  event.attributes["working_directory_enforcement"] =
+    sandbox::to_string(info.enforcement.working_directory);
+  event.attributes["process_tree_cleanup_enforcement"] =
+    sandbox::to_string(info.enforcement.process_tree_cleanup);
+  event.attributes["process_count_limit_enforcement"] =
+    sandbox::to_string(info.enforcement.process_count_limit);
+  event.attributes["cpu_time_limit_enforcement"] =
+    sandbox::to_string(info.enforcement.cpu_time_limit);
+  event.attributes["memory_limit_enforcement"] =
+    sandbox::to_string(info.enforcement.memory_limit);
   event.attributes["file_read_deny_enforcement"] =
-    file_read_restriction ? "enforced" : "not_enforced";
+    sandbox::to_string(info.enforcement.filesystem_read_deny);
   event.attributes["file_write_deny_enforcement"] =
-    file_write_restriction ? "enforced" : "not_enforced";
+    sandbox::to_string(info.enforcement.filesystem_write_deny);
   event.attributes["network_deny_enforcement"] =
-    network_restriction ? "enforced" : "not_enforced";
+    sandbox::to_string(info.enforcement.network_deny);
 }
 
 std::string policy_event_name(
