@@ -11,6 +11,13 @@
 
 WUWE_NAMESPACE_BEGIN
 
+struct llm_stream_timeout_options {
+  int total_ms { 0 };
+  int connect_ms { 0 };
+  int first_event_ms { 0 };
+  int idle_ms { 0 };
+};
+
 struct llm_client_config {
   static std::string load_env_value(const char* name) {
 #if GMP_COMPILER_MSVC
@@ -83,6 +90,7 @@ struct llm_client_config {
   bool load_api_key_from_environment { true };
   std::string model;
   int timeout { 30000 };
+  llm_stream_timeout_options stream_timeouts;
   int max_retries { 2 };
   int retry_backoff_ms { 600 };
   std::optional<std::string> referer_url;

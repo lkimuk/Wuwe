@@ -158,9 +158,13 @@ inline const std::error_category& reasoning_error_category() noexcept {
 enum class reasoning_event_type {
   started,
   model_started,
+  model_first_event,
   content_delta,
+  tool_call_building,
+  tool_call_ready,
   tool_started,
   tool_completed,
+  model_completed,
   reflection_started,
   reflection_completed,
   plan_created,
@@ -180,12 +184,20 @@ inline std::string to_string(reasoning_event_type type) {
       return "started";
     case reasoning_event_type::model_started:
       return "model_started";
+    case reasoning_event_type::model_first_event:
+      return "model_first_event";
     case reasoning_event_type::content_delta:
       return "content_delta";
+    case reasoning_event_type::tool_call_building:
+      return "tool_call_building";
+    case reasoning_event_type::tool_call_ready:
+      return "tool_call_ready";
     case reasoning_event_type::tool_started:
       return "tool_started";
     case reasoning_event_type::tool_completed:
       return "tool_completed";
+    case reasoning_event_type::model_completed:
+      return "model_completed";
     case reasoning_event_type::reflection_started:
       return "reflection_started";
     case reasoning_event_type::reflection_completed:

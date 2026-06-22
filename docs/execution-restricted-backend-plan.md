@@ -43,6 +43,27 @@ can run safely inside the restricted identity. Python may need read/execute
 access to its interpreter, standard library, DLLs, and per-run script files.
 Those grants must be explicit and test-covered.
 
+An initial AppContainer launch probe now exists. It creates a temporary
+AppContainer profile, grants the AppContainer SID read/execute access to a
+test-only child executable, launches the child with
+`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`, captures stdio through an
+explicit inherited handle list, assigns the child to a Job Object, and verifies
+that the child reports `TokenIsAppContainer`.
+
+The same probe currently records a socket attempt, but it does not prove network
+denial on this host. A no-capability AppContainer child reported a pending
+nonblocking external connect (`WSAEWOULDBLOCK`) instead of access denied
+(`WSAEACCES`). Therefore network denial remains unaccepted, and the public
+`restricted_process` backend must stay unavailable.
+
+A follow-up AppContainer file-boundary probe runs the copied test executable
+inside the AppContainer profile storage path and performs file operations from
+inside the child process. It proves allowed file read, allowed directory write,
+denied file read, denied directory write, and parent traversal denial for that
+AppContainer identity. This is stronger than host-side `AccessCheck`, but it is
+still not enough to advertise a restricted backend because network denial and a
+real Python/runtime launch path remain unaccepted.
+
 ## Minimum Acceptance Criteria
 
 The backend may advertise `available=true` only after automated tests prove:
@@ -75,6 +96,40 @@ The backend may advertise `available=true` only after automated tests prove:
 6. Factor the proven launch path into `restricted_process_backend`.
 7. Register the backend only on platforms/builds where its advertised contract
    passes the same checks.
+
+## Current Probe Checkpoints
+
+Private Windows probes now exist in `execution_tests`.
+
+The launch probe starts the test executable in a child mode with a token
+produced by `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)`, verifies
+`TokenHasRestrictions`, captures stdout/stderr through inherited stdio handles,
+uses an explicit inherited handle list, avoids shell execution, and assigns the
+child to a Job Object with kill-on-close and an active process limit.
+
+The ACL probe creates protected DACLs for allowed and denied read/write roots,
+builds a restricted token with restricting SIDs, and uses Windows `AccessCheck`
+against the real file security descriptors. It proves that the host user can
+read/write the denied objects while the restricted token is allowed for the
+allowed roots and denied for the denied roots.
+
+This is still not a filesystem or network sandbox. A restricted-token child
+with restricting SIDs still needs a proven launch path through Windows process
+initialization objects, executable/DLL access, script files, workdir, and
+allowed roots before any public backend is exposed. Do not expose
+`restricted_process` from these probes alone.
+
+The AppContainer probe proves a second launch path: a child can be created under
+an AppContainer identity with stdio capture, an explicit inherited handle list,
+and Job Object assignment. It also records that network denial is not yet proven
+by the no-capability AppContainer profile on this host, so it is a checkpoint,
+not an acceptance pass.
+
+The AppContainer file-boundary probe also proves child-process enforcement for
+allowed read, allowed write, denied read, denied write, and `..` traversal
+denial within the AppContainer profile storage root. This advances the Windows
+candidate materially, but the backend must remain descriptor-only until network
+denial and the final runtime launch contract are proven in the same style.
 
 ## Non-Acceptable Shortcuts
 

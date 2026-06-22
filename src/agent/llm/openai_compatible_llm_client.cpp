@@ -1,6 +1,7 @@
 #include <wuwe/agent/llm/openai_compatible_llm_client.h>
 
 #include "llm_retry.hpp"
+#include "llm_stream_timeouts.hpp"
 
 #include <wuwe/agent/llm/llm_error.h>
 #include <wuwe/net/net_errc.h>
@@ -256,6 +257,7 @@ llm_response openai_compatible_llm_client::complete_stream(
     .headers = build_headers(),
     .body = payload.dump(),
     .timeout = config_.timeout,
+    .timeouts = agent::llm_detail::make_stream_http_timeouts(config_),
   };
 
   const int max_retries = config_.max_retries < 0 ? 0 : config_.max_retries;
@@ -281,6 +283,7 @@ llm_response openai_compatible_llm_client::complete_stream(
     bool saw_sse_event = false;
     bool saw_done = false;
     bool stream_parse_failed = false;
+    agent::llm_detail::stream_timeout_guard timeout_guard(config_.stream_timeouts);
 
     const auto fail_stream = [&](std::error_code error_code, std::string content) {
       result.error_code = error_code;
@@ -294,8 +297,20 @@ llm_response openai_compatible_llm_client::complete_stream(
       });
       return false;
     };
+    const auto fail_stream_timeout =
+      [&](std::string phase, int timeout_ms) {
+        result.metadata["timeout_phase"] = phase;
+        result.metadata["timeout_ms"] = std::to_string(timeout_ms);
+        return fail_stream(
+          agent::make_error_code(agent::llm_error_code::timeout),
+          "OpenAI-compatible streaming " + phase + " timeout.");
+      };
 
     const auto process_event = [&](const sse_event& event) {
+      if (const auto timeout = timeout_guard.check_before_event()) {
+        return fail_stream_timeout(timeout->phase, timeout->timeout_ms);
+      }
+      timeout_guard.mark_event();
       saw_sse_event = true;
       if (event.data == "[DONE]") {
         saw_done = true;

@@ -19,10 +19,37 @@
 
 WUWE_NAMESPACE_BEGIN
 
+enum class llm_agent_event_type {
+  model_started,
+  model_first_event,
+  model_content_delta,
+  tool_call_building,
+  tool_call_ready,
+  tool_started,
+  tool_completed,
+  model_completed,
+  agent_completed,
+  agent_failed,
+  agent_cancelled,
+};
+
+struct llm_agent_event {
+  llm_agent_event_type type { llm_agent_event_type::model_started };
+  std::string message;
+  std::string delta;
+  const llm_request* request {};
+  const llm_stream_event* stream_event {};
+  const llm_tool_call* tool_call {};
+  const llm_tool_result* tool_result {};
+  const llm_response* response {};
+};
+
 struct llm_agent_callbacks {
   std::function<bool(const llm_request&)> on_model_start;
   std::function<bool(const llm_tool_call&)> allow_tool_call;
+  std::function<void(const llm_agent_event&)> on_event;
   std::function<void(std::string_view)> on_delta;
+  std::function<void(const llm_stream_event&)> on_stream_event;
   std::function<void(const llm_tool_call&)> on_tool_start;
   std::function<void(const llm_tool_call&, const llm_tool_result&)> on_tool_result;
   std::function<void(const llm_response&)> on_done;
@@ -215,7 +242,10 @@ private:
     }
 
     const bool use_streaming =
-      client_.supports_streaming() && static_cast<bool>(options.callbacks.on_delta);
+      client_.supports_streaming() &&
+      (static_cast<bool>(options.callbacks.on_delta) ||
+       static_cast<bool>(options.callbacks.on_event) ||
+       static_cast<bool>(options.callbacks.on_stream_event));
     llm_response response =
       complete_model(request, options.callbacks, client_stop_token, use_streaming);
     if (is_cancelled() || response.error_code == agent::llm_error_code::cancelled) {
@@ -321,21 +351,80 @@ private:
     if (callbacks.on_model_start && !callbacks.on_model_start(request)) {
       return cancelled_response(callbacks);
     }
+    emit_agent_event(callbacks, {
+      .type = llm_agent_event_type::model_started,
+      .request = &request,
+    });
     if (!use_streaming) {
-      return client_.complete(request, stop_token);
+      auto response = client_.complete(request, stop_token);
+      emit_agent_event(callbacks, {
+        .type = llm_agent_event_type::model_completed,
+        .request = &request,
+        .response = &response,
+      });
+      return response;
     }
 
     llm_stream_callbacks stream_callbacks;
+    bool saw_first_event = false;
     stream_callbacks.on_event = [&](const llm_stream_event& event) {
+      if (!saw_first_event) {
+        saw_first_event = true;
+        emit_agent_event(callbacks, {
+          .type = llm_agent_event_type::model_first_event,
+          .request = &request,
+          .stream_event = &event,
+        });
+      }
+      if (callbacks.on_stream_event) {
+        callbacks.on_stream_event(event);
+      }
       if (event.type == llm_stream_event_type::content_delta && callbacks.on_delta &&
           !event.content_delta.empty()) {
         callbacks.on_delta(event.content_delta);
       }
+      if (event.type == llm_stream_event_type::content_delta &&
+          !event.content_delta.empty()) {
+        emit_agent_event(callbacks, {
+          .type = llm_agent_event_type::model_content_delta,
+          .delta = event.content_delta,
+          .request = &request,
+          .stream_event = &event,
+        });
+      }
+      else if (event.type == llm_stream_event_type::tool_call_delta) {
+        emit_agent_event(callbacks, {
+          .type = llm_agent_event_type::tool_call_building,
+          .request = &request,
+          .stream_event = &event,
+        });
+      }
+      else if (event.type == llm_stream_event_type::tool_call_done &&
+               event.tool_call.has_value()) {
+        emit_agent_event(callbacks, {
+          .type = llm_agent_event_type::tool_call_ready,
+          .message = event.tool_call->name,
+          .request = &request,
+          .stream_event = &event,
+          .tool_call = &*event.tool_call,
+        });
+      }
     };
-    return client_.complete_stream(request, stream_callbacks, stop_token);
+    auto response = client_.complete_stream(request, stream_callbacks, stop_token);
+    emit_agent_event(callbacks, {
+      .type = llm_agent_event_type::model_completed,
+      .request = &request,
+      .response = &response,
+    });
+    return response;
   }
 
   static void emit_tool_start(const llm_agent_callbacks& callbacks, const llm_tool_call& call) {
+    emit_agent_event(callbacks, {
+      .type = llm_agent_event_type::tool_started,
+      .message = call.name,
+      .tool_call = &call,
+    });
     if (callbacks.on_tool_start) {
       callbacks.on_tool_start(call);
     }
@@ -349,30 +438,55 @@ private:
     const llm_agent_callbacks& callbacks,
     const llm_tool_call& call,
     const llm_tool_result& result) {
+    emit_agent_event(callbacks, {
+      .type = llm_agent_event_type::tool_completed,
+      .message = result.content,
+      .tool_call = &call,
+      .tool_result = &result,
+    });
     if (callbacks.on_tool_result) {
       callbacks.on_tool_result(call, result);
     }
   }
 
   static void emit_done(const llm_agent_callbacks& callbacks, const llm_response& response) {
+    emit_agent_event(callbacks, {
+      .type = llm_agent_event_type::agent_completed,
+      .message = response.content,
+      .response = &response,
+    });
     if (callbacks.on_done) {
       callbacks.on_done(response);
     }
   }
 
   static void emit_error(const llm_agent_callbacks& callbacks, const llm_response& response) {
+    emit_agent_event(callbacks, {
+      .type = llm_agent_event_type::agent_failed,
+      .message = response.content,
+      .response = &response,
+    });
     if (callbacks.on_error) {
       callbacks.on_error(response.error_code, response.content);
     }
   }
 
   static llm_response cancelled_response(const llm_agent_callbacks& callbacks) {
+    emit_agent_event(callbacks, { .type = llm_agent_event_type::agent_cancelled });
     if (callbacks.on_cancelled) {
       callbacks.on_cancelled();
     }
     return {
       .error_code = agent::make_error_code(agent::llm_error_code::cancelled),
     };
+  }
+
+  static void emit_agent_event(
+    const llm_agent_callbacks& callbacks,
+    const llm_agent_event& event) {
+    if (callbacks.on_event) {
+      callbacks.on_event(event);
+    }
   }
 
   static std::string last_user_content(const llm_request& request) {

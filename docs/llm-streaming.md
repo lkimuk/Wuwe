@@ -14,8 +14,12 @@ string handling into agent orchestration code.
 - Accumulate streamed tool calls before the agent runner invokes tools.
 - Keep runner callbacks stable: applications can use `on_delta` without knowing
   whether a client used true streaming or a fallback full response.
+- Let host applications observe Agent progress without displaying raw tool
+  argument JSON to users.
 - Make cancellation cooperative through the HTTP, LLM client, runner, and tool
   invocation boundaries.
+- Split streaming timeouts into transport and stream phases where the active
+  HTTP backend can enforce them.
 
 ## Layering
 
@@ -121,13 +125,86 @@ index, emits `tool_call_delta` events for observability, and returns complete
 `llm_agent_runner` chooses true streaming when both conditions are met:
 
 - `client.supports_streaming()` is true,
-- `llm_agent_run_options.callbacks.on_delta` is set.
+- at least one of `on_delta`, `on_stream_event`, or `on_event` is set.
 
 Otherwise the runner keeps the existing synchronous behavior.
 
-The runner forwards content deltas to `on_delta`, waits for the final accumulated
-response, invokes tools if the model requested them, and then streams the
-follow-up model answer the same way.
+The runner forwards raw provider-normalized `llm_stream_event` values to
+`on_stream_event` before applying legacy text handling. It also emits
+Agent-native events through `llm_agent_callbacks::on_event`:
+
+- `model_started`
+- `model_first_event`
+- `model_content_delta`
+- `tool_call_building`
+- `tool_call_ready`
+- `tool_started`
+- `tool_completed`
+- `model_completed`
+- `agent_completed`
+- `agent_failed`
+- `agent_cancelled`
+
+Host UIs should use these events to show state such as "waiting for first model
+event", "building a tool call", "running a tool", or "generating final answer".
+They should not display streamed tool argument JSON directly unless the host has
+made an explicit product decision to reveal it.
+
+After the model call completes, the runner invokes tools if the model requested
+them and then streams the follow-up model answer the same way.
+
+### Reasoning Event Mapping
+
+The Reasoning facade maps Agent streaming progress into reasoning events when
+streaming is enabled:
+
+- `model_first_event`
+- `content_delta`
+- `tool_call_building`
+- `tool_call_ready`
+- `model_started`
+- `tool_started`
+- `tool_completed`
+- `model_completed`
+
+This keeps ReAct and higher-level workflows observable without requiring hosts
+to subscribe to both the Reasoning facade and the lower-level Agent runner.
+
+## Streaming Timeouts
+
+`llm_client_config::stream_timeouts` can split streaming budgets:
+
+```cpp
+wuwe::llm_client_config config {
+  .timeout = 60000,
+  .stream_timeouts = {
+    .total_ms = 60000,
+    .connect_ms = 5000,
+    .first_event_ms = 15000,
+    .idle_ms = 10000,
+  },
+};
+```
+
+For streaming requests, Wuwe maps these to HTTP timeout options:
+
+- `total_ms`: whole request budget, falling back to `timeout` when unset.
+- `connect_ms`: connection budget.
+- `first_event_ms`: first stream event budget.
+- `idle_ms`: maximum gap between stream events.
+
+Built-in streaming clients also report parser-observed first-event and idle
+timeouts as `llm_error_code::timeout` with response metadata:
+
+```text
+timeout_phase=first_event | idle
+timeout_ms=<configured budget>
+```
+
+HTTP backends may surface a transport timeout before the provider parser sees an
+event. In that case Wuwe still classifies the result as a timeout, but phase
+metadata is only available when the LLM streaming layer observes the phase
+boundary directly.
 
 ## Cancellation
 
@@ -185,6 +262,11 @@ wuwe::llm_agent_run_options options;
 options.callbacks.on_delta = [](std::string_view delta) {
   wuwe::print("{}", delta);
 };
+options.callbacks.on_event = [](const wuwe::llm_agent_event& event) {
+  if (event.type == wuwe::llm_agent_event_type::tool_call_building) {
+    // Update host UI state without exposing raw tool arguments.
+  }
+};
 
 auto response = runner.complete("Answer incrementally.", std::move(options));
 ```
@@ -207,6 +289,10 @@ cmake --build build --config Debug --target llm_streaming_example
 - content delta aggregation,
 - streamed tool-call name and argument aggregation,
 - `stream=true` request payload generation,
+- raw stream-event forwarding through the Agent runner,
+- Agent-native model/tool lifecycle events,
+- first-event and idle timeout phase reporting,
+- staged streaming timeout mapping,
 - existing runner callback behavior for non-streaming clients.
 
 Run:

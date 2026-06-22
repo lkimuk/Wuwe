@@ -64,6 +64,12 @@ int main() {
     .api_key = wuwe::llm_client_config::load_openrouter_api_key_from_env(),
     .model = env_or("OPENROUTER_CHAT_MODEL", "openai/gpt-oss-120b:free"),
     .timeout = 60000,
+    .stream_timeouts = {
+      .total_ms = 60000,
+      .connect_ms = 10000,
+      .first_event_ms = 20000,
+      .idle_ms = 15000,
+    },
   };
 
   if (config.api_key.empty() && config.base_url.find("openrouter.ai") != std::string::npos) {
@@ -116,6 +122,15 @@ int main() {
   options.callbacks.on_delta = [](std::string_view delta) {
     wuwe::print("{}", delta);
     std::cout << std::flush;
+  };
+  options.callbacks.on_event = [](const wuwe::llm_agent_event& event) {
+    if (event.type == wuwe::llm_agent_event_type::tool_call_building) {
+      wuwe::print("\n[tool call building]");
+      std::cout << std::flush;
+    }
+    else if (event.type == wuwe::llm_agent_event_type::tool_call_ready && event.tool_call) {
+      wuwe::println("\n[tool call ready] {}", event.tool_call->name);
+    }
   };
   options.callbacks.on_tool_start = [](const wuwe::llm_tool_call& call) {
     wuwe::println("\n[tool start] {} {}", call.name, call.arguments_json);

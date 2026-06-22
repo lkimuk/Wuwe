@@ -513,6 +513,56 @@ private:
           .delta = std::string(delta),
         }, state.get());
       };
+      callbacks.on_event = [this, mode, state](const llm_agent_event& event) {
+        switch (event.type) {
+          case llm_agent_event_type::model_first_event:
+            notify({
+              .type = reasoning_event_type::model_first_event,
+              .mode = mode,
+            }, state.get());
+            break;
+          case llm_agent_event_type::tool_call_building:
+            notify({
+              .type = reasoning_event_type::tool_call_building,
+              .mode = mode,
+              .message = event.stream_event &&
+                         event.stream_event->tool_call_delta.has_value()
+                           ? event.stream_event->tool_call_delta->name_delta
+                           : std::string {},
+              .metadata = event.stream_event &&
+                          event.stream_event->tool_call_delta.has_value()
+                            ? std::map<std::string, std::string> {
+                                { "tool_call_index",
+                                  std::to_string(
+                                    event.stream_event->tool_call_delta->index) },
+                                { "arguments_delta",
+                                  event.stream_event->tool_call_delta
+                                    ->arguments_delta },
+                              }
+                            : std::map<std::string, std::string> {},
+            }, state.get());
+            break;
+          case llm_agent_event_type::tool_call_ready:
+            notify({
+              .type = reasoning_event_type::tool_call_ready,
+              .mode = mode,
+              .message = event.tool_call ? event.tool_call->name : std::string {},
+              .tool_call = event.tool_call,
+            }, state.get());
+            break;
+          case llm_agent_event_type::model_completed:
+            notify({
+              .type = reasoning_event_type::model_completed,
+              .mode = mode,
+              .message = event.response ? event.response->finish_reason : std::string {},
+              .metadata = event.response ? event.response->metadata
+                                         : std::map<std::string, std::string> {},
+            }, state.get());
+            break;
+          default:
+            break;
+        }
+      };
     }
     callbacks.on_model_start = [this, mode, state](const llm_request& request) {
       const bool allowed = state && reserve_model_call(*state);

@@ -27,6 +27,9 @@ Relevant capabilities:
 
 - synchronous and async agent execution,
 - cooperative cancellation with `std::stop_token`,
+- structured Agent event callbacks through `llm_agent_callbacks::on_event`,
+- raw normalized LLM stream callbacks through
+  `llm_agent_callbacks::on_stream_event`,
 - tool lifecycle callbacks,
 - final-result callbacks,
 - stateful tool providers whose private state stays outside the model-visible
@@ -34,16 +37,46 @@ Relevant capabilities:
 
 ### OpenAI-Compatible Streaming
 
-The LLM layer now supports true OpenAI-compatible streaming. ReArk can render
-partial model output as it arrives instead of waiting for the final response.
+The LLM layer now supports true OpenAI-compatible streaming and shared
+streaming contracts across built-in providers. ReArk can render partial model
+output as it arrives instead of waiting for the final response.
+
+The Agent runner no longer reduces streaming to text-only `content_delta`
+callbacks. ReArk can observe:
+
+- raw normalized `llm_stream_event` values, including `tool_call_delta`,
+- Agent-level `model_first_event`,
+- Agent-level `model_content_delta`,
+- Agent-level `tool_call_building`,
+- Agent-level `tool_call_ready`,
+- Agent-level `tool_started` and `tool_completed`,
+- Agent-level `model_completed`, `agent_completed`, `agent_failed`, and
+  `agent_cancelled`.
 
 Integration expectation:
 
 - use streaming callbacks/event handling for interactive chat or long-running
   agent tasks,
+- show user-friendly Agent phases such as waiting for model, preparing a tool
+  call, executing a tool, and generating the final answer,
+- do not display raw streamed tool argument JSON directly unless ReArk makes an
+  explicit product/security decision to reveal it,
 - preserve cancellation behavior during streaming,
 - avoid building a separate ad hoc streaming parser in ReArk when Wuwe already
   exposes the runtime surface.
+
+Wuwe streaming clients now also accept staged timeout budgets through
+`llm_client_config::stream_timeouts`:
+
+- `total_ms`,
+- `connect_ms`,
+- `first_event_ms`,
+- `idle_ms`.
+
+Parser-observed first-event and idle timeouts return
+`llm_error_code::timeout` with `timeout_phase` and `timeout_ms` metadata.
+Transport-level timeouts are still classified as timeouts, but phase metadata is
+only available when the LLM streaming layer observes the phase boundary.
 
 ### LLM Provider Registry And Factory
 
@@ -93,6 +126,12 @@ steps.
 The facade emits one unified event stream and returns structured traces with
 budget usage counters, which are useful for ReArk UI timelines, logs, debugging,
 and audit views.
+
+When streaming is enabled, the Reasoning facade now preserves model stream
+progress instead of only forwarding text deltas. ReArk can listen for
+`model_first_event`, `content_delta`, `tool_call_building`, `tool_call_ready`,
+`tool_started`, `tool_completed`, and `model_completed` from the same reasoning
+event stream it already uses for workflow progress.
 
 Wuwe Reasoning now exposes a native async runner API. ReArk should prefer
 `reasoning_runner::run_async(...)` for interactive UI flows instead of wrapping
@@ -360,6 +399,14 @@ available; `restricted_process`, `container`, and `wasm` are visible as planned
 but unavailable backend slots. If ReArk requires enforced filesystem read/write
 denial or network denial for a task, registry selection returns no backend
 rather than silently downgrading to `controlled_process`.
+
+Windows restricted-backend probes have advanced, but they are still not a
+public backend contract. Current tests prove AppContainer identity launch,
+stdio capture, Job Object assignment, and AppContainer child-process file
+boundaries for allowed read/write, denied read/write, and `..` traversal within
+the AppContainer profile storage root. Network denial and the final
+Python/runtime launch path are still unaccepted, so ReArk must continue to treat
+`restricted_process` as unavailable.
 
 Wuwe owns:
 

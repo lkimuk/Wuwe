@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <memory>
@@ -190,6 +191,47 @@ public:
 private:
   std::vector<std::string> chunks_;
   http_response response_;
+};
+
+class delayed_streaming_http_client final : public http_client {
+public:
+  explicit delayed_streaming_http_client(
+    std::vector<std::pair<int, std::string>> chunks)
+      : chunks_(std::move(chunks)) {
+  }
+
+  http_response send(const http_request& request) override {
+    requests.push_back(request);
+    return {};
+  }
+
+  http_response send_stream(
+    const http_request& request,
+    const http_stream_chunk_callback& on_chunk,
+    std::stop_token stop_token = {}) override {
+    requests.push_back(request);
+    std::string body;
+    for (const auto& [delay_ms, chunk] : chunks_) {
+      if (delay_ms > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+      }
+      if (stop_token.stop_requested()) {
+        return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled),
+          .body = body };
+      }
+      body += chunk;
+      if (on_chunk && !on_chunk(chunk)) {
+        return { .error_code = std::make_error_code(std::errc::operation_canceled),
+          .body = body };
+      }
+    }
+    return { .body = body };
+  }
+
+  std::vector<http_request> requests;
+
+private:
+  std::vector<std::pair<int, std::string>> chunks_;
 };
 
 class streaming_error_after_chunks_http_client final : public http_client {
@@ -543,6 +585,277 @@ void test_openrouter_streaming_content_and_tool_call_accumulation() {
   require(payload.value("stream", false), "streaming request should set stream=true");
 }
 
+void test_agent_runner_forwards_structured_stream_events() {
+  auto http = std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\","
+    "\"type\":\"function\",\"function\":{\"name\":\"echo_\",\"arguments\":\"{\\\"text\\\"\"}}]},"
+    "\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{"
+    "\"name\":\"text\",\"arguments\":\":\\\"hi\\\"}\"}}]},"
+    "\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: [DONE]\n\n",
+  });
+
+  openrouter_llm_client client({
+    .base_url = "https://example.test",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, http);
+
+  llm_agent_runner runner(client, 0);
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<llm_stream_event> events;
+  std::string text;
+  llm_agent_run_options options;
+  options.callbacks.on_delta = [&](std::string_view delta) {
+    text += delta;
+  };
+  options.callbacks.on_stream_event = [&](const llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  const auto response = runner.complete(std::move(request), std::move(options));
+  require(response.error_code == agent::llm_error_code::agent_loop_budget_exceeded,
+    "agent runner with max_tool_rounds=0 should stop before executing streamed tool call");
+  require(text == "Hel", "agent runner should preserve legacy content delta callback");
+
+  int content_deltas = 0;
+  int tool_deltas = 0;
+  int tool_done = 0;
+  int done = 0;
+  for (const auto& event : events) {
+    if (event.type == llm_stream_event_type::content_delta) {
+      ++content_deltas;
+    }
+    if (event.type == llm_stream_event_type::tool_call_delta) {
+      ++tool_deltas;
+    }
+    if (event.type == llm_stream_event_type::tool_call_done) {
+      ++tool_done;
+    }
+    if (event.type == llm_stream_event_type::done) {
+      ++done;
+    }
+  }
+  require(content_deltas == 1, "agent runner should forward content stream events");
+  require(tool_deltas == 2, "agent runner should forward tool call delta events");
+  require(tool_done == 1, "agent runner should forward completed tool call events");
+  require(done == 1, "agent runner should forward done stream events");
+}
+
+void test_agent_runner_stream_event_callback_enables_streaming_without_text_delta() {
+  auto http = std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\","
+    "\"type\":\"function\",\"function\":{\"name\":\"echo_text\",\"arguments\":\"{}\"}}]},"
+    "\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: [DONE]\n\n",
+  });
+
+  openrouter_llm_client client({
+    .base_url = "https://example.test",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, http);
+
+  llm_agent_runner runner(client, 0);
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  int tool_deltas = 0;
+  llm_agent_run_options options;
+  options.callbacks.on_stream_event = [&](const llm_stream_event& event) {
+    if (event.type == llm_stream_event_type::tool_call_delta) {
+      ++tool_deltas;
+    }
+  };
+
+  (void)runner.complete(std::move(request), std::move(options));
+  require(tool_deltas == 1,
+    "agent runner should use streaming when only structured stream callback is registered");
+  require(http->requests.size() == 1, "agent runner should issue one streaming request");
+  const auto payload = nlohmann::json::parse(http->requests[0].body);
+  require(payload.value("stream", false),
+    "agent runner should set stream=true for structured-only streaming callbacks");
+}
+
+void test_agent_runner_emits_agent_native_streaming_events() {
+  auto http = std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\","
+    "\"type\":\"function\",\"function\":{\"name\":\"echo_\",\"arguments\":\"{\\\"text\\\"\"}}]},"
+    "\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{"
+    "\"name\":\"text\",\"arguments\":\":\\\"hi\\\"}\"}}]},"
+    "\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: [DONE]\n\n",
+  });
+
+  openrouter_llm_client client({
+    .base_url = "https://example.test",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, http);
+
+  llm_agent_runner runner(client, 0);
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<llm_agent_event_type> events;
+  llm_agent_run_options options;
+  options.callbacks.on_event = [&](const llm_agent_event& event) {
+    events.push_back(event.type);
+  };
+
+  (void)runner.complete(std::move(request), std::move(options));
+
+  const auto has = [&](llm_agent_event_type type) {
+    return std::find(events.begin(), events.end(), type) != events.end();
+  };
+  require(has(llm_agent_event_type::model_started),
+    "agent event stream should include model_started");
+  require(has(llm_agent_event_type::model_first_event),
+    "agent event stream should include model_first_event");
+  require(has(llm_agent_event_type::model_content_delta),
+    "agent event stream should include model_content_delta");
+  require(has(llm_agent_event_type::tool_call_building),
+    "agent event stream should include tool_call_building");
+  require(has(llm_agent_event_type::tool_call_ready),
+    "agent event stream should include tool_call_ready");
+  require(has(llm_agent_event_type::model_completed),
+    "agent event stream should include model_completed");
+  require(has(llm_agent_event_type::agent_failed),
+    "agent event stream should include agent_failed when tool round budget stops the run");
+}
+
+void test_openai_compatible_streaming_uses_stage_timeout_options() {
+  auto http = std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: [DONE]\n\n",
+  });
+
+  openrouter_llm_client client({
+    .base_url = "https://example.test",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .timeout = 30000,
+    .stream_timeouts = {
+      .total_ms = 9000,
+      .connect_ms = 1000,
+      .first_event_ms = 2000,
+      .idle_ms = 3000,
+    },
+    .max_retries = 0,
+  }, http);
+
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+  const auto response = client.complete_stream(request, {});
+
+  require(!response.error_code, "streaming with stage timeouts should succeed");
+  require(http->requests.size() == 1, "streaming timeout test should issue one request");
+  require(http->requests[0].timeouts.total_ms == 9000,
+    "streaming total timeout should map to HTTP total timeout");
+  require(http->requests[0].timeouts.connect_ms == 1000,
+    "streaming connect timeout should map to HTTP connect timeout");
+  require(http->requests[0].timeouts.read_ms == 3000,
+    "streaming idle timeout should map to HTTP read timeout");
+}
+
+void test_openai_compatible_streaming_reports_first_event_timeout() {
+  auto http = std::make_shared<delayed_streaming_http_client>(
+    std::vector<std::pair<int, std::string>> {
+      {
+        10,
+        "data: {\"choices\":[{\"delta\":{\"content\":\"late\"},"
+        "\"finish_reason\":\"stop\"}]}\n\n",
+      },
+    });
+
+  openrouter_llm_client client({
+    .base_url = "https://example.test",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .stream_timeouts = {
+      .first_event_ms = 1,
+    },
+    .max_retries = 0,
+  }, http);
+
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+  std::vector<llm_stream_event> events;
+  llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  const auto response = client.complete_stream(request, callbacks);
+  require(response.error_code == agent::llm_error_code::timeout,
+    "late first streaming event should return stable timeout error");
+  require(response.metadata.at("timeout_phase") == "first_event",
+    "first event timeout should record timeout phase");
+  require(response.metadata.at("timeout_ms") == "1",
+    "first event timeout should record configured budget");
+  require(!events.empty() && events.front().type == llm_stream_event_type::error,
+    "first event timeout should emit stream error event");
+}
+
+void test_openai_compatible_streaming_reports_idle_timeout() {
+  auto http = std::make_shared<delayed_streaming_http_client>(
+    std::vector<std::pair<int, std::string>> {
+      {
+        0,
+        "data: {\"choices\":[{\"delta\":{\"content\":\"first\"},"
+        "\"finish_reason\":null}]}\n\n",
+      },
+      {
+        10,
+        "data: {\"choices\":[{\"delta\":{\"content\":\"late\"},"
+        "\"finish_reason\":\"stop\"}]}\n\n",
+      },
+    });
+
+  openrouter_llm_client client({
+    .base_url = "https://example.test",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .stream_timeouts = {
+      .idle_ms = 1,
+    },
+    .max_retries = 0,
+  }, http);
+
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+  std::vector<llm_stream_event> events;
+  llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const llm_stream_event& event) {
+    events.push_back(event);
+  };
+
+  const auto response = client.complete_stream(request, callbacks);
+  require(response.error_code == agent::llm_error_code::timeout,
+    "idle streaming gap should return stable timeout error");
+  require(response.metadata.at("timeout_phase") == "idle",
+    "idle timeout should record timeout phase");
+  require(response.metadata.at("timeout_ms") == "1",
+    "idle timeout should record configured budget");
+  require(!events.empty() && events.back().type == llm_stream_event_type::error,
+    "idle timeout should emit stream error event");
+}
+
 void test_openai_compatible_streaming_ignores_tail_transport_error_after_output() {
   auto http = std::make_shared<streaming_error_after_chunks_http_client>(
     std::vector<std::string> {
@@ -744,6 +1057,18 @@ int main() {
       test_sse_parser_handles_split_and_batched_events);
     run("OpenRouter streaming content and tool call accumulation",
       test_openrouter_streaming_content_and_tool_call_accumulation);
+    run("agent runner forwards structured stream events",
+      test_agent_runner_forwards_structured_stream_events);
+    run("agent runner stream event callback enables streaming without text delta",
+      test_agent_runner_stream_event_callback_enables_streaming_without_text_delta);
+    run("agent runner emits agent native streaming events",
+      test_agent_runner_emits_agent_native_streaming_events);
+    run("OpenAI-compatible streaming uses stage timeout options",
+      test_openai_compatible_streaming_uses_stage_timeout_options);
+    run("OpenAI-compatible streaming reports first event timeout",
+      test_openai_compatible_streaming_reports_first_event_timeout);
+    run("OpenAI-compatible streaming reports idle timeout",
+      test_openai_compatible_streaming_reports_idle_timeout);
     run("OpenAI-compatible streaming ignores tail transport error after output",
       test_openai_compatible_streaming_ignores_tail_transport_error_after_output);
     run("OpenAI-compatible streaming invalid event uses sanitized error",

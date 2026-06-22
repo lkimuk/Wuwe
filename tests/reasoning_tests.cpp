@@ -46,6 +46,81 @@ private:
   std::vector<llm_response> responses_;
 };
 
+class streaming_tool_call_llm_client final : public llm_client {
+public:
+  bool supports_streaming() const noexcept override {
+    return true;
+  }
+
+  llm_response complete(const llm_request& request) override {
+    requests.push_back(request);
+    return {
+      .content = "draft",
+      .tool_calls = {
+        {
+          .id = "call-1",
+          .name = "echo_tool",
+          .arguments_json = R"({"text":"from stream"})",
+        },
+      },
+    };
+  }
+
+  llm_response complete_stream(
+    const llm_request& request,
+    const llm_stream_callbacks& callbacks,
+    std::stop_token stop_token = {}) override {
+    if (stop_token.stop_requested()) {
+      return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
+    }
+    requests.push_back(request);
+    llm_response response {
+      .content = "draft",
+      .tool_calls = {
+        {
+          .id = "call-1",
+          .name = "echo_tool",
+          .arguments_json = R"({"text":"from stream"})",
+        },
+      },
+    };
+    if (callbacks.on_event) {
+      callbacks.on_event({
+        .type = llm_stream_event_type::content_delta,
+        .content_delta = "draft",
+      });
+      callbacks.on_event({
+        .type = llm_stream_event_type::tool_call_delta,
+        .tool_call_delta = llm_tool_call_delta {
+          .index = 0,
+          .id = "call-1",
+          .name_delta = "echo_",
+          .arguments_delta = R"({"text")",
+        },
+      });
+      callbacks.on_event({
+        .type = llm_stream_event_type::tool_call_delta,
+        .tool_call_delta = llm_tool_call_delta {
+          .index = 0,
+          .name_delta = "tool",
+          .arguments_delta = R"(: "from stream"})",
+        },
+      });
+      callbacks.on_event({
+        .type = llm_stream_event_type::tool_call_done,
+        .tool_call = response.tool_calls.front(),
+      });
+      callbacks.on_event({
+        .type = llm_stream_event_type::done,
+        .response = response,
+      });
+    }
+    return response;
+  }
+
+  std::vector<llm_request> requests;
+};
+
 class cancellable_llm_client final : public llm_client {
 public:
   llm_response complete(const llm_request& request) override {
@@ -319,6 +394,45 @@ void react_mode_uses_tool_provider() {
   require(std::find(events.begin(), events.end(), reasoning::reasoning_event_type::tool_completed) !=
       events.end(),
     "react reasoning emits tool result");
+}
+
+void react_mode_maps_agent_stream_events_to_reasoning_events() {
+  streaming_tool_call_llm_client client;
+  auto provider = std::make_shared<tool_provider<echo_tool>>();
+
+  std::vector<reasoning::reasoning_event_type> events;
+  auto runner = reasoning::reasoning_runner::with_tools(client, provider, {
+    .observer = [&](const reasoning::reasoning_event& event) {
+      events.push_back(event.type);
+    },
+  });
+
+  auto result = runner.run({
+    .input = "use a streamed tool",
+    .policy = {
+      .mode = reasoning::reasoning_mode::react,
+      .budget = {
+        .max_tool_rounds = 0,
+      },
+      .enable_streaming = true,
+    },
+  });
+
+  require(!result.completed,
+    "streamed tool call with zero tool rounds should stop before tool execution");
+  const auto has = [&](reasoning::reasoning_event_type type) {
+    return std::find(events.begin(), events.end(), type) != events.end();
+  };
+  require(has(reasoning::reasoning_event_type::model_first_event),
+    "reasoning should map agent model_first_event");
+  require(has(reasoning::reasoning_event_type::content_delta),
+    "reasoning should preserve streamed content deltas");
+  require(has(reasoning::reasoning_event_type::tool_call_building),
+    "reasoning should map streamed tool call deltas");
+  require(has(reasoning::reasoning_event_type::tool_call_ready),
+    "reasoning should map completed streamed tool calls");
+  require(has(reasoning::reasoning_event_type::model_completed),
+    "reasoning should map model completion");
 }
 
 void default_agentic_runner_wires_standard_capabilities() {
@@ -659,6 +773,8 @@ int main() {
     run("reflect mode preserves model error details", reflect_mode_preserves_model_error_details);
     run("policy selector and trace json are stable", policy_selector_and_trace_json_are_stable);
     run("react mode uses tool provider", react_mode_uses_tool_provider);
+    run("react mode maps agent stream events to reasoning events",
+      react_mode_maps_agent_stream_events_to_reasoning_events);
     run("default agentic runner wires standard capabilities",
       default_agentic_runner_wires_standard_capabilities);
     run("simple mode with tool provider does not execute tools",

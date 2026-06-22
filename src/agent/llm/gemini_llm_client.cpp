@@ -1,6 +1,7 @@
 #include <wuwe/agent/llm/gemini_llm_client.h>
 
 #include "llm_retry.hpp"
+#include "llm_stream_timeouts.hpp"
 
 #include <wuwe/agent/llm/llm_error.h>
 #include <wuwe/agent/llm/llm_provider_registry.h>
@@ -332,10 +333,23 @@ llm_response gemini_llm_client::complete_stream(
   bool saw_event = false;
   bool saw_done = false;
   bool ignored_invalid_stream_event = false;
+  agent::llm_detail::stream_timeout_guard timeout_guard(config_.stream_timeouts);
+  const auto fail_stream_timeout =
+    [&](const agent::llm_detail::stream_timeout& timeout) {
+      result.metadata["timeout_phase"] = timeout.phase;
+      result.metadata["timeout_ms"] = std::to_string(timeout.timeout_ms);
+      result.content = "Gemini streaming " + timeout.phase + " timeout.";
+      result.error_code = agent::make_error_code(agent::llm_error_code::timeout);
+      return false;
+    };
   const auto process_event = [&](const sse_event& event) {
     if (event.data.empty()) {
       return true;
     }
+    if (const auto timeout = timeout_guard.check_before_event()) {
+      return fail_stream_timeout(*timeout);
+    }
+    timeout_guard.mark_event();
     saw_event = true;
     const auto data = json::parse(event.data, nullptr, false);
     if (data.is_discarded() || !data.is_object()) {
@@ -389,6 +403,7 @@ llm_response gemini_llm_client::complete_stream(
     .headers = build_headers(),
     .body = build_payload(request).dump(),
     .timeout = config_.timeout,
+    .timeouts = agent::llm_detail::make_stream_http_timeouts(config_),
   };
   const int max_retries = config_.max_retries < 0 ? 0 : config_.max_retries;
   const int base_backoff_ms = config_.retry_backoff_ms <= 0 ? 500 : config_.retry_backoff_ms;
@@ -420,6 +435,7 @@ llm_response gemini_llm_client::complete_stream(
     }
     result = {};
     parser = {};
+    timeout_guard = agent::llm_detail::stream_timeout_guard(config_.stream_timeouts);
     saw_event = false;
     saw_done = false;
   }

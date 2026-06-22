@@ -526,6 +526,68 @@ void test_native_provider_streaming_success_and_incomplete_streams() {
     "Ollama incomplete stream should fail");
 }
 
+void require_stream_timeout_options(const wuwe::http_request& request) {
+  require(request.timeouts.total_ms == 9000,
+    "streaming total timeout should map to HTTP total timeout");
+  require(request.timeouts.connect_ms == 1000,
+    "streaming connect timeout should map to HTTP connect timeout");
+  require(request.timeouts.read_ms == 3000,
+    "streaming idle timeout should map to HTTP read timeout");
+}
+
+void test_native_provider_streaming_uses_stage_timeout_options() {
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  const wuwe::llm_stream_timeout_options stream_timeouts {
+    .total_ms = 9000,
+    .connect_ms = 1000,
+    .first_event_ms = 2000,
+    .idle_ms = 3000,
+  };
+
+  auto anthropic_http = std::make_shared<capture_http_client>(
+    "event: message_start\n"
+    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2}}}\n\n"
+    "event: message_delta\n"
+    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},"
+    "\"usage\":{\"output_tokens\":0}}\n\n"
+    "event: message_stop\n"
+    "data: {\"type\":\"message_stop\"}\n\n");
+  wuwe::anthropic_llm_client anthropic({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "claude-test",
+    .stream_timeouts = stream_timeouts,
+    .max_retries = 0,
+  }, anthropic_http);
+  (void)anthropic.complete_stream(request, {});
+  require_stream_timeout_options(anthropic_http->requests.front());
+
+  auto gemini_http = std::make_shared<capture_http_client>(
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},"
+    "\"finishReason\":\"STOP\"}]}\n\n");
+  wuwe::gemini_llm_client gemini({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "gemini-test",
+    .stream_timeouts = stream_timeouts,
+    .max_retries = 0,
+  }, gemini_http);
+  (void)gemini.complete_stream(request, {});
+  require_stream_timeout_options(gemini_http->requests.front());
+
+  auto ollama_http = std::make_shared<capture_http_client>(
+    "{\"done\":true,\"done_reason\":\"stop\"}\n");
+  wuwe::ollama_llm_client ollama({
+    .model = "llama-test",
+    .stream_timeouts = stream_timeouts,
+    .max_retries = 0,
+  }, ollama_http);
+  (void)ollama.complete_stream(request, {});
+  require_stream_timeout_options(ollama_http->requests.front());
+}
+
 void test_native_provider_streaming_sanitizes_tail_errors_after_output() {
   wuwe::llm_request request;
   request.messages.push_back({ .role = "user", .content = "hello" });
@@ -733,6 +795,7 @@ int main() {
     test_openai_compatible_provider_presets();
     test_native_provider_clients_parse_text_and_tools();
     test_native_provider_streaming_success_and_incomplete_streams();
+    test_native_provider_streaming_uses_stage_timeout_options();
     test_native_provider_streaming_sanitizes_tail_errors_after_output();
     test_native_provider_streaming_invalid_events_are_sanitized();
     test_native_provider_streaming_ignores_invalid_tail_events_after_output();

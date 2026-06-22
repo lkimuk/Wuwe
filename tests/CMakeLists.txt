@@ -90,6 +90,9 @@ add_executable(execution_tests
 )
 
 target_link_libraries(execution_tests PRIVATE wuwe)
+if(WIN32)
+    target_link_libraries(execution_tests PRIVATE Advapi32 Shell32 Userenv Ws2_32)
+endif()
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     target_compile_definitions(execution_tests PRIVATE

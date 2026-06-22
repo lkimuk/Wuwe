@@ -34,9 +34,15 @@ options.callbacks.on_done = [](const wuwe::llm_response& response) {
 auto response = runner.complete(request, std::move(options));
 ```
 
-When the bound client supports true streaming and `on_delta` is set, the runner
-uses the client's streaming path and forwards content deltas as they arrive. If
-the client does not support streaming, `on_delta` falls back to receiving the
+When the bound client supports true streaming and any streaming observer is set,
+the runner uses the client's streaming path. `on_delta` receives legacy text
+content deltas; `on_stream_event` receives the raw provider-normalized
+`llm_stream_event` values, including `tool_call_delta`; and `on_event` receives
+Agent-level lifecycle events such as `model_first_event`,
+`tool_call_building`, `tool_call_ready`, `tool_started`, `tool_completed`, and
+`model_completed`.
+
+If the client does not support streaming, `on_delta` falls back to receiving the
 available response content after each completed model call.
 
 OpenAI-compatible streaming is documented in [LLM Streaming](llm-streaming.md).
