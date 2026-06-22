@@ -235,9 +235,10 @@ transforming constants, validating generated scripts, and returning
 stdout/stderr to the agent for follow-up analysis.
 
 This is not a strong OS sandbox yet. The current backend is
-`controlled_process`: Wuwe controls interpreter selection, environment,
+`controlled_process`: ReArk chooses the Python interpreter, and Wuwe validates
+or executes that host-selected interpreter with controlled environment,
 working directory, stdin/stdout/stderr, timeout, cancellation, and process
-lifecycle, but it does not claim to enforce complete network or filesystem
+lifecycle. Wuwe does not claim to enforce complete network or filesystem
 isolation against code running with the current OS user privileges.
 
 For this backend, `network: false` and `file_write: false` mean the model cannot
@@ -290,6 +291,38 @@ The model must not be allowed to set permissions, environment variables,
 interpreter paths, network access, file-write access, or shell commands through
 tool arguments. ReArk should configure those through host-owned
 `execution_policy`.
+
+Wuwe now provides interpreter diagnostics for ReArk's resolver/settings UI:
+
+```cpp
+auto probe = execution::probe_python_interpreter({
+  .interpreter = reark_python_path,
+  .workdir = reark_analysis_temp_dir,
+  .env = {},
+  .timeout = std::chrono::milliseconds(3000),
+});
+```
+
+ReArk still owns Python discovery policy, such as bundled Python, user-selected
+Python, virtualenv, conda, `py` launcher, or PATH lookup. Wuwe does not search
+or choose among those options. Wuwe probes the interpreter ReArk passes in,
+using no-shell launch, stdout/stderr capture, timeout, and structured status
+values such as `ok`, `not_found`, `not_executable`, `permission_denied`,
+`startup_timeout`, `invalid_python`, and `unsupported_version`.
+
+When `controlled_process_backend` cannot launch Python, execution results now
+include structured metadata such as:
+
+```text
+error_code
+launch_error_code
+launch_error_message
+python_interpreter
+timeout_phase
+```
+
+ReArk should key user-facing setup diagnostics off those stable values instead
+of parsing `error_message`.
 
 Recommended ReArk policy for the first integration:
 
@@ -378,7 +411,7 @@ hints outside the exposed bounds before the backend can launch.
 ReArk owns:
 
 - whether controlled execution is enabled,
-- Python interpreter selection or packaging,
+- Python interpreter discovery, selection, resolver policy, and packaging,
 - analysis workdir selection,
 - selected input packaging into `stdin_text`,
 - user approval UI,
@@ -415,6 +448,7 @@ Wuwe owns:
 - approval request shape,
 - audit event shape,
 - backend availability and requirement selection,
+- host-selected Python interpreter probing and structured launch diagnostics,
 - no-shell controlled process launch,
 - stdin/stdout/stderr capture,
 - timeout and cancellation,

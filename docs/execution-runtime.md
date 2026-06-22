@@ -25,6 +25,7 @@ Implemented in the first baseline:
   `agent/sandbox`, and `agent/execution`.
 - `execution_runtime` policy, approval, audit, and backend orchestration.
 - `controlled_process_backend` for Windows Python snippets.
+- Python interpreter probe API for host-selected interpreters.
 - No-shell process launch through `CreateProcessW`.
 - Host-owned environment allowlist.
 - Temporary script materialization in the execution workdir.
@@ -400,9 +401,11 @@ enum class isolation_level {
 };
 ```
 
-`controlled_process` means Wuwe controls interpreter selection, environment,
-working directory, timeout, cancellation, stdout, stderr, and process lifecycle.
-It does not imply OS-level filesystem or network isolation.
+`controlled_process` means Wuwe executes a host-selected Python interpreter and
+controls environment, working directory, timeout, cancellation, stdout, stderr,
+and process lifecycle. It does not imply OS-level filesystem or network
+isolation. Wuwe does not choose the product's Python distribution, virtualenv,
+conda environment, `py` launcher policy, or bundled interpreter policy.
 
 `restricted_process` is reserved for OS-specific restrictions such as Windows
 Job Objects, restricted tokens, AppContainer-style execution, seccomp, pledge,
@@ -787,6 +790,7 @@ Wuwe owns:
 - execution request and result contracts,
 - policy evaluation,
 - approval request shape,
+- host-selected Python interpreter validation and structured launch diagnostics,
 - process lifecycle,
 - timeout and cancellation,
 - stdout and stderr capture,
@@ -826,6 +830,7 @@ Minimum tests:
 | Cancellation | `std::stop_token` terminates process, result has `cancelled=true` |
 | Output | stdout truncation, stderr truncation, exact limit boundary |
 | Launch | missing interpreter, invalid workdir, backend failure |
+| Python probe | valid Python version/executable, missing path, directory path, startup timeout, stable launch metadata |
 | Audit | attempted, denied, approved, started, completed, failed, timed out |
 | Tool | JSON argument parsing, raw argument byte limit, unknown field rejection, timeout hint rejection/clamp, unknown tool name |
 | Integration | composed provider order, Reasoning ReAct tool call, Planning tool step |
@@ -858,6 +863,8 @@ Before enabling execution by default in any host:
 - Is the tool opt-in?
 - Is shell disabled?
 - Is the interpreter path host-controlled?
+- Does the host call `probe_python_interpreter(...)` or otherwise surface
+  structured Python interpreter diagnostics before enabling execution?
 - Are environment variables allowlisted?
 - Are stdout and stderr bounded?
 - Is timeout nonzero?
@@ -868,11 +875,46 @@ Before enabling execution by default in any host:
 - Does product documentation avoid claiming strong sandboxing unless the active
   backend actually provides it?
 
+## Python Interpreter Diagnostics
+
+Wuwe does not perform product-level Python discovery. Host applications choose
+the interpreter path or command. Wuwe provides diagnostics for that selected
+interpreter through:
+
+```cpp
+execution::python_interpreter_probe_result probe =
+  execution::probe_python_interpreter({
+    .interpreter = reark_python_path,
+    .workdir = reark_analysis_temp_dir,
+    .env = {},
+    .timeout = std::chrono::milliseconds(3000),
+  });
+```
+
+The probe uses the same no-shell Windows process launch style as
+`controlled_process_backend`, captures stdout/stderr, enforces a startup
+timeout, preserves the Win32 `std::error_code` when launch fails, and returns a
+stable `python_interpreter_status` such as `ok`, `not_found`,
+`not_executable`, `permission_denied`, `startup_timeout`, `invalid_python`, or
+`unsupported_version`.
+
+`controlled_process_backend` also includes structured launch metadata when
+Python startup fails:
+
+```text
+error_code
+launch_error_code
+launch_error_message
+python_interpreter
+timeout_phase
+```
+
+Hosts can optionally set `validate_python_on_start=true` and
+`python_startup_timeout`, but validation is disabled by default to preserve the
+existing behavior and avoid implicit process startup during backend creation.
+
 ## Open Questions
 
-- Which Python interpreter discovery policy should Wuwe provide by default:
-  host-required path, package-bundled interpreter, PATH lookup, or explicit
-  resolver callback?
 - Should Phase 1 materialize snippets as temporary files or pass code through
   stdin with `python -`?
 - Should tool output returned to the model include stderr by default, or should

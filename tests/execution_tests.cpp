@@ -1192,6 +1192,11 @@ int appcontainer_probe_child_main() {
   return is_appcontainer != 0 ? 0 : 3;
 }
 
+int sleeping_python_probe_child_main() {
+  std::this_thread::sleep_for(std::chrono::seconds(5));
+  return 0;
+}
+
 #endif
 
 std::string escape_python_string(std::string value) {
@@ -2404,6 +2409,46 @@ void test_tool_provider_returns_clear_input_limit_error() {
   assert(content.at("metadata").at("max_code_bytes") == "4");
 }
 
+void test_python_interpreter_probe_reports_not_found() {
+  const auto probe = execution::probe_python_interpreter({
+    .interpreter = std::filesystem::temp_directory_path() /
+                   "wuwe-definitely-not-a-real-python.exe",
+    .workdir = std::filesystem::temp_directory_path() / "wuwe-execution-tests",
+    .timeout = std::chrono::milliseconds(500),
+  });
+
+  assert(probe.status == execution::python_interpreter_status::not_found);
+  assert(probe.metadata.at("error_code") == "python_interpreter_not_found");
+}
+
+void test_python_interpreter_probe_reports_directory_as_not_executable() {
+  const auto probe_dir =
+    std::filesystem::temp_directory_path() / "wuwe-python-probe-directory";
+  std::filesystem::create_directories(probe_dir);
+  const auto probe = execution::probe_python_interpreter({
+    .interpreter = probe_dir,
+    .workdir = std::filesystem::temp_directory_path() / "wuwe-execution-tests",
+    .timeout = std::chrono::milliseconds(500),
+  });
+
+  assert(probe.status == execution::python_interpreter_status::not_executable);
+  assert(probe.metadata.at("error_code") == "python_interpreter_not_executable");
+}
+
+#ifdef _WIN32
+void test_python_interpreter_probe_reports_startup_timeout() {
+  const auto probe = execution::probe_python_interpreter({
+    .interpreter = std::filesystem::path(current_test_executable_path()),
+    .workdir = std::filesystem::temp_directory_path() / "wuwe-execution-tests",
+    .timeout = std::chrono::milliseconds(50),
+  });
+
+  assert(probe.status == execution::python_interpreter_status::startup_timeout);
+  assert(probe.metadata.at("error_code") == "python_interpreter_startup_timeout");
+  assert(probe.metadata.at("timeout_phase") == "startup");
+}
+#endif
+
 void test_controlled_process_backend_reports_launch_failure() {
   execution::controlled_process_backend backend({
     .python_interpreter = "definitely-not-a-real-python-interpreter",
@@ -2418,9 +2463,48 @@ void test_controlled_process_backend_reports_launch_failure() {
   const auto result = backend.run(request, {});
   assert(result.termination_reason == execution::execution_termination_reason::launch_failed);
   assert(!result.error_message.empty());
+  assert(result.metadata.at("error_code") == "python_interpreter_not_found");
+  assert(result.metadata.at("python_interpreter") ==
+         "definitely-not-a-real-python-interpreter");
+  assert(result.metadata.at("timeout_phase") == "launch");
+  assert(result.metadata.count("launch_error_code") == 1);
+  assert(result.metadata.count("launch_error_message") == 1);
+}
+
+void test_controlled_process_backend_optional_validation_reports_failure() {
+  execution::controlled_process_backend backend({
+    .python_interpreter = std::filesystem::temp_directory_path() /
+                          "wuwe-missing-validation-python.exe",
+    .fallback_workdir =
+      std::filesystem::temp_directory_path() / "wuwe-execution-tests",
+    .validate_python_on_start = true,
+    .python_startup_timeout = std::chrono::milliseconds(500),
+  });
+
+  execution::execution_request request;
+  request.code = "print(1)";
+  request.limits.timeout = std::chrono::milliseconds(1000);
+
+  const auto result = backend.run(request, {});
+  assert(result.termination_reason == execution::execution_termination_reason::launch_failed);
+  assert(result.metadata.at("error_code") == "python_interpreter_not_found");
+  assert(result.metadata.at("python_interpreter_probe_status") == "not_found");
 }
 
 #ifdef WUWE_EXECUTION_TEST_PYTHON
+void test_python_interpreter_probe_reports_valid_python() {
+  const auto probe = execution::probe_python_interpreter({
+    .interpreter = WUWE_EXECUTION_TEST_PYTHON,
+    .workdir = std::filesystem::temp_directory_path() / "wuwe-execution-tests",
+    .timeout = std::chrono::milliseconds(3000),
+  });
+
+  assert(probe.status == execution::python_interpreter_status::ok);
+  assert(!probe.version.empty());
+  assert(!probe.executable.empty());
+  assert(probe.metadata.at("error_code") == "ok");
+}
+
 void test_controlled_process_backend_runs_python_snippet() {
   execution::controlled_process_backend backend({
     .python_interpreter = WUWE_EXECUTION_TEST_PYTHON,
@@ -2609,6 +2693,13 @@ int main(int argc, char** argv) {
       std::string_view(argv[1]) == "--wuwe-appcontainer-probe-child") {
     return appcontainer_probe_child_main();
   }
+  if (argc == 2) {
+    const std::filesystem::path maybe_probe_script(argv[1]);
+    if (maybe_probe_script.filename().string().find("wuwe-python-probe-") == 0 &&
+        maybe_probe_script.extension() == ".py") {
+      return sleeping_python_probe_child_main();
+    }
+  }
 #endif
 
   try {
@@ -2641,8 +2732,15 @@ int main(int argc, char** argv) {
     test_policy_denies_total_input_over_limit_before_backend();
     test_policy_allows_input_at_exact_limits();
     test_tool_provider_returns_clear_input_limit_error();
+    test_python_interpreter_probe_reports_not_found();
+    test_python_interpreter_probe_reports_directory_as_not_executable();
+#ifdef _WIN32
+    test_python_interpreter_probe_reports_startup_timeout();
+#endif
     test_controlled_process_backend_reports_launch_failure();
+    test_controlled_process_backend_optional_validation_reports_failure();
 #ifdef WUWE_EXECUTION_TEST_PYTHON
+    test_python_interpreter_probe_reports_valid_python();
     test_controlled_process_backend_runs_python_snippet();
     test_controlled_process_backend_times_out_python();
     test_controlled_process_backend_truncates_stdout_and_stderr();

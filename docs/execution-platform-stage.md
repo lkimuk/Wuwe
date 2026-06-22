@@ -11,10 +11,12 @@ Date: 2026-06-22
 This stage hardens Wuwe's controlled local execution platform. It does not
 turn `controlled_process` into a strong filesystem or network sandbox.
 
-`controlled_process` means Wuwe owns interpreter selection, environment
-allowlisting, workdir selection, stdin/stdout/stderr handling, timeout,
-cancellation, process-tree cleanup on Windows, resource limits where Windows
-Job Objects can enforce them, structured result JSON, and audit metadata.
+`controlled_process` means Wuwe executes a host-selected interpreter and owns
+interpreter validation/diagnostics, environment allowlisting, workdir selection,
+stdin/stdout/stderr handling, timeout, cancellation, process-tree cleanup on
+Windows, resource limits where Windows Job Objects can enforce them, structured
+result JSON, and audit metadata. Product-level Python discovery and selection
+remain host responsibilities.
 
 Strong filesystem and network isolation must come from a backend that explicitly
 advertises that contract, such as a future restricted-process, container, or
@@ -57,6 +59,12 @@ WASM backend.
   partial, planned, and not applicable capabilities.
 - `controlled_process` advertises process-tree cleanup and resource enforcement
   only when the active platform/configuration can enforce it.
+- `probe_python_interpreter(...)` validates host-selected Python interpreters
+  with no-shell launch, timeout, stdout/stderr capture, version/executable
+  reporting, and structured failure status.
+- `controlled_process_backend` includes stable Python launch diagnostic
+  metadata such as `error_code`, `launch_error_code`, `launch_error_message`,
+  `python_interpreter`, and `timeout_phase`.
 - Audit events include process count, memory, CPU time, and enforcement fields.
 - Execution results include Job Object/resource enforcement metadata.
 - `execution_backend_registry` provides a default registry with
@@ -132,7 +140,7 @@ ReArk should use `execution_tool_options` and Wuwe's policy/runtime validation
 for generic tool boundaries, while keeping product policy in ReArk:
 
 - whether execution is enabled,
-- Python interpreter selection,
+- Python interpreter discovery, selection, and packaging,
 - per-run workdir lifecycle,
 - user approval UX,
 - audit persistence,
