@@ -95,6 +95,9 @@ WASM backend.
 - `controlled_process` still does not enforce file write denial inside Python.
 - `controlled_process` still does not enforce network denial inside Python.
 - Windows restricted token/AppContainer backend is not implemented.
+- Windows restricted backend acceptance criteria and implementation sequence
+  are recorded in
+  [Restricted Execution Backend Plan](execution-restricted-backend-plan.md).
 - Container backend is not implemented.
 - WASM/WASI backend is not implemented.
 - Cross-platform Linux/macOS controlled-process resource governance is not
