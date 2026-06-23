@@ -168,12 +168,13 @@ staging logic have now been factored into library-internal restricted-process
 components. AppContainer SID ACL grants for files, directories, and recursive
 trees, plus request-scoped workspace/script lifecycle handling, have also been
 factored into internal components. A library-internal restricted execution plan
-now composes these pieces into one real Python launch path exercised by tests,
-but it is still only a backend skeleton. The backend must still remain
-descriptor-only until the remaining work is factored into a production
-`execution_backend` implementation with policy-driven readable/writable root
-orchestration, network blocking, lifecycle/resource limits, symlink and junction
-escape tests, and result/audit metadata.
+now composes these pieces into one real Python launch path exercised by tests.
+An internal runner maps successful and timeout executions into
+`execution_result` metadata, but it is still only a backend skeleton. The
+backend must still remain descriptor-only until the remaining work is factored
+into a production `execution_backend` implementation with policy-driven
+readable/writable root orchestration, network blocking, lifecycle/resource
+limits, symlink and junction escape tests, and audit metadata.
 
 ## Non-Acceptable Shortcuts
 

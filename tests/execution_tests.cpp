@@ -2452,6 +2452,72 @@ void test_restricted_process_execution_plan_runs_python() {
     "restricted execution plan Python launch did not receive request env");
 }
 
+void test_restricted_process_execution_plan_returns_execution_result() {
+  const auto workspace_root = make_probe_run_directory("restricted-run-workspace");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+
+  execution::execution_request request;
+  request.code = "import sys\nprint('run_result_ok')\n";
+  request.stdin_text = "";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+
+  const auto result =
+    execution_detail::run_restricted_execution_plan(config, request);
+
+  require_condition(
+    result.termination_reason == execution::execution_termination_reason::exited,
+    "restricted execution plan should return an exited execution_result");
+  require_condition(
+    result.exit_code.has_value() && *result.exit_code == 0,
+    "restricted execution plan should return exit code zero");
+  require_condition(
+    result.stdout_text.find("run_result_ok") != std::string::npos,
+    "restricted execution result should include stdout");
+  require_condition(
+    result.metadata.at("backend_stage") == "internal_execution_plan",
+    "restricted execution result should identify internal stage");
+  require_condition(
+    result.metadata.at("restricted_plan_status") == "ok",
+    "restricted execution result should report plan success");
+  require_condition(
+    result.metadata.at("restricted_launch_status") == "ok",
+    "restricted execution result should report launch success");
+}
+
+void test_restricted_process_execution_plan_reports_timeout_result() {
+  const auto workspace_root = make_probe_run_directory("restricted-run-timeout");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+
+  execution::execution_request request;
+  request.code = "import time\ntime.sleep(10)\n";
+  request.limits.timeout = std::chrono::milliseconds(100);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+
+  const auto result =
+    execution_detail::run_restricted_execution_plan(config, request);
+
+  require_condition(
+    result.termination_reason == execution::execution_termination_reason::timeout,
+    "restricted execution plan should return timeout termination");
+  require_condition(
+    result.timed_out,
+    "restricted execution timeout result should set timed_out");
+  require_condition(
+    result.metadata.at("error_code") == "restricted_execution_timeout",
+    "restricted execution timeout should report stable error code");
+}
+
 void test_windows_appcontainer_runs_minimal_python_runtime() {
   auto appcontainer = make_test_appcontainer_profile(
     appcontainer_profile_name(),
@@ -3276,6 +3342,8 @@ int main(int argc, char** argv) {
     test_restricted_process_request_workspace_writes_and_cleans_script();
 #ifdef WUWE_EXECUTION_TEST_PYTHON
     test_restricted_process_execution_plan_runs_python();
+    test_restricted_process_execution_plan_returns_execution_result();
+    test_restricted_process_execution_plan_reports_timeout_result();
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif
 #endif

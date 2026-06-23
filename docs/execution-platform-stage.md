@@ -101,7 +101,9 @@ WASM backend.
 - A library-internal Windows restricted execution plan now composes the profile,
   minimal Python runtime staging, request workspace, ACL grants, environment
   allowlist, and AppContainer launch request into one tested execution path.
-  This is still not exposed as an executable backend factory.
+  A library-internal runner maps that path into `execution_result` metadata for
+  successful and timeout executions. This is still not exposed as an executable
+  backend factory.
 
 ## Completed In P2/P3 Platform Contract
 

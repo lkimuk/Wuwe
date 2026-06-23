@@ -4,6 +4,7 @@
 #ifdef _WIN32
 
 #include <optional>
+#include <stop_token>
 #include <string>
 
 #include <wuwe/agent/execution/execution_core.hpp>
@@ -48,6 +49,11 @@ struct restricted_execution_plan_result {
 [[nodiscard]] restricted_execution_plan_result prepare_restricted_execution_plan(
   const restricted_process_backend_config& config,
   const execution_request& request);
+
+[[nodiscard]] execution_result run_restricted_execution_plan(
+  const restricted_process_backend_config& config,
+  const execution_request& request,
+  std::stop_token stop_token = {});
 
 } // namespace wuwe::agent::execution::detail
 

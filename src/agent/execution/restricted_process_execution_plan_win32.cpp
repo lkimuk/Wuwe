@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <string_view>
 #include <utility>
 
@@ -36,6 +37,15 @@ std::wstring widen_ascii(std::string_view text) {
   result.reserve(text.size());
   for (const char ch : text) {
     result.push_back(static_cast<unsigned char>(ch));
+  }
+  return result;
+}
+
+std::string narrow_ascii(std::wstring_view text) {
+  std::string result;
+  result.reserve(text.size());
+  for (const auto ch : text) {
+    result.push_back(static_cast<char>(ch));
   }
   return result;
 }
@@ -254,6 +264,137 @@ restricted_execution_plan_result prepare_restricted_execution_plan(
     .status = restricted_execution_plan_status::ok,
     .plan = std::move(plan),
   };
+}
+
+execution_termination_reason termination_for_launch(
+  const restricted_appcontainer_launch_result& launch) {
+  if (launch.capture.timed_out) {
+    return execution_termination_reason::timeout;
+  }
+  if (launch.capture.cancelled) {
+    return execution_termination_reason::cancelled;
+  }
+  if (launch.status != restricted_appcontainer_launch_status::ok) {
+    return execution_termination_reason::launch_failed;
+  }
+  return execution_termination_reason::exited;
+}
+
+void add_restricted_metadata(
+  execution_result& result,
+  const restricted_process_backend_config& config,
+  const execution_request& request) {
+  result.metadata["backend_name"] = "restricted_process";
+  result.metadata["isolation_level"] = "restricted_process";
+  result.metadata["backend_available"] = "false";
+  result.metadata["backend_stage"] = "internal_execution_plan";
+  result.metadata["python_interpreter"] = config.python_interpreter.string();
+  result.metadata["deny_network"] = config.deny_network ? "true" : "false";
+  result.metadata["use_job_object"] = config.use_job_object ? "true" : "false";
+  result.metadata["inherit_parent_environment"] =
+    config.inherit_parent_environment ? "true" : "false";
+  result.metadata["cleanup_runtime_staging"] =
+    config.cleanup_runtime_staging ? "true" : "false";
+  result.metadata["readable_roots_count"] =
+    std::to_string(config.readable_roots.size());
+  result.metadata["writable_roots_count"] =
+    std::to_string(config.writable_roots.size());
+  result.metadata["timeout_ms"] = std::to_string(request.limits.timeout.count());
+  result.metadata["max_stdout_bytes"] =
+    std::to_string(request.limits.max_stdout_bytes);
+  result.metadata["max_stderr_bytes"] =
+    std::to_string(request.limits.max_stderr_bytes);
+}
+
+void add_plan_metadata(
+  execution_result& result,
+  const restricted_execution_plan& plan) {
+  result.metadata["appcontainer_profile"] = narrow_ascii(plan.profile.name());
+  result.metadata["workspace_root"] = plan.workspace.root().string();
+  result.metadata["script_path"] = plan.workspace.script_path().string();
+  result.metadata["runtime_root"] = plan.runtime_root.string();
+  result.metadata["python_executable"] = plan.python_executable.string();
+  result.metadata["runtime_staging_files"] =
+    std::to_string(plan.runtime_staging.copied_files.size());
+}
+
+void cleanup_external_runtime_staging(
+  const restricted_process_backend_config& config,
+  const restricted_execution_plan& plan) {
+  if (!config.cleanup_runtime_staging || config.runtime_staging_root.empty()) {
+    return;
+  }
+
+  const auto cleanup_root = config.runtime_staging_root / plan.profile.name();
+  std::error_code ignored;
+  std::filesystem::remove_all(cleanup_root, ignored);
+}
+
+execution_result run_restricted_execution_plan(
+  const restricted_process_backend_config& config,
+  const execution_request& request,
+  std::stop_token stop_token) {
+  const auto started = std::chrono::steady_clock::now();
+  execution_result result;
+  add_restricted_metadata(result, config, request);
+
+  auto plan_result = prepare_restricted_execution_plan(config, request);
+  result.metadata["restricted_plan_status"] = to_string(plan_result.status);
+  if (plan_result.status != restricted_execution_plan_status::ok ||
+      !plan_result.plan.has_value()) {
+    result.termination_reason =
+      plan_result.status == restricted_execution_plan_status::unsupported_language
+        ? execution_termination_reason::backend_error
+        : execution_termination_reason::launch_failed;
+    result.error_message =
+      std::string("restricted execution plan failed: ") +
+      to_string(plan_result.status) + " " + plan_result.detail;
+    result.metadata["error_code"] =
+      std::string("restricted_plan_") + to_string(plan_result.status);
+    result.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - started);
+    return result;
+  }
+
+  auto& plan = *plan_result.plan;
+  add_plan_metadata(result, plan);
+  plan.launch_request.stop_token = stop_token;
+  auto launch = launch_restricted_appcontainer_process(
+    std::move(plan.launch_request));
+
+  result.exit_code = static_cast<int>(launch.capture.exit_code);
+  result.timed_out = launch.capture.timed_out;
+  result.cancelled = launch.capture.cancelled;
+  result.stdout_truncated = launch.capture.stdout_truncated;
+  result.stderr_truncated = launch.capture.stderr_truncated;
+  result.stdout_text = std::move(launch.capture.stdout_text);
+  result.stderr_text = std::move(launch.capture.stderr_text);
+  result.termination_reason = termination_for_launch(launch);
+  result.metadata["restricted_launch_status"] = to_string(launch.status);
+  result.metadata["restricted_launch_win32_error"] =
+    std::to_string(launch.win32_error);
+  if (!launch.detail.empty()) {
+    result.metadata["restricted_launch_detail"] = launch.detail;
+  }
+  if (launch.status != restricted_appcontainer_launch_status::ok) {
+    result.error_message =
+      std::string("restricted launch failed: ") + to_string(launch.status);
+    result.metadata["error_code"] =
+      std::string("restricted_launch_") + to_string(launch.status);
+  }
+  else if (result.timed_out) {
+    result.error_message = "restricted execution timed out";
+    result.metadata["error_code"] = "restricted_execution_timeout";
+  }
+  else if (result.cancelled) {
+    result.error_message = "restricted execution cancelled";
+    result.metadata["error_code"] = "restricted_execution_cancelled";
+  }
+
+  cleanup_external_runtime_staging(config, plan);
+  result.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - started);
+  return result;
 }
 
 } // namespace wuwe::agent::execution::detail
