@@ -191,9 +191,11 @@ the candidate's current configured enforcement diagnostics without changing
 registry behavior. On Windows, the helper reports no-shell launch, stdio,
 environment, working directory, timeout, cancellation, and Job Object resource
 controls as `enforced` when enabled. Filesystem read/write denial and network
-denial remain `partial` until the public backend's root orchestration and
-network contract are finalized. The default registry continues to expose
-`restricted_process` only as an unavailable planned descriptor.
+denial are reported separately: no-capability AppContainer outbound network
+denial is now `enforced`, while filesystem read/write denial remains `partial`
+until the public backend's root orchestration is finalized. The default registry
+continues to expose `restricted_process` only as an unavailable planned
+descriptor.
 
 The internal execution plan now also has a fail-closed reparse-point test for
 readable roots. If an allowed root contains a symlink-style reparse point that

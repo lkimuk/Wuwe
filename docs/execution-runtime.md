@@ -662,6 +662,8 @@ Phase 1 should implement:
 - `restricted_process_backend_configured_contract(...)` for library-level
   diagnostics of the current restricted candidate without making the planned
   registry descriptor executable or available.
+- `evaluate_restricted_process_backend_availability(...)` for stable blocker
+  diagnostics explaining why the restricted candidate is still unavailable.
 - Host-side canonical path/root boundary helpers.
 - stdout and stderr capture with byte limits.
 - stdout and stderr truncation flags.

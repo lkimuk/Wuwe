@@ -1,4 +1,5 @@
 #include <cassert>
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -1841,7 +1842,26 @@ void test_restricted_process_configured_contract_is_candidate_only() {
   assert(contract.memory_limit == sandbox::enforcement_level::enforced);
   assert(contract.filesystem_read_deny == sandbox::enforcement_level::partial);
   assert(contract.filesystem_write_deny == sandbox::enforcement_level::partial);
-  assert(contract.network_deny == sandbox::enforcement_level::partial);
+  assert(contract.network_deny == sandbox::enforcement_level::enforced);
+  auto availability =
+    execution::evaluate_restricted_process_backend_availability(config);
+  assert(!availability.available);
+  assert(availability.contract.network_deny ==
+         sandbox::enforcement_level::enforced);
+  assert(std::find(
+           availability.blockers.begin(),
+           availability.blockers.end(),
+           "filesystem_read_deny_not_enforced") !=
+         availability.blockers.end());
+  assert(std::find(
+           availability.blockers.begin(),
+           availability.blockers.end(),
+           "filesystem_write_deny_not_enforced") !=
+         availability.blockers.end());
+  assert(std::find(
+           availability.blockers.begin(),
+           availability.blockers.end(),
+           "network_deny_not_enforced") == availability.blockers.end());
 
   config.use_job_object = false;
   contract = execution::restricted_process_backend_configured_contract(config);
@@ -1855,10 +1875,24 @@ void test_restricted_process_configured_contract_is_candidate_only() {
   config.deny_network = false;
   contract = execution::restricted_process_backend_configured_contract(config);
   assert(contract.network_deny == sandbox::enforcement_level::not_enforced);
+  availability =
+    execution::evaluate_restricted_process_backend_availability(config);
+  assert(std::find(
+           availability.blockers.begin(),
+           availability.blockers.end(),
+           "network_deny_not_enforced") != availability.blockers.end());
 #else
   assert(contract.filesystem_read_deny ==
          sandbox::enforcement_level::not_enforced);
   assert(contract.network_deny == sandbox::enforcement_level::not_enforced);
+  const auto availability =
+    execution::evaluate_restricted_process_backend_availability(config);
+  assert(!availability.available);
+  assert(std::find(
+           availability.blockers.begin(),
+           availability.blockers.end(),
+           "restricted_process_unsupported_platform") !=
+         availability.blockers.end());
 #endif
 
   auto registry = execution::make_default_execution_backend_registry();
@@ -2667,8 +2701,8 @@ void test_restricted_process_execution_plan_returns_execution_result() {
     result.metadata.at("file_write_deny_enforcement") == "partial",
     "restricted execution result should report write deny candidate enforcement");
   require_condition(
-    result.metadata.at("network_deny_enforcement") == "partial",
-    "restricted execution result should report network deny candidate enforcement");
+    result.metadata.at("network_deny_enforcement") == "enforced",
+    "restricted execution result should report network deny enforcement");
   require_condition(
     result.metadata.at("max_process_count") == "3",
     "restricted execution result should report requested process count limit");
@@ -2877,8 +2911,8 @@ void test_restricted_process_backend_candidate_runs_python() {
     info.enforcement.filesystem_read_deny == sandbox::enforcement_level::partial,
     "restricted backend candidate should report partial read deny enforcement");
   require_condition(
-    info.enforcement.network_deny == sandbox::enforcement_level::partial,
-    "restricted backend candidate should report partial network deny enforcement");
+    info.enforcement.network_deny == sandbox::enforcement_level::enforced,
+    "restricted backend candidate should report enforced network deny");
 
   execution::execution_request request;
   request.code = "print('candidate_ok')\n";
@@ -2909,8 +2943,8 @@ void test_restricted_process_backend_candidate_runs_python() {
     result.metadata.at("file_read_deny_enforcement") == "partial",
     "restricted backend candidate should report read deny candidate enforcement");
   require_condition(
-    result.metadata.at("network_deny_enforcement") == "partial",
-    "restricted backend candidate should report network deny candidate enforcement");
+    result.metadata.at("network_deny_enforcement") == "enforced",
+    "restricted backend candidate should report network deny enforcement");
   require_condition(
     result.metadata.at("max_process_count") == "2",
     "restricted backend candidate should report requested process count");
@@ -3006,7 +3040,7 @@ void test_restricted_process_backend_candidate_audits_result_metadata() {
     finished.attributes.at("file_read_deny_enforcement") == "partial",
     "restricted candidate audit should report partial read deny enforcement");
   require_condition(
-    finished.attributes.at("result_network_deny_enforcement") == "partial",
+    finished.attributes.at("result_network_deny_enforcement") == "enforced",
     "restricted candidate audit should include result network enforcement");
 }
 

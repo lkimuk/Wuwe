@@ -18,10 +18,11 @@ public:
 
   [[nodiscard]] sandbox::sandbox_backend_info info() const override {
     auto descriptor = restricted_process_backend_descriptor();
+    const auto availability =
+      evaluate_restricted_process_backend_availability(config_);
     descriptor.unavailable_reason =
       "restricted_process backend candidate is internal and not registered";
-    descriptor.enforcement =
-      restricted_process_backend_configured_contract(config_);
+    descriptor.enforcement = availability.contract;
     return descriptor;
   }
 

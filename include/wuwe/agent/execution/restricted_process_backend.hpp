@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <map>
+#include <string>
 #include <vector>
 
 #include <wuwe/agent/sandbox/sandbox.hpp>
@@ -31,11 +32,21 @@ struct restricted_process_backend_config {
   std::chrono::milliseconds python_startup_timeout { 3000 };
 };
 
+struct restricted_process_backend_availability {
+  bool available { false };
+  sandbox::sandbox_enforcement_contract contract;
+  std::vector<std::string> blockers;
+};
+
 [[nodiscard]] sandbox::sandbox_enforcement_contract
 restricted_process_backend_planned_contract();
 
 [[nodiscard]] sandbox::sandbox_enforcement_contract
 restricted_process_backend_configured_contract(
+  const restricted_process_backend_config& config);
+
+[[nodiscard]] restricted_process_backend_availability
+evaluate_restricted_process_backend_availability(
   const restricted_process_backend_config& config);
 
 [[nodiscard]] const char* to_string(

@@ -40,6 +40,9 @@ int main() {
   auto restricted_contract =
     wuwe::agent::execution::restricted_process_backend_configured_contract(
       restricted_config);
+  auto restricted_availability =
+    wuwe::agent::execution::evaluate_restricted_process_backend_availability(
+      restricted_config);
   if (!restricted_config.deny_network || !restricted_config.use_job_object ||
       restricted_config.inherit_parent_environment ||
       !restricted_config.cleanup_runtime_staging ||
@@ -56,6 +59,9 @@ int main() {
 #endif
   if (restricted_contract.filesystem_read_deny !=
       expected_restricted_read_deny) {
+    return 1;
+  }
+  if (restricted_availability.available) {
     return 1;
   }
   wuwe::agent::execution::execution_backend_requirements requirements;

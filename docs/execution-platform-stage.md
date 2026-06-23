@@ -114,8 +114,9 @@ WASM backend.
 - `restricted_process_backend_configured_contract(...)` exposes the current
   candidate's configured enforcement diagnostics separately from the public
   planned descriptor. On Windows this reports core launch/lifecycle controls as
-  `enforced` and filesystem/network isolation as `partial`; the default
-  registry still exposes `restricted_process` as unavailable and planned.
+  `enforced`, no-capability AppContainer network denial as `enforced`, and
+  filesystem read/write isolation as `partial`; the default registry still
+  exposes `restricted_process` as unavailable and planned.
 - Execution-finished audit events now include backend result metadata under
   `result_*` keys, so restricted-plan status, launch status, candidate markers,
   backend stage, and configured enforcement fields are visible to host audit

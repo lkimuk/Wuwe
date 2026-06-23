@@ -1,6 +1,22 @@
 #include <wuwe/agent/execution/restricted_process_backend.hpp>
 
 namespace wuwe::agent::execution {
+namespace {
+
+bool is_enforced(sandbox::enforcement_level level) {
+  return level == sandbox::enforcement_level::enforced;
+}
+
+void add_if_not_enforced(
+  std::vector<std::string>& blockers,
+  sandbox::enforcement_level level,
+  const char* name) {
+  if (!is_enforced(level)) {
+    blockers.emplace_back(name);
+  }
+}
+
+} // namespace
 
 sandbox::sandbox_enforcement_contract
 restricted_process_backend_planned_contract() {
@@ -44,7 +60,7 @@ restricted_process_backend_configured_contract(
     .filesystem_read_deny = sandbox::enforcement_level::partial,
     .filesystem_write_deny = sandbox::enforcement_level::partial,
     .network_deny = config.deny_network
-                      ? sandbox::enforcement_level::partial
+                      ? sandbox::enforcement_level::enforced
                       : sandbox::enforcement_level::not_enforced,
   };
 #else
@@ -58,6 +74,79 @@ restricted_process_backend_configured_contract(
   contract.filesystem_write_deny = sandbox::enforcement_level::not_enforced;
   contract.network_deny = sandbox::enforcement_level::not_enforced;
   return contract;
+#endif
+}
+
+restricted_process_backend_availability
+evaluate_restricted_process_backend_availability(
+  const restricted_process_backend_config& config) {
+  restricted_process_backend_availability result {
+    .contract = restricted_process_backend_configured_contract(config),
+  };
+
+#ifndef _WIN32
+  result.blockers.emplace_back("restricted_process_unsupported_platform");
+  return result;
+#else
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.shell_execution,
+    "shell_execution_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.timeout,
+    "timeout_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.cancellation,
+    "cancellation_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.stdout_limit,
+    "stdout_limit_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.stderr_limit,
+    "stderr_limit_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.environment_allowlist,
+    "environment_allowlist_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.working_directory,
+    "working_directory_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.process_tree_cleanup,
+    "process_tree_cleanup_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.process_count_limit,
+    "process_count_limit_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.cpu_time_limit,
+    "cpu_time_limit_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.memory_limit,
+    "memory_limit_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.filesystem_read_deny,
+    "filesystem_read_deny_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.filesystem_write_deny,
+    "filesystem_write_deny_not_enforced");
+  add_if_not_enforced(
+    result.blockers,
+    result.contract.network_deny,
+    "network_deny_not_enforced");
+
+  result.available = result.blockers.empty();
+  return result;
 #endif
 }
 
