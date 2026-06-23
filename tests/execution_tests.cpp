@@ -43,6 +43,7 @@ namespace execution_detail = wuwe::agent::execution::detail;
 #include "../src/agent/execution/restricted_process_appcontainer_win32.hpp"
 #include "../src/agent/execution/restricted_process_appcontainer_launch_win32.hpp"
 #include "../src/agent/execution/restricted_process_acl_win32.hpp"
+#include "../src/agent/execution/restricted_process_execution_plan_win32.hpp"
 #include "../src/agent/execution/restricted_process_request_workspace.hpp"
 
 class test_unique_handle {
@@ -2387,6 +2388,70 @@ void test_restricted_process_request_workspace_writes_and_cleans_script() {
 }
 
 #ifdef WUWE_EXECUTION_TEST_PYTHON
+void test_restricted_process_execution_plan_runs_python() {
+  const auto workspace_root = make_probe_run_directory("restricted-plan-workspace");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+  config.base_environment.emplace("WUWE_BASE_ENV", "base-visible");
+
+  execution::execution_request request;
+  request.code =
+    "import os, sys\n"
+    "payload = sys.stdin.read().strip().upper()\n"
+    "print('plan_python_ok')\n"
+    "print('stdin=' + payload)\n"
+    "print('base_env=' + os.environ.get('WUWE_BASE_ENV', 'missing'))\n"
+    "print('request_env=' + os.environ.get('WUWE_REQUEST_ENV', 'missing'))\n";
+  request.stdin_text = "plan stdin ok\n";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+  request.env.emplace("WUWE_REQUEST_ENV", "request-visible");
+
+  auto plan_result =
+    execution_detail::prepare_restricted_execution_plan(config, request);
+  require_condition(
+    plan_result.status == execution_detail::restricted_execution_plan_status::ok,
+    std::string("restricted execution plan failed: ") +
+      execution_detail::to_string(plan_result.status) + " " +
+      plan_result.detail);
+  require_condition(
+    plan_result.plan.has_value(),
+    "restricted execution plan should return a plan");
+
+  auto& plan = *plan_result.plan;
+  const auto launch = execution_detail::launch_restricted_appcontainer_process(
+    std::move(plan.launch_request));
+  require_condition(
+    launch.status ==
+      execution_detail::restricted_appcontainer_launch_status::ok,
+    std::string("restricted execution plan launch failed: ") +
+      execution_detail::to_string(launch.status) + " " + launch.detail);
+  const auto& capture = launch.capture;
+
+  require_condition(
+    capture.exit_code == 0,
+    "restricted execution plan Python launch should exit successfully");
+  require_condition(
+    capture.stderr_text.empty(),
+    "restricted execution plan Python launch should not write stderr");
+  require_condition(
+    capture.stdout_text.find("plan_python_ok") != std::string::npos,
+    "restricted execution plan Python launch did not run script");
+  require_condition(
+    capture.stdout_text.find("stdin=PLAN STDIN OK") != std::string::npos,
+    "restricted execution plan Python launch did not receive stdin");
+  require_condition(
+    capture.stdout_text.find("base_env=base-visible") != std::string::npos,
+    "restricted execution plan Python launch did not receive base env");
+  require_condition(
+    capture.stdout_text.find("request_env=request-visible") != std::string::npos,
+    "restricted execution plan Python launch did not receive request env");
+}
+
 void test_windows_appcontainer_runs_minimal_python_runtime() {
   auto appcontainer = make_test_appcontainer_profile(
     appcontainer_profile_name(),
@@ -3210,6 +3275,7 @@ int main(int argc, char** argv) {
     test_restricted_process_request_workspace_rejects_escape_filename();
     test_restricted_process_request_workspace_writes_and_cleans_script();
 #ifdef WUWE_EXECUTION_TEST_PYTHON
+    test_restricted_process_execution_plan_runs_python();
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif
 #endif

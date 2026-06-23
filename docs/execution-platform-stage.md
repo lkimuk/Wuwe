@@ -98,6 +98,10 @@ WASM backend.
   exercised by the file-boundary and real-Python probes.
 - Request-scoped workspace/script creation and cleanup have been factored into
   a library-internal component with structured lifecycle failures.
+- A library-internal Windows restricted execution plan now composes the profile,
+  minimal Python runtime staging, request workspace, ACL grants, environment
+  allowlist, and AppContainer launch request into one tested execution path.
+  This is still not exposed as an executable backend factory.
 
 ## Completed In P2/P3 Platform Contract
 
