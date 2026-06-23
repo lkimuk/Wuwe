@@ -40,6 +40,8 @@ namespace execution_detail = wuwe::agent::execution::detail;
 #include <userenv.h>
 #include <windows.h>
 
+#include "../src/agent/execution/restricted_process_appcontainer_win32.hpp"
+
 class test_unique_handle {
 public:
   test_unique_handle() = default;
@@ -1165,95 +1167,24 @@ std::string appcontainer_profile_name() {
   return "wuwe-restricted-probe-" + std::to_string(GetCurrentProcessId());
 }
 
-std::wstring widen_ascii(std::string_view text) {
-  std::wstring result;
-  result.reserve(text.size());
-  for (const char ch : text) {
-    result.push_back(static_cast<unsigned char>(ch));
-  }
-  return result;
-}
-
-class test_appcontainer_profile {
-public:
-  test_appcontainer_profile(
-    std::string profile_name,
-    const wchar_t* display_name,
-    const wchar_t* description)
-      : name_(widen_ascii(profile_name)) {
-    DeleteAppContainerProfile(name_.c_str());
-
-    PSID raw_sid = nullptr;
-    auto result = CreateAppContainerProfile(
-      name_.c_str(),
-      display_name,
-      description,
-      nullptr,
-      0,
-      &raw_sid);
-    if (result == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) {
-      require_error_code(
-        DeleteAppContainerProfile(name_.c_str()),
-        ERROR_SUCCESS,
-        "DeleteAppContainerProfile(existing)");
-      result = CreateAppContainerProfile(
-        name_.c_str(),
-        display_name,
-        description,
-        nullptr,
-        0,
-        &raw_sid);
-    }
-    require_condition(
-      SUCCEEDED(result),
-      "CreateAppContainerProfile should create a test profile");
-    sid_.reset(raw_sid);
-  }
-
-  ~test_appcontainer_profile() {
-    DeleteAppContainerProfile(name_.c_str());
-  }
-
-  test_appcontainer_profile(const test_appcontainer_profile&) = delete;
-  test_appcontainer_profile& operator=(const test_appcontainer_profile&) = delete;
-
-  [[nodiscard]] PSID sid() const noexcept {
-    return sid_.get();
-  }
-
-private:
-  std::wstring name_;
-  sid_ptr sid_;
-};
-
-std::filesystem::path appcontainer_storage_path(PSID appcontainer_sid) {
-  LPWSTR raw_sid_text = nullptr;
-  require_win32(
-    ConvertSidToStringSidW(appcontainer_sid, &raw_sid_text) != FALSE,
-    "ConvertSidToStringSidW(appcontainer)");
-  struct sid_text_cleanup {
-    LPWSTR text;
-    ~sid_text_cleanup() {
-      if (text != nullptr) {
-        LocalFree(text);
-      }
-    }
-  } cleanup_sid { raw_sid_text };
-
-  PWSTR raw_path = nullptr;
-  const auto result = GetAppContainerFolderPath(raw_sid_text, &raw_path);
+execution_detail::restricted_appcontainer_profile make_test_appcontainer_profile(
+  std::string profile_name,
+  const wchar_t* display_name,
+  const wchar_t* description) {
+  auto result = execution_detail::create_restricted_appcontainer_profile({
+    .name = std::move(profile_name),
+    .display_name = display_name,
+    .description = description,
+  });
   require_condition(
-    SUCCEEDED(result),
-    "GetAppContainerFolderPath should return the test profile storage path");
-  struct path_cleanup {
-    PWSTR path;
-    ~path_cleanup() {
-      if (path != nullptr) {
-        CoTaskMemFree(path);
-      }
-    }
-  } cleanup { raw_path };
-  return std::filesystem::path(raw_path);
+    result.status ==
+      execution_detail::restricted_appcontainer_profile_status::ok,
+    std::string("CreateAppContainerProfile should create a test profile: ") +
+      execution_detail::to_string(result.status));
+  require_condition(
+    result.profile.has_value(),
+    "CreateAppContainerProfile should return a profile object");
+  return std::move(*result.profile);
 }
 
 void grant_file_access_to_sid(
@@ -2341,7 +2272,7 @@ void test_windows_restricted_token_access_check_enforces_file_boundaries() {
 }
 
 void test_windows_appcontainer_child_enforces_file_boundaries() {
-  test_appcontainer_profile appcontainer(
+  auto appcontainer = make_test_appcontainer_profile(
     appcontainer_profile_name(),
     L"Wuwe File Boundary Probe",
     L"Wuwe test-only AppContainer file boundary probe");
@@ -2349,7 +2280,7 @@ void test_windows_appcontainer_child_enforces_file_boundaries() {
   const auto current_user = current_user_sid();
   const auto builtin_users = well_known_sid(WinBuiltinUsersSid);
   const auto run_dir =
-    appcontainer_storage_path(appcontainer.sid()) / "file-boundaries";
+    appcontainer.storage_path() / "file-boundaries";
   std::error_code ignored;
   std::filesystem::remove_all(run_dir, ignored);
   std::filesystem::create_directories(run_dir);
@@ -2476,7 +2407,7 @@ void test_windows_appcontainer_child_enforces_file_boundaries() {
 }
 
 void test_windows_appcontainer_probe_launches_child_with_stdio_and_job() {
-  test_appcontainer_profile appcontainer(
+  auto appcontainer = make_test_appcontainer_profile(
     appcontainer_profile_name(),
     L"Wuwe Restricted Probe",
     L"Wuwe test-only AppContainer probe");
@@ -2563,15 +2494,32 @@ void test_restricted_process_runtime_staging_reports_missing_python() {
     "restricted runtime staging status should have stable text");
 }
 
+void test_restricted_process_appcontainer_profile_reports_empty_name() {
+  const auto result =
+    execution_detail::create_restricted_appcontainer_profile({});
+
+  require_condition(
+    result.status ==
+      execution_detail::restricted_appcontainer_profile_status::empty_name,
+    "restricted AppContainer profile should reject an empty profile name");
+  require_condition(
+    std::string_view(execution_detail::to_string(result.status)) ==
+      "empty_name",
+    "restricted AppContainer profile status should have stable text");
+  require_condition(
+    !result.profile.has_value(),
+    "restricted AppContainer profile should not return a profile for empty name");
+}
+
 #ifdef WUWE_EXECUTION_TEST_PYTHON
 void test_windows_appcontainer_runs_minimal_python_runtime() {
-  test_appcontainer_profile appcontainer(
+  auto appcontainer = make_test_appcontainer_profile(
     appcontainer_profile_name(),
     L"Wuwe Python Runtime Probe",
     L"Wuwe test-only AppContainer Python runtime probe");
 
   const auto run_dir =
-    appcontainer_storage_path(appcontainer.sid()) / "python-runtime";
+    appcontainer.storage_path() / "python-runtime";
   const auto denied_read_dir =
     run_dir.parent_path() / "python-runtime-denied-read";
   std::error_code ignored;
@@ -3379,6 +3327,7 @@ int main(int argc, char** argv) {
     test_windows_appcontainer_child_enforces_file_boundaries();
     test_windows_appcontainer_probe_launches_child_with_stdio_and_job();
     test_restricted_process_runtime_staging_reports_missing_python();
+    test_restricted_process_appcontainer_profile_reports_empty_name();
 #ifdef WUWE_EXECUTION_TEST_PYTHON
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif

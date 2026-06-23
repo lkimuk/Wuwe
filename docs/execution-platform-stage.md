@@ -86,6 +86,9 @@ WASM backend.
   probe into a library-internal restricted-process component with structured
   staging status, copied-file reporting, and system error capture. The
   AppContainer Python probe now validates this shared implementation.
+- AppContainer profile creation, replacement, SID lifetime, and profile storage
+  path resolution have also been factored into a library-internal Windows
+  component and are exercised by the existing AppContainer probes.
 
 ## Completed In P2/P3 Platform Contract
 
