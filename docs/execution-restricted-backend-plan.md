@@ -189,12 +189,14 @@ status, backend stage, and candidate marker.
 The internal execution plan now also has a fail-closed reparse-point test for
 readable roots. If an allowed root contains a symlink-style reparse point that
 could redirect traversal outside the granted tree, ACL grant planning fails
-with `reparse_point_not_allowed` before any restricted child is launched.
+with `reparse_point_not_allowed` before any restricted child is launched. A
+dedicated junction probe now creates a Windows mount-point reparse point through
+`FSCTL_SET_REPARSE_POINT` and verifies the same fail-closed behavior for that
+escape shape.
 
 The backend must still remain descriptor-only until the remaining work is
 factored into a production `execution_backend` implementation with
-policy-driven readable/writable root orchestration, network blocking, and a
-dedicated junction acceptance probe.
+policy-driven readable/writable root orchestration and network blocking.
 
 ## Non-Acceptable Shortcuts
 

@@ -1,6 +1,8 @@
 #include <cassert>
 #include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstring>
 #include <stdexcept>
 #include <filesystem>
 #include <fstream>
@@ -39,6 +41,7 @@ namespace execution_detail = wuwe::agent::execution::detail;
 #include <shellapi.h>
 #include <userenv.h>
 #include <windows.h>
+#include <winioctl.h>
 
 #ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
 #define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
@@ -256,6 +259,82 @@ bool create_test_symlink(
            link.wstring().c_str(),
            target.wstring().c_str(),
            flags) != FALSE;
+}
+
+struct test_mount_point_reparse_buffer {
+  ULONG reparse_tag;
+  USHORT reparse_data_length;
+  USHORT reserved;
+  USHORT substitute_name_offset;
+  USHORT substitute_name_length;
+  USHORT print_name_offset;
+  USHORT print_name_length;
+  WCHAR path_buffer[1];
+};
+
+bool create_test_junction(
+  const std::filesystem::path& link,
+  const std::filesystem::path& target) {
+  std::error_code ignored;
+  std::filesystem::create_directories(link, ignored);
+  if (ignored) {
+    return false;
+  }
+
+  const auto print_name = std::filesystem::absolute(target).wstring();
+  const auto substitute_name = L"\\??\\" + print_name;
+  const auto substitute_bytes =
+    static_cast<USHORT>(substitute_name.size() * sizeof(wchar_t));
+  const auto print_bytes =
+    static_cast<USHORT>(print_name.size() * sizeof(wchar_t));
+  const auto path_bytes =
+    static_cast<USHORT>(substitute_bytes + sizeof(wchar_t) + print_bytes +
+                        sizeof(wchar_t));
+  const auto reparse_data_length =
+    static_cast<USHORT>(4 * sizeof(USHORT) + path_bytes);
+  const auto buffer_size =
+    offsetof(test_mount_point_reparse_buffer, path_buffer) + path_bytes;
+  std::vector<char> storage(buffer_size, 0);
+  auto* buffer =
+    reinterpret_cast<test_mount_point_reparse_buffer*>(storage.data());
+  buffer->reparse_tag = IO_REPARSE_TAG_MOUNT_POINT;
+  buffer->reparse_data_length = reparse_data_length;
+  buffer->substitute_name_offset = 0;
+  buffer->substitute_name_length = substitute_bytes;
+  buffer->print_name_offset =
+    static_cast<USHORT>(substitute_bytes + sizeof(wchar_t));
+  buffer->print_name_length = print_bytes;
+  std::memcpy(
+    buffer->path_buffer,
+    substitute_name.data(),
+    substitute_bytes);
+  std::memcpy(
+    reinterpret_cast<char*>(buffer->path_buffer) + buffer->print_name_offset,
+    print_name.data(),
+    print_bytes);
+
+  test_unique_handle handle(CreateFileW(
+    link.wstring().c_str(),
+    GENERIC_WRITE,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    nullptr,
+    OPEN_EXISTING,
+    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+    nullptr));
+  if (!handle.valid()) {
+    return false;
+  }
+
+  DWORD bytes_returned = 0;
+  return DeviceIoControl(
+           handle.get(),
+           FSCTL_SET_REPARSE_POINT,
+           storage.data(),
+           static_cast<DWORD>(storage.size()),
+           nullptr,
+           0,
+           &bytes_returned,
+           nullptr) != FALSE;
 }
 
 std::wstring current_test_executable_path() {
@@ -2669,6 +2748,55 @@ void test_restricted_process_execution_plan_rejects_reparse_root_escape() {
     "restricted execution plan should not return a plan after reparse rejection");
 }
 
+void test_restricted_process_execution_plan_rejects_junction_root_escape() {
+  const auto run_root = make_probe_run_directory("restricted-plan-junction");
+  probe_directory_cleanup cleanup(run_root);
+  const auto workspace_root = run_root / "workspace";
+  const auto readable_root = run_root / "readable";
+  const auto denied_root = run_root / "denied";
+  const auto denied_child = denied_root / "child";
+  const auto escape_junction = readable_root / "escape-junction";
+  std::filesystem::create_directories(workspace_root);
+  std::filesystem::create_directories(readable_root);
+  std::filesystem::create_directories(denied_child);
+  {
+    std::ofstream(denied_child / "secret.txt", std::ios::binary)
+      << "should-not-be-granted";
+  }
+
+  if (!create_test_junction(escape_junction, denied_child)) {
+    std::cerr
+      << "Skipping restricted junction escape plan probe: junction creation "
+      << "is not allowed on this Windows configuration. GetLastError="
+      << GetLastError() << "\n";
+    return;
+  }
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+  config.readable_roots.push_back(readable_root);
+
+  execution::execution_request request;
+  request.code = "print('should_not_launch')\n";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+
+  auto plan_result =
+    execution_detail::prepare_restricted_execution_plan(config, request);
+  RemoveDirectoryW(escape_junction.wstring().c_str());
+
+  require_condition(
+    plan_result.status ==
+      execution_detail::restricted_execution_plan_status::acl_grant_failed,
+    "restricted execution plan should fail closed on readable-root junctions");
+  require_condition(
+    plan_result.detail.find("reparse_point_not_allowed") != std::string::npos,
+    "restricted execution plan should report junction reparse rejection");
+  require_condition(
+    !plan_result.plan.has_value(),
+    "restricted execution plan should not return a plan after junction rejection");
+}
+
 void test_restricted_process_backend_candidate_runs_python() {
   const auto workspace_root = make_probe_run_directory("restricted-candidate");
   probe_directory_cleanup cleanup(workspace_root);
@@ -3627,6 +3755,7 @@ int main(int argc, char** argv) {
     test_restricted_process_execution_plan_carries_resource_limits();
     test_restricted_process_execution_plan_reports_timeout_result();
     test_restricted_process_execution_plan_rejects_reparse_root_escape();
+    test_restricted_process_execution_plan_rejects_junction_root_escape();
     test_restricted_process_backend_candidate_runs_python();
     test_restricted_process_backend_candidate_times_out();
     test_restricted_process_backend_candidate_audits_result_metadata();

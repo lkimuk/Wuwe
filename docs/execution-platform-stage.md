@@ -118,6 +118,9 @@ WASM backend.
   acceptance test for allowed roots: if a readable root contains a symlink-style
   reparse point, ACL grant planning fails before launch instead of granting
   access through it.
+- A dedicated Windows junction acceptance test now creates a mount-point
+  reparse point inside an allowed readable root and verifies the restricted
+  execution plan rejects it before launch.
 
 ## Completed In P2/P3 Platform Contract
 
@@ -154,9 +157,9 @@ WASM backend.
 - `controlled_process` still does not enforce network denial inside Python.
 - Public Windows `restricted_process` backend factory and registry availability
   are not implemented.
-- A dedicated Windows junction probe is not complete; the current internal
-  restricted execution plan rejects reparse points in allowed roots and has
-  symlink-style coverage for that fail-closed path.
+- The internal restricted execution plan rejects reparse points in allowed
+  roots and has both symlink-style and Windows junction coverage for that
+  fail-closed path.
 - Windows restricted backend acceptance criteria and implementation sequence
   are recorded in
   [Restricted Execution Backend Plan](execution-restricted-backend-plan.md).
