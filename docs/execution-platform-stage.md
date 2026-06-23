@@ -111,9 +111,15 @@ WASM backend.
   execution plan through the normal `execution_backend` interface for tests,
   but it deliberately advertises `available=false` and is not registered in the
   default backend registry.
+- `restricted_process_backend_configured_contract(...)` exposes the current
+  candidate's configured enforcement diagnostics separately from the public
+  planned descriptor. On Windows this reports core launch/lifecycle controls as
+  `enforced` and filesystem/network isolation as `partial`; the default
+  registry still exposes `restricted_process` as unavailable and planned.
 - Execution-finished audit events now include backend result metadata under
   `result_*` keys, so restricted-plan status, launch status, candidate markers,
-  and backend stage are visible to host audit sinks.
+  backend stage, and configured enforcement fields are visible to host audit
+  sinks.
 - The internal restricted execution plan has a fail-closed reparse-point
   acceptance test for allowed roots: if a readable root contains a symlink-style
   reparse point, ACL grant planning fails before launch instead of granting
@@ -147,8 +153,9 @@ WASM backend.
 - Registry selection skips unavailable backends.
 - Registry selection returns no backend when strong filesystem/network isolation
   is required in the current build.
-- Package smoke now verifies the backend registry, selection API, and Python
-  interpreter diagnostics API are visible from the installed package.
+- Package smoke now verifies the backend registry, selection API, Python
+  interpreter diagnostics API, and restricted-process configured contract API
+  are visible from the installed package.
 
 ## Not Completed
 
@@ -157,9 +164,6 @@ WASM backend.
 - `controlled_process` still does not enforce network denial inside Python.
 - Public Windows `restricted_process` backend factory and registry availability
   are not implemented.
-- The internal restricted execution plan rejects reparse points in allowed
-  roots and has both symlink-style and Windows junction coverage for that
-  fail-closed path.
 - Windows restricted backend acceptance criteria and implementation sequence
   are recorded in
   [Restricted Execution Backend Plan](execution-restricted-backend-plan.md).

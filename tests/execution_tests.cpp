@@ -1823,6 +1823,53 @@ void test_planned_backend_descriptors_are_not_executable() {
   assert(registry.create("wasm") == nullptr);
 }
 
+void test_restricted_process_configured_contract_is_candidate_only() {
+  execution::restricted_process_backend_config config;
+  auto contract =
+    execution::restricted_process_backend_configured_contract(config);
+#ifdef _WIN32
+  assert(contract.shell_execution == sandbox::enforcement_level::enforced);
+  assert(contract.timeout == sandbox::enforcement_level::enforced);
+  assert(contract.cancellation == sandbox::enforcement_level::enforced);
+  assert(contract.stdout_limit == sandbox::enforcement_level::enforced);
+  assert(contract.stderr_limit == sandbox::enforcement_level::enforced);
+  assert(contract.environment_allowlist == sandbox::enforcement_level::enforced);
+  assert(contract.working_directory == sandbox::enforcement_level::enforced);
+  assert(contract.process_tree_cleanup == sandbox::enforcement_level::enforced);
+  assert(contract.process_count_limit == sandbox::enforcement_level::enforced);
+  assert(contract.cpu_time_limit == sandbox::enforcement_level::enforced);
+  assert(contract.memory_limit == sandbox::enforcement_level::enforced);
+  assert(contract.filesystem_read_deny == sandbox::enforcement_level::partial);
+  assert(contract.filesystem_write_deny == sandbox::enforcement_level::partial);
+  assert(contract.network_deny == sandbox::enforcement_level::partial);
+
+  config.use_job_object = false;
+  contract = execution::restricted_process_backend_configured_contract(config);
+  assert(contract.process_tree_cleanup ==
+         sandbox::enforcement_level::not_enforced);
+  assert(contract.process_count_limit ==
+         sandbox::enforcement_level::not_enforced);
+  assert(contract.cpu_time_limit == sandbox::enforcement_level::not_enforced);
+  assert(contract.memory_limit == sandbox::enforcement_level::not_enforced);
+
+  config.deny_network = false;
+  contract = execution::restricted_process_backend_configured_contract(config);
+  assert(contract.network_deny == sandbox::enforcement_level::not_enforced);
+#else
+  assert(contract.filesystem_read_deny ==
+         sandbox::enforcement_level::not_enforced);
+  assert(contract.network_deny == sandbox::enforcement_level::not_enforced);
+#endif
+
+  auto registry = execution::make_default_execution_backend_registry();
+  const auto restricted = registry.describe("restricted_process");
+  assert(restricted.has_value());
+  assert(!restricted->available);
+  assert(restricted->enforcement.filesystem_read_deny ==
+         sandbox::enforcement_level::planned);
+  assert(registry.create("restricted_process") == nullptr);
+}
+
 void test_controlled_process_contract_reflects_job_object_config() {
   execution::controlled_process_backend backend({
     .use_job_object = false,
@@ -2605,14 +2652,23 @@ void test_restricted_process_execution_plan_returns_execution_result() {
     result.metadata.at("restricted_launch_status") == "ok",
     "restricted execution result should report launch success");
   require_condition(
-    result.metadata.at("process_count_limit_enforcement") == "job_object",
+    result.metadata.at("process_count_limit_enforcement") == "enforced",
     "restricted execution result should report process count enforcement");
   require_condition(
-    result.metadata.at("cpu_time_limit_enforcement") == "job_object",
+    result.metadata.at("cpu_time_limit_enforcement") == "enforced",
     "restricted execution result should report CPU time enforcement");
   require_condition(
-    result.metadata.at("memory_limit_enforcement") == "job_object",
+    result.metadata.at("memory_limit_enforcement") == "enforced",
     "restricted execution result should report memory enforcement");
+  require_condition(
+    result.metadata.at("file_read_deny_enforcement") == "partial",
+    "restricted execution result should report read deny candidate enforcement");
+  require_condition(
+    result.metadata.at("file_write_deny_enforcement") == "partial",
+    "restricted execution result should report write deny candidate enforcement");
+  require_condition(
+    result.metadata.at("network_deny_enforcement") == "partial",
+    "restricted execution result should report network deny candidate enforcement");
   require_condition(
     result.metadata.at("max_process_count") == "3",
     "restricted execution result should report requested process count limit");
@@ -2811,6 +2867,18 @@ void test_restricted_process_backend_candidate_runs_python() {
   require_condition(
     !info.available,
     "restricted backend candidate should not advertise availability");
+  require_condition(
+    info.enforcement.timeout == sandbox::enforcement_level::enforced,
+    "restricted backend candidate should report enforced timeout");
+  require_condition(
+    info.enforcement.process_count_limit == sandbox::enforcement_level::enforced,
+    "restricted backend candidate should report enforced process count limit");
+  require_condition(
+    info.enforcement.filesystem_read_deny == sandbox::enforcement_level::partial,
+    "restricted backend candidate should report partial read deny enforcement");
+  require_condition(
+    info.enforcement.network_deny == sandbox::enforcement_level::partial,
+    "restricted backend candidate should report partial network deny enforcement");
 
   execution::execution_request request;
   request.code = "print('candidate_ok')\n";
@@ -2835,8 +2903,14 @@ void test_restricted_process_backend_candidate_runs_python() {
     result.metadata.at("backend_candidate") == "true",
     "restricted backend candidate should mark candidate metadata");
   require_condition(
-    result.metadata.at("process_count_limit_enforcement") == "job_object",
+    result.metadata.at("process_count_limit_enforcement") == "enforced",
     "restricted backend candidate should report process count enforcement");
+  require_condition(
+    result.metadata.at("file_read_deny_enforcement") == "partial",
+    "restricted backend candidate should report read deny candidate enforcement");
+  require_condition(
+    result.metadata.at("network_deny_enforcement") == "partial",
+    "restricted backend candidate should report network deny candidate enforcement");
   require_condition(
     result.metadata.at("max_process_count") == "2",
     "restricted backend candidate should report requested process count");
@@ -2925,6 +2999,15 @@ void test_restricted_process_backend_candidate_audits_result_metadata() {
   require_condition(
     finished.attributes.at("result_backend_stage") == "internal_execution_plan",
     "restricted candidate audit should include internal backend stage");
+  require_condition(
+    finished.attributes.at("process_count_limit_enforcement") == "enforced",
+    "restricted candidate audit should use configured candidate enforcement");
+  require_condition(
+    finished.attributes.at("file_read_deny_enforcement") == "partial",
+    "restricted candidate audit should report partial read deny enforcement");
+  require_condition(
+    finished.attributes.at("result_network_deny_enforcement") == "partial",
+    "restricted candidate audit should include result network enforcement");
 }
 
 void test_windows_appcontainer_runs_minimal_python_runtime() {
@@ -3735,6 +3818,7 @@ int main(int argc, char** argv) {
     test_default_backend_registry_exposes_controlled_process();
     test_backend_registry_selects_only_available_enforced_backends();
     test_planned_backend_descriptors_are_not_executable();
+    test_restricted_process_configured_contract_is_candidate_only();
     test_controlled_process_contract_reflects_job_object_config();
 #ifdef _WIN32
     test_windows_restricted_token_probe_launches_child_with_stdio_and_job();

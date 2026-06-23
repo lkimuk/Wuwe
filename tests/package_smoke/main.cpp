@@ -37,11 +37,25 @@ int main() {
     return 1;
   }
   wuwe::agent::execution::restricted_process_backend_config restricted_config;
+  auto restricted_contract =
+    wuwe::agent::execution::restricted_process_backend_configured_contract(
+      restricted_config);
   if (!restricted_config.deny_network || !restricted_config.use_job_object ||
       restricted_config.inherit_parent_environment ||
       !restricted_config.cleanup_runtime_staging ||
       wuwe::agent::execution::to_string(restricted_config.runtime_staging) !=
         std::string("copy_minimal_python_runtime")) {
+    return 1;
+  }
+#ifdef _WIN32
+  const auto expected_restricted_read_deny =
+    wuwe::agent::sandbox::enforcement_level::partial;
+#else
+  const auto expected_restricted_read_deny =
+    wuwe::agent::sandbox::enforcement_level::not_enforced;
+#endif
+  if (restricted_contract.filesystem_read_deny !=
+      expected_restricted_read_deny) {
     return 1;
   }
   wuwe::agent::execution::execution_backend_requirements requirements;

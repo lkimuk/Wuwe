@@ -659,6 +659,9 @@ Phase 1 should implement:
 - Default backend registry with planned restricted/container/WASM slots.
 - Requirement-based backend selection that skips unavailable or under-enforced
   backends.
+- `restricted_process_backend_configured_contract(...)` for library-level
+  diagnostics of the current restricted candidate without making the planned
+  registry descriptor executable or available.
 - Host-side canonical path/root boundary helpers.
 - stdout and stderr capture with byte limits.
 - stdout and stderr truncation flags.

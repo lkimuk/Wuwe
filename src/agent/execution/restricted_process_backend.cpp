@@ -22,6 +22,45 @@ restricted_process_backend_planned_contract() {
   };
 }
 
+sandbox::sandbox_enforcement_contract
+restricted_process_backend_configured_contract(
+  const restricted_process_backend_config& config) {
+#ifdef _WIN32
+  const auto job_enforcement = config.use_job_object
+                                 ? sandbox::enforcement_level::enforced
+                                 : sandbox::enforcement_level::not_enforced;
+  return {
+    .shell_execution = sandbox::enforcement_level::enforced,
+    .timeout = sandbox::enforcement_level::enforced,
+    .cancellation = sandbox::enforcement_level::enforced,
+    .stdout_limit = sandbox::enforcement_level::enforced,
+    .stderr_limit = sandbox::enforcement_level::enforced,
+    .environment_allowlist = sandbox::enforcement_level::enforced,
+    .working_directory = sandbox::enforcement_level::enforced,
+    .process_tree_cleanup = job_enforcement,
+    .process_count_limit = job_enforcement,
+    .cpu_time_limit = job_enforcement,
+    .memory_limit = job_enforcement,
+    .filesystem_read_deny = sandbox::enforcement_level::partial,
+    .filesystem_write_deny = sandbox::enforcement_level::partial,
+    .network_deny = config.deny_network
+                      ? sandbox::enforcement_level::partial
+                      : sandbox::enforcement_level::not_enforced,
+  };
+#else
+  (void)config;
+  auto contract = restricted_process_backend_planned_contract();
+  contract.process_tree_cleanup = sandbox::enforcement_level::not_enforced;
+  contract.process_count_limit = sandbox::enforcement_level::not_enforced;
+  contract.cpu_time_limit = sandbox::enforcement_level::not_enforced;
+  contract.memory_limit = sandbox::enforcement_level::not_enforced;
+  contract.filesystem_read_deny = sandbox::enforcement_level::not_enforced;
+  contract.filesystem_write_deny = sandbox::enforcement_level::not_enforced;
+  contract.network_deny = sandbox::enforcement_level::not_enforced;
+  return contract;
+#endif
+}
+
 const char* to_string(restricted_process_runtime_staging staging) noexcept {
   switch (staging) {
     case restricted_process_runtime_staging::copy_minimal_python_runtime:

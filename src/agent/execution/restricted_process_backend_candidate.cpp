@@ -20,6 +20,8 @@ public:
     auto descriptor = restricted_process_backend_descriptor();
     descriptor.unavailable_reason =
       "restricted_process backend candidate is internal and not registered";
+    descriptor.enforcement =
+      restricted_process_backend_configured_contract(config_);
     return descriptor;
   }
 

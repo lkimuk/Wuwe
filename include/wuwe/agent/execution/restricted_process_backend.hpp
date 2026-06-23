@@ -34,6 +34,10 @@ struct restricted_process_backend_config {
 [[nodiscard]] sandbox::sandbox_enforcement_contract
 restricted_process_backend_planned_contract();
 
+[[nodiscard]] sandbox::sandbox_enforcement_contract
+restricted_process_backend_configured_contract(
+  const restricted_process_backend_config& config);
+
 [[nodiscard]] const char* to_string(
   restricted_process_runtime_staging staging) noexcept;
 

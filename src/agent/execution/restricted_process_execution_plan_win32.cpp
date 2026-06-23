@@ -288,6 +288,8 @@ void add_restricted_metadata(
   execution_result& result,
   const restricted_process_backend_config& config,
   const execution_request& request) {
+  const auto enforcement =
+    restricted_process_backend_configured_contract(config);
   result.metadata["backend_name"] = "restricted_process";
   result.metadata["isolation_level"] = "restricted_process";
   result.metadata["backend_available"] = "false";
@@ -308,12 +310,34 @@ void add_restricted_metadata(
     std::to_string(request.limits.max_stdout_bytes);
   result.metadata["max_stderr_bytes"] =
     std::to_string(request.limits.max_stderr_bytes);
+  result.metadata["shell_execution_enforcement"] =
+    sandbox::to_string(enforcement.shell_execution);
+  result.metadata["timeout_enforcement"] =
+    sandbox::to_string(enforcement.timeout);
+  result.metadata["cancellation_enforcement"] =
+    sandbox::to_string(enforcement.cancellation);
+  result.metadata["stdout_limit_enforcement"] =
+    sandbox::to_string(enforcement.stdout_limit);
+  result.metadata["stderr_limit_enforcement"] =
+    sandbox::to_string(enforcement.stderr_limit);
+  result.metadata["environment_allowlist_enforcement"] =
+    sandbox::to_string(enforcement.environment_allowlist);
+  result.metadata["working_directory_enforcement"] =
+    sandbox::to_string(enforcement.working_directory);
   result.metadata["process_count_limit_enforcement"] =
-    config.use_job_object ? "job_object" : "not_enforced";
+    sandbox::to_string(enforcement.process_count_limit);
   result.metadata["cpu_time_limit_enforcement"] =
-    config.use_job_object ? "job_object" : "not_enforced";
+    sandbox::to_string(enforcement.cpu_time_limit);
   result.metadata["memory_limit_enforcement"] =
-    config.use_job_object ? "job_object" : "not_enforced";
+    sandbox::to_string(enforcement.memory_limit);
+  result.metadata["process_tree_cleanup_enforcement"] =
+    sandbox::to_string(enforcement.process_tree_cleanup);
+  result.metadata["file_read_deny_enforcement"] =
+    sandbox::to_string(enforcement.filesystem_read_deny);
+  result.metadata["file_write_deny_enforcement"] =
+    sandbox::to_string(enforcement.filesystem_write_deny);
+  result.metadata["network_deny_enforcement"] =
+    sandbox::to_string(enforcement.network_deny);
   result.metadata["max_process_count"] =
     std::to_string(request.limits.max_process_count);
   result.metadata["max_memory_bytes"] =
