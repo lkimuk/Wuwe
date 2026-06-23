@@ -41,6 +41,7 @@ namespace execution_detail = wuwe::agent::execution::detail;
 #include <windows.h>
 
 #include "../src/agent/execution/restricted_process_appcontainer_win32.hpp"
+#include "../src/agent/execution/restricted_process_appcontainer_launch_win32.hpp"
 
 class test_unique_handle {
 public:
@@ -265,64 +266,8 @@ std::string read_pipe_to_end(HANDLE pipe) {
   return output;
 }
 
-std::string read_pipe_to_limit(
-  HANDLE pipe,
-  std::size_t limit,
-  bool& truncated) {
-  test_unique_handle handle(pipe);
-  std::string output;
-  std::array<char, 4096> buffer {};
-  for (;;) {
-    DWORD bytes_read = 0;
-    const auto ok = ReadFile(
-      handle.get(),
-      buffer.data(),
-      static_cast<DWORD>(buffer.size()),
-      &bytes_read,
-      nullptr);
-    if (!ok || bytes_read == 0) {
-      break;
-    }
-
-    const auto remaining = limit > output.size() ? limit - output.size() : 0;
-    const auto to_append =
-      (std::min<std::size_t>)(remaining, static_cast<std::size_t>(bytes_read));
-    if (to_append > 0) {
-      output.append(buffer.data(), to_append);
-    }
-    if (to_append < static_cast<std::size_t>(bytes_read)) {
-      truncated = true;
-    }
-  }
-  return output;
-}
-
-void write_string_to_handle(HANDLE pipe, std::string text) {
-  test_unique_handle handle(pipe);
-  const char* cursor = text.data();
-  std::size_t remaining = text.size();
-  while (remaining > 0) {
-    DWORD bytes_written = 0;
-    const auto chunk =
-      static_cast<DWORD>((std::min<std::size_t>)(remaining, 65536));
-    const auto ok = WriteFile(handle.get(), cursor, chunk, &bytes_written, nullptr);
-    if (!ok || bytes_written == 0) {
-      break;
-    }
-    cursor += bytes_written;
-    remaining -= bytes_written;
-  }
-}
-
-struct child_process_capture {
-  DWORD exit_code { 1 };
-  bool timed_out { false };
-  bool cancelled { false };
-  bool stdout_truncated { false };
-  bool stderr_truncated { false };
-  std::string stdout_text;
-  std::string stderr_text;
-};
+using child_process_capture =
+  execution_detail::restricted_appcontainer_process_capture;
 
 void configure_probe_job(HANDLE job) {
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits {};
@@ -592,39 +537,6 @@ test_unique_handle create_builtin_users_restricted_token() {
   return restricted_token;
 }
 
-std::vector<wchar_t> make_probe_environment_block(
-  const std::map<std::wstring, std::wstring>& env) {
-  std::wstring block;
-  for (const auto& [key, value] : env) {
-    block.append(key);
-    block.push_back(L'=');
-    block.append(value);
-    block.push_back(L'\0');
-  }
-  block.push_back(L'\0');
-  if (env.empty()) {
-    block.push_back(L'\0');
-  }
-  return { block.begin(), block.end() };
-}
-
-void copy_current_environment_variable_if_present(
-  std::map<std::wstring, std::wstring>& environment,
-  const wchar_t* name) {
-  if (environment.contains(name)) {
-    return;
-  }
-  std::wstring value(32767, L'\0');
-  const auto written = GetEnvironmentVariableW(
-    name,
-    value.data(),
-    static_cast<DWORD>(value.size()));
-  if (written > 0 && written < value.size()) {
-    value.resize(written);
-    environment.emplace(name, std::move(value));
-  }
-}
-
 child_process_capture run_appcontainer_probe_child(
   const std::filesystem::path& executable,
   PSID appcontainer_sid,
@@ -636,191 +548,23 @@ child_process_capture run_appcontainer_probe_child(
   std::size_t max_stderr_bytes = 65536,
   std::optional<std::map<std::wstring, std::wstring>> environment = std::nullopt,
   std::stop_token stop_token = {}) {
-  SECURITY_ATTRIBUTES security_attributes {
-    .nLength = sizeof(SECURITY_ATTRIBUTES),
-    .lpSecurityDescriptor = nullptr,
-    .bInheritHandle = TRUE,
-  };
-
-  HANDLE raw_stdin_read = nullptr;
-  HANDLE raw_stdin_write = nullptr;
-  HANDLE raw_stdout_read = nullptr;
-  HANDLE raw_stdout_write = nullptr;
-  HANDLE raw_stderr_read = nullptr;
-  HANDLE raw_stderr_write = nullptr;
-  require_win32(
-    CreatePipe(&raw_stdin_read, &raw_stdin_write, &security_attributes, 0) != FALSE,
-    "CreatePipe(appcontainer probe stdin)");
-  require_win32(
-    CreatePipe(&raw_stdout_read, &raw_stdout_write, &security_attributes, 0) != FALSE,
-    "CreatePipe(appcontainer probe stdout)");
-  require_win32(
-    CreatePipe(&raw_stderr_read, &raw_stderr_write, &security_attributes, 0) != FALSE,
-    "CreatePipe(appcontainer probe stderr)");
-
-  test_unique_handle stdin_read(raw_stdin_read);
-  test_unique_handle stdin_write(raw_stdin_write);
-  test_unique_handle stdout_read(raw_stdout_read);
-  test_unique_handle stdout_write(raw_stdout_write);
-  test_unique_handle stderr_read(raw_stderr_read);
-  test_unique_handle stderr_write(raw_stderr_write);
-
-  require_win32(
-    SetHandleInformation(stdin_write.get(), HANDLE_FLAG_INHERIT, 0) != FALSE,
-    "SetHandleInformation(appcontainer probe stdin_write)");
-  require_win32(
-    SetHandleInformation(stdout_read.get(), HANDLE_FLAG_INHERIT, 0) != FALSE,
-    "SetHandleInformation(appcontainer probe stdout_read)");
-  require_win32(
-    SetHandleInformation(stderr_read.get(), HANDLE_FLAG_INHERIT, 0) != FALSE,
-    "SetHandleInformation(appcontainer probe stderr_read)");
-
-  STARTUPINFOEXW startup_ex {};
-  startup_ex.StartupInfo.cb = sizeof(startup_ex);
-  startup_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-  startup_ex.StartupInfo.hStdInput = stdin_read.get();
-  startup_ex.StartupInfo.hStdOutput = stdout_write.get();
-  startup_ex.StartupInfo.hStdError = stderr_write.get();
-
-  HANDLE inherited_handles[] {
-    stdin_read.get(),
-    stdout_write.get(),
-    stderr_write.get(),
-  };
-  SECURITY_CAPABILITIES capabilities {};
-  capabilities.AppContainerSid = appcontainer_sid;
-  capabilities.Capabilities = nullptr;
-  capabilities.CapabilityCount = 0;
-  test_process_thread_attribute_list attribute_list;
+  auto result = execution_detail::launch_restricted_appcontainer_process({
+    .executable = executable,
+    .appcontainer_sid = appcontainer_sid,
+    .arguments = arguments,
+    .working_directory = working_directory,
+    .stdin_text = std::move(stdin_text),
+    .timeout = timeout,
+    .max_stdout_bytes = max_stdout_bytes,
+    .max_stderr_bytes = max_stderr_bytes,
+    .environment = std::move(environment),
+    .stop_token = stop_token,
+  });
   require_condition(
-    attribute_list.initialize(2),
-    "initialize AppContainer probe attribute list");
-  require_condition(
-    attribute_list.update_handle_list(
-      inherited_handles,
-      static_cast<DWORD>(std::size(inherited_handles))),
-    "update AppContainer probe inherited handle list");
-  require_condition(
-    attribute_list.update_security_capabilities(capabilities),
-    "update AppContainer probe security capabilities");
-  startup_ex.lpAttributeList = attribute_list.get();
-
-  test_unique_handle job(CreateJobObjectW(nullptr, nullptr));
-  require_win32(job.valid(), "CreateJobObjectW(appcontainer probe)");
-  configure_probe_job(job.get());
-
-  auto command_line = quote_windows_arg(executable.wstring());
-  for (const auto& argument : arguments) {
-    command_line += L" ";
-    command_line += quote_windows_arg(argument);
-  }
-  const auto working_directory_text = working_directory.empty()
-                                      ? std::wstring {}
-                                      : working_directory.wstring();
-  std::vector<wchar_t> environment_block;
-  if (environment.has_value()) {
-    for (const auto* name : {
-           L"SystemRoot",
-           L"USERPROFILE",
-           L"LOCALAPPDATA",
-           L"APPDATA",
-           L"TEMP",
-           L"TMP",
-         }) {
-      copy_current_environment_variable_if_present(*environment, name);
-    }
-    environment_block = make_probe_environment_block(*environment);
-  }
-  DWORD creation_flags = CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT |
-                         CREATE_SUSPENDED;
-  if (environment.has_value()) {
-    creation_flags |= CREATE_UNICODE_ENVIRONMENT;
-  }
-  PROCESS_INFORMATION process {};
-  const auto created = CreateProcessW(
-    nullptr,
-    command_line.data(),
-    nullptr,
-    nullptr,
-    TRUE,
-    creation_flags,
-    environment.has_value() ? static_cast<LPVOID>(environment_block.data())
-                            : nullptr,
-    working_directory_text.empty() ? nullptr : working_directory_text.c_str(),
-    &startup_ex.StartupInfo,
-    &process);
-  require_win32(created != FALSE, "CreateProcessW(appcontainer probe child)");
-
-  test_unique_handle process_handle(process.hProcess);
-  test_unique_handle thread_handle(process.hThread);
-  stdin_read.reset();
-  stdout_write.reset();
-  stderr_write.reset();
-
-  require_win32(
-    AssignProcessToJobObject(job.get(), process_handle.get()) != FALSE,
-    "AssignProcessToJobObject(appcontainer probe)");
-  require_win32(
-    ResumeThread(thread_handle.get()) != static_cast<DWORD>(-1),
-    "ResumeThread(appcontainer probe)");
-
-  auto stdin_future = std::async(
-    std::launch::async,
-    write_string_to_handle,
-    stdin_write.release(),
-    std::move(stdin_text));
-  bool stdout_truncated = false;
-  bool stderr_truncated = false;
-  auto stdout_future = std::async(
-    std::launch::async,
-    read_pipe_to_limit,
-    stdout_read.release(),
-    max_stdout_bytes,
-    std::ref(stdout_truncated));
-  auto stderr_future = std::async(
-    std::launch::async,
-    read_pipe_to_limit,
-    stderr_read.release(),
-    max_stderr_bytes,
-    std::ref(stderr_truncated));
-
-  child_process_capture capture;
-  const auto started = std::chrono::steady_clock::now();
-  for (;;) {
-    const auto wait_result = WaitForSingleObject(process_handle.get(), 50);
-    if (wait_result == WAIT_OBJECT_0) {
-      break;
-    }
-    require_condition(
-      wait_result == WAIT_TIMEOUT,
-      "AppContainer probe child wait failed");
-
-    if (stop_token.stop_requested()) {
-      capture.cancelled = true;
-      TerminateJobObject(job.get(), 1);
-      WaitForSingleObject(process_handle.get(), INFINITE);
-      break;
-    }
-    if (timeout.count() > 0 &&
-        std::chrono::steady_clock::now() - started >= timeout) {
-      capture.timed_out = true;
-      TerminateJobObject(job.get(), 1);
-      WaitForSingleObject(process_handle.get(), INFINITE);
-      break;
-    }
-  }
-  if (stdin_future.valid()) {
-    stdin_future.get();
-  }
-
-  require_win32(
-    GetExitCodeProcess(process_handle.get(), &capture.exit_code) != FALSE,
-    "GetExitCodeProcess(appcontainer probe)");
-  capture.stdout_text = stdout_future.get();
-  capture.stderr_text = stderr_future.get();
-  capture.stdout_truncated = stdout_truncated;
-  capture.stderr_truncated = stderr_truncated;
-  return capture;
+    result.status == execution_detail::restricted_appcontainer_launch_status::ok,
+    std::string("AppContainer launch failed: ") +
+      execution_detail::to_string(result.status) + " " + result.detail);
+  return result.capture;
 }
 
 std::filesystem::path make_probe_run_directory(std::string_view name) {
@@ -2511,6 +2255,23 @@ void test_restricted_process_appcontainer_profile_reports_empty_name() {
     "restricted AppContainer profile should not return a profile for empty name");
 }
 
+void test_restricted_process_appcontainer_launch_reports_invalid_sid() {
+  const auto result =
+    execution_detail::launch_restricted_appcontainer_process({
+      .executable = current_test_executable_path(),
+    });
+
+  require_condition(
+    result.status ==
+      execution_detail::restricted_appcontainer_launch_status::
+        invalid_appcontainer_sid,
+    "restricted AppContainer launch should reject an empty AppContainer SID");
+  require_condition(
+    std::string_view(execution_detail::to_string(result.status)) ==
+      "invalid_appcontainer_sid",
+    "restricted AppContainer launch status should have stable text");
+}
+
 #ifdef WUWE_EXECUTION_TEST_PYTHON
 void test_windows_appcontainer_runs_minimal_python_runtime() {
   auto appcontainer = make_test_appcontainer_profile(
@@ -3328,6 +3089,7 @@ int main(int argc, char** argv) {
     test_windows_appcontainer_probe_launches_child_with_stdio_and_job();
     test_restricted_process_runtime_staging_reports_missing_python();
     test_restricted_process_appcontainer_profile_reports_empty_name();
+    test_restricted_process_appcontainer_launch_reports_invalid_sid();
 #ifdef WUWE_EXECUTION_TEST_PYTHON
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif
