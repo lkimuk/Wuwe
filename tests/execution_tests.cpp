@@ -24,8 +24,11 @@
 #include <wuwe/agent/execution/execution.hpp>
 #include <wuwe/agent/sandbox/sandbox.hpp>
 
+#include "../src/agent/execution/restricted_process_runtime_staging.hpp"
+
 namespace execution = wuwe::agent::execution;
 namespace sandbox = wuwe::agent::sandbox;
+namespace execution_detail = wuwe::agent::execution::detail;
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -1318,75 +1321,6 @@ void grant_tree_access_to_sid(
   }
 }
 
-void copy_required_file(
-  const std::filesystem::path& source,
-  const std::filesystem::path& destination) {
-  std::error_code ignored;
-  std::filesystem::create_directories(destination.parent_path(), ignored);
-  require_condition(
-    std::filesystem::copy_file(
-      source,
-      destination,
-      std::filesystem::copy_options::overwrite_existing,
-      ignored),
-    "copy required AppContainer runtime probe file");
-}
-
-void copy_directory_tree(
-  const std::filesystem::path& source,
-  const std::filesystem::path& destination) {
-  require_condition(
-    std::filesystem::exists(source),
-    "source directory for AppContainer runtime probe should exist");
-  std::filesystem::create_directories(destination);
-  for (const auto& entry : std::filesystem::recursive_directory_iterator(source)) {
-    const auto relative = std::filesystem::relative(entry.path(), source);
-    const auto target = destination / relative;
-    if (entry.is_directory()) {
-      std::filesystem::create_directories(target);
-      continue;
-    }
-    if (entry.is_regular_file()) {
-      copy_required_file(entry.path(), target);
-    }
-  }
-}
-
-std::filesystem::path copy_minimal_python_home_for_appcontainer_probe(
-  const std::filesystem::path& source_python,
-  const std::filesystem::path& destination_home) {
-  const auto source_home = source_python.parent_path();
-  const auto destination_python = destination_home / source_python.filename();
-
-  std::error_code ignored;
-  std::filesystem::remove_all(destination_home, ignored);
-  std::filesystem::create_directories(destination_home);
-  copy_required_file(source_python, destination_python);
-
-  for (const auto& entry : std::filesystem::directory_iterator(source_home)) {
-    if (!entry.is_regular_file()) {
-      continue;
-    }
-    const auto filename = entry.path().filename().wstring();
-    if ((filename.rfind(L"python", 0) == 0 &&
-         entry.path().extension() == L".dll") ||
-        (filename.rfind(L"vcruntime", 0) == 0 &&
-         entry.path().extension() == L".dll")) {
-      copy_required_file(entry.path(), destination_home / entry.path().filename());
-    }
-  }
-
-  const auto source_lib = source_home / "Lib";
-  copy_directory_tree(source_lib / "encodings", destination_home / "Lib" / "encodings");
-  if (std::filesystem::exists(source_lib / "codecs.py")) {
-    copy_required_file(source_lib / "codecs.py", destination_home / "Lib" / "codecs.py");
-  }
-  if (std::filesystem::exists(source_lib / "os.py")) {
-    copy_required_file(source_lib / "os.py", destination_home / "Lib" / "os.py");
-  }
-  return destination_python;
-}
-
 bool token_can_access_path(
   HANDLE token,
   const std::filesystem::path& path,
@@ -2608,6 +2542,27 @@ void test_windows_appcontainer_probe_launches_child_with_stdio_and_job() {
     "AppContainer probe child reached a host-reachable loopback listener");
 }
 
+void test_restricted_process_runtime_staging_reports_missing_python() {
+  const auto run_dir = make_probe_run_directory("runtime-staging-missing");
+  probe_directory_cleanup cleanup(run_dir);
+
+  const auto result =
+    execution_detail::stage_minimal_python_runtime_for_restricted_process({
+      .source_python = run_dir / "missing-python.exe",
+      .destination_home = run_dir / "stage",
+    });
+
+  require_condition(
+    result.status ==
+      execution_detail::restricted_python_runtime_staging_status::
+        source_python_not_found,
+    "restricted runtime staging should report a missing Python executable");
+  require_condition(
+    std::string_view(execution_detail::to_string(result.status)) ==
+      "source_python_not_found",
+    "restricted runtime staging status should have stable text");
+}
+
 #ifdef WUWE_EXECUTION_TEST_PYTHON
 void test_windows_appcontainer_runs_minimal_python_runtime() {
   test_appcontainer_profile appcontainer(
@@ -2627,9 +2582,22 @@ void test_windows_appcontainer_runs_minimal_python_runtime() {
   probe_directory_cleanup cleanup_dir(run_dir);
   probe_directory_cleanup cleanup_denied_dir(denied_read_dir);
 
-  const auto python_exe = copy_minimal_python_home_for_appcontainer_probe(
-    std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON),
-    run_dir);
+  const auto staging_result =
+    execution_detail::stage_minimal_python_runtime_for_restricted_process({
+      .source_python = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON),
+      .destination_home = run_dir,
+    });
+  require_condition(
+    staging_result.status ==
+      execution_detail::restricted_python_runtime_staging_status::ok,
+    std::string("AppContainer Python runtime staging failed: ") +
+      execution_detail::to_string(staging_result.status) + " " +
+      staging_result.detail);
+  require_condition(
+    !staging_result.copied_files.empty(),
+    "AppContainer Python runtime staging did not copy runtime files");
+
+  const auto python_exe = staging_result.python_executable;
   const auto script_path = run_dir / "probe.py";
   const auto allowed_write_dir = run_dir / "allowed-write";
   const auto allowed_write_file = allowed_write_dir / "python-output.txt";
@@ -3410,6 +3378,7 @@ int main(int argc, char** argv) {
     test_windows_restricted_token_access_check_enforces_file_boundaries();
     test_windows_appcontainer_child_enforces_file_boundaries();
     test_windows_appcontainer_probe_launches_child_with_stdio_and_job();
+    test_restricted_process_runtime_staging_reports_missing_python();
 #ifdef WUWE_EXECUTION_TEST_PYTHON
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif

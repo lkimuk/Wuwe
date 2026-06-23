@@ -162,11 +162,13 @@ that a hanging Python script is terminated by both the Job-backed timeout path
 and an explicit cancellation request. This proves a real interpreter can start
 and observe the same stdio, environment, file-boundary, process-count, and
 lifecycle controls inside the restricted identity without mutating ACLs on the
-host Python installation. The backend must still remain descriptor-only until
-these probes are factored into a production backend with request-scoped script
-handling, policy-driven readable/writable roots, network blocking,
-lifecycle/resource limits, symlink and junction escape tests, and result/audit
-metadata.
+host Python installation. The minimal Python runtime staging logic has now been
+factored into a library-internal restricted-process component and is exercised
+by this probe, but it is still only one backend building block. The backend must
+still remain descriptor-only until the remaining probe code is factored into a
+production backend with request-scoped script handling, policy-driven
+readable/writable roots, network blocking, lifecycle/resource limits, symlink
+and junction escape tests, and result/audit metadata.
 
 ## Non-Acceptable Shortcuts
 

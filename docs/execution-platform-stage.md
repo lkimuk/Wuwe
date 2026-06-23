@@ -82,6 +82,10 @@ WASM backend.
   allowed-write/denied-read behavior, parent-traversal and hardlink escape
   denial, Job active-process limits, and Job-backed timeout for the real
   interpreter, plus explicit cancellation through the same Job termination path.
+- The minimal Python runtime staging path has been factored from the private
+  probe into a library-internal restricted-process component with structured
+  staging status, copied-file reporting, and system error capture. The
+  AppContainer Python probe now validates this shared implementation.
 
 ## Completed In P2/P3 Platform Contract
 
