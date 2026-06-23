@@ -165,12 +165,14 @@ lifecycle controls inside the restricted identity without mutating ACLs on the
 host Python installation. The AppContainer profile lifecycle/storage-path
 logic, AppContainer launch/stdio/Job Object helper, and minimal Python runtime
 staging logic have now been factored into library-internal restricted-process
-components and are exercised by these probes, but they are still only backend
-building blocks. The backend must still remain descriptor-only until the
-remaining probe code is factored into a production backend with request-scoped
-script handling, policy-driven readable/writable roots, network blocking,
-lifecycle/resource limits, symlink and junction escape tests, and result/audit
-metadata.
+components. AppContainer SID ACL grants for files, directories, and recursive
+trees, plus request-scoped workspace/script lifecycle handling, have also been
+factored into internal components. These pieces are exercised by the current
+probes, but they are still only backend building blocks. The backend must still
+remain descriptor-only until the remaining probe code is factored into a
+production backend with policy-driven readable/writable root orchestration,
+network blocking, lifecycle/resource limits, symlink and junction escape tests,
+and result/audit metadata.
 
 ## Non-Acceptable Shortcuts
 

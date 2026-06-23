@@ -42,6 +42,8 @@ namespace execution_detail = wuwe::agent::execution::detail;
 
 #include "../src/agent/execution/restricted_process_appcontainer_win32.hpp"
 #include "../src/agent/execution/restricted_process_appcontainer_launch_win32.hpp"
+#include "../src/agent/execution/restricted_process_acl_win32.hpp"
+#include "../src/agent/execution/restricted_process_request_workspace.hpp"
 
 class test_unique_handle {
 public:
@@ -935,38 +937,28 @@ void grant_file_access_to_sid(
   const std::filesystem::path& path,
   PSID sid,
   DWORD access_permissions) {
-  const auto current_user = current_user_sid();
-  const auto local_system = well_known_sid(WinLocalSystemSid);
-  const auto administrators = well_known_sid(WinBuiltinAdministratorsSid);
-  std::vector<EXPLICIT_ACCESSW> entries {
-    explicit_access_for_sid(current_user.data(), GENERIC_ALL),
-    explicit_access_for_sid(local_system.data(), GENERIC_ALL),
-    explicit_access_for_sid(administrators.data(), GENERIC_ALL),
-    explicit_access_for_sid(sid, access_permissions),
-  };
-  set_protected_dacl(path, std::move(entries));
+  const auto result = execution_detail::grant_restricted_file_access(
+    path,
+    sid,
+    access_permissions);
+  require_condition(
+    result.status == execution_detail::restricted_acl_grant_status::ok,
+    std::string("grant restricted file access failed: ") +
+      execution_detail::to_string(result.status) + " " + result.detail);
 }
 
 void grant_directory_access_to_sid(
   const std::filesystem::path& path,
   PSID sid,
   DWORD access_permissions) {
-  const auto current_user = current_user_sid();
-  const auto local_system = well_known_sid(WinLocalSystemSid);
-  const auto administrators = well_known_sid(WinBuiltinAdministratorsSid);
-  constexpr DWORD inherit_to_children =
-    CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE;
-  std::vector<EXPLICIT_ACCESSW> entries {
-    explicit_access_for_sid(current_user.data(), GENERIC_ALL),
-    explicit_access_for_sid(current_user.data(), GENERIC_ALL, inherit_to_children),
-    explicit_access_for_sid(local_system.data(), GENERIC_ALL),
-    explicit_access_for_sid(local_system.data(), GENERIC_ALL, inherit_to_children),
-    explicit_access_for_sid(administrators.data(), GENERIC_ALL),
-    explicit_access_for_sid(administrators.data(), GENERIC_ALL, inherit_to_children),
-    explicit_access_for_sid(sid, access_permissions),
-    explicit_access_for_sid(sid, access_permissions, inherit_to_children),
-  };
-  set_protected_dacl(path, std::move(entries));
+  const auto result = execution_detail::grant_restricted_directory_access(
+    path,
+    sid,
+    access_permissions);
+  require_condition(
+    result.status == execution_detail::restricted_acl_grant_status::ok,
+    std::string("grant restricted directory access failed: ") +
+      execution_detail::to_string(result.status) + " " + result.detail);
 }
 
 void grant_tree_access_to_sid(
@@ -974,26 +966,16 @@ void grant_tree_access_to_sid(
   PSID sid,
   DWORD directory_access,
   DWORD file_access) {
-  grant_directory_access_to_sid(root, sid, directory_access);
-  std::error_code ignored;
-  for (const auto& entry :
-       std::filesystem::recursive_directory_iterator(
-         root,
-         std::filesystem::directory_options::skip_permission_denied,
-         ignored)) {
-    if (ignored) {
-      break;
-    }
-    ignored.clear();
-    if (entry.is_directory(ignored)) {
-      grant_directory_access_to_sid(entry.path(), sid, directory_access);
-      continue;
-    }
-    ignored.clear();
-    if (entry.is_regular_file(ignored)) {
-      grant_file_access_to_sid(entry.path(), sid, file_access);
-    }
-  }
+  const auto result = execution_detail::grant_restricted_tree_access({
+    .path = root,
+    .sid = sid,
+    .directory_access = directory_access,
+    .file_access = file_access,
+  });
+  require_condition(
+    result.status == execution_detail::restricted_acl_grant_status::ok,
+    std::string("grant restricted tree access failed: ") +
+      execution_detail::to_string(result.status) + " " + result.detail);
 }
 
 bool token_can_access_path(
@@ -2272,6 +2254,138 @@ void test_restricted_process_appcontainer_launch_reports_invalid_sid() {
     "restricted AppContainer launch status should have stable text");
 }
 
+void test_restricted_process_acl_reports_invalid_sid() {
+  const auto run_dir = make_probe_run_directory("restricted-acl-invalid-sid");
+  probe_directory_cleanup cleanup(run_dir);
+
+  const auto result = execution_detail::grant_restricted_directory_access(
+    run_dir,
+    nullptr,
+    FILE_GENERIC_READ);
+
+  require_condition(
+    result.status == execution_detail::restricted_acl_grant_status::invalid_sid,
+    "restricted ACL grant should reject an empty SID");
+  require_condition(
+    std::string_view(execution_detail::to_string(result.status)) ==
+      "invalid_sid",
+    "restricted ACL grant status should have stable text");
+}
+
+void test_restricted_process_acl_grants_tree_access() {
+  auto appcontainer = make_test_appcontainer_profile(
+    appcontainer_profile_name(),
+    L"Wuwe ACL Grant Probe",
+    L"Wuwe test-only restricted ACL grant probe");
+
+  const auto run_dir = appcontainer.storage_path() / "acl-tree-grant";
+  std::error_code ignored;
+  std::filesystem::remove_all(run_dir, ignored);
+  std::filesystem::create_directories(run_dir / "child");
+  probe_directory_cleanup cleanup(run_dir);
+  {
+    std::ofstream(run_dir / "root.txt", std::ios::binary) << "root";
+    std::ofstream(run_dir / "child" / "nested.txt", std::ios::binary) << "nested";
+  }
+
+  const auto result = execution_detail::grant_restricted_tree_access({
+    .path = run_dir,
+    .sid = appcontainer.sid(),
+    .directory_access = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+    .file_access = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+  });
+
+  require_condition(
+    result.status == execution_detail::restricted_acl_grant_status::ok,
+    std::string("restricted ACL tree grant failed: ") +
+      execution_detail::to_string(result.status) + " " + result.detail);
+  require_condition(
+    result.directories_granted >= 2,
+    "restricted ACL tree grant should count root and child directories");
+  require_condition(
+    result.files_granted == 2,
+    "restricted ACL tree grant should count copied files");
+}
+
+void test_restricted_process_request_workspace_reports_empty_root() {
+  const auto result =
+    execution_detail::create_restricted_request_workspace({});
+
+  require_condition(
+    result.status ==
+      execution_detail::restricted_request_workspace_status::empty_root,
+    "restricted request workspace should reject an empty root");
+  require_condition(
+    std::string_view(execution_detail::to_string(result.status)) ==
+      "empty_root",
+    "restricted request workspace status should have stable text");
+  require_condition(
+    !result.workspace.has_value(),
+    "restricted request workspace should not return a workspace for empty root");
+}
+
+void test_restricted_process_request_workspace_rejects_escape_filename() {
+  const auto root = make_probe_run_directory("restricted-request-escape");
+  probe_directory_cleanup cleanup(root);
+
+  const auto result =
+    execution_detail::create_restricted_request_workspace({
+      .root = root,
+      .script_text = "print('nope')\n",
+      .script_filename = "../escape.py",
+    });
+
+  require_condition(
+    result.status ==
+      execution_detail::restricted_request_workspace_status::
+        invalid_script_filename,
+    "restricted request workspace should reject parent traversal filenames");
+  require_condition(
+    std::string_view(execution_detail::to_string(result.status)) ==
+      "invalid_script_filename",
+    "restricted request workspace invalid filename status should be stable");
+}
+
+void test_restricted_process_request_workspace_writes_and_cleans_script() {
+  const auto root = make_probe_run_directory("restricted-request-workspace");
+  probe_directory_cleanup cleanup(root);
+
+  std::filesystem::path request_root;
+  std::filesystem::path script_path;
+  {
+    auto result = execution_detail::create_restricted_request_workspace({
+      .root = root,
+      .script_text = "print('workspace-ok')\n",
+      .script_filename = "scripts/probe.py",
+    });
+
+    require_condition(
+      result.status ==
+        execution_detail::restricted_request_workspace_status::ok,
+      std::string("restricted request workspace failed: ") +
+        execution_detail::to_string(result.status) + " " + result.detail);
+    require_condition(
+      result.workspace.has_value(),
+      "restricted request workspace should return a workspace");
+    request_root = result.workspace->root();
+    script_path = result.workspace->script_path();
+    require_condition(
+      std::filesystem::exists(script_path),
+      "restricted request workspace should write the script file");
+    std::ifstream script(script_path, std::ios::binary);
+    const std::string text(
+      (std::istreambuf_iterator<char>(script)),
+      std::istreambuf_iterator<char>());
+    require_condition(
+      text.find("workspace-ok") != std::string::npos,
+      "restricted request workspace should persist script text");
+  }
+
+  require_condition(
+    !std::filesystem::exists(request_root),
+    "restricted request workspace should clean request directory on destroy");
+}
+
 #ifdef WUWE_EXECUTION_TEST_PYTHON
 void test_windows_appcontainer_runs_minimal_python_runtime() {
   auto appcontainer = make_test_appcontainer_profile(
@@ -3090,6 +3204,11 @@ int main(int argc, char** argv) {
     test_restricted_process_runtime_staging_reports_missing_python();
     test_restricted_process_appcontainer_profile_reports_empty_name();
     test_restricted_process_appcontainer_launch_reports_invalid_sid();
+    test_restricted_process_acl_reports_invalid_sid();
+    test_restricted_process_acl_grants_tree_access();
+    test_restricted_process_request_workspace_reports_empty_root();
+    test_restricted_process_request_workspace_rejects_escape_filename();
+    test_restricted_process_request_workspace_writes_and_cleans_script();
 #ifdef WUWE_EXECUTION_TEST_PYTHON
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif

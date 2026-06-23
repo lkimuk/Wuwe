@@ -93,6 +93,11 @@ WASM backend.
   Job Object assignment, stdout/stderr byte limits, timeout, cancellation, and
   environment allowlist handling have been factored into a library-internal
   Windows launch component and are exercised by the AppContainer probes.
+- AppContainer SID ACL grants for individual files, directories, and recursive
+  trees have been factored into a library-internal Windows component and are
+  exercised by the file-boundary and real-Python probes.
+- Request-scoped workspace/script creation and cleanup have been factored into
+  a library-internal component with structured lifecycle failures.
 
 ## Completed In P2/P3 Platform Contract
 
