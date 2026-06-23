@@ -40,6 +40,10 @@ namespace execution_detail = wuwe::agent::execution::detail;
 #include <userenv.h>
 #include <windows.h>
 
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+#endif
+
 #include "../src/agent/execution/restricted_process_appcontainer_win32.hpp"
 #include "../src/agent/execution/restricted_process_appcontainer_launch_win32.hpp"
 #include "../src/agent/execution/restricted_process_acl_win32.hpp"
@@ -232,6 +236,26 @@ void require_error_code(DWORD actual, DWORD expected, std::string_view message) 
       std::string(message) + " expected=" + std::to_string(expected) +
       " actual=" + std::to_string(actual));
   }
+}
+
+bool create_test_symlink(
+  const std::filesystem::path& link,
+  const std::filesystem::path& target,
+  bool directory) {
+  DWORD flags = directory ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0;
+  flags |= SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+  if (CreateSymbolicLinkW(
+        link.wstring().c_str(),
+        target.wstring().c_str(),
+        flags) != FALSE) {
+    return true;
+  }
+
+  flags = directory ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0;
+  return CreateSymbolicLinkW(
+           link.wstring().c_str(),
+           target.wstring().c_str(),
+           flags) != FALSE;
 }
 
 std::wstring current_test_executable_path() {
@@ -1500,6 +1524,7 @@ void test_approval_allows_backend_and_audit_records_completion() {
   const auto events = audit.events();
   assert(events.size() == 4);
   assert(events.back().attributes.at("termination_reason") == "exited");
+  assert(events.back().attributes.at("result_backend") == "recording");
 }
 
 void test_tool_provider_exposes_narrow_schema_and_invokes_runtime() {
@@ -2597,6 +2622,53 @@ void test_restricted_process_execution_plan_reports_timeout_result() {
     "restricted execution timeout should report stable error code");
 }
 
+void test_restricted_process_execution_plan_rejects_reparse_root_escape() {
+  const auto run_root = make_probe_run_directory("restricted-plan-reparse");
+  probe_directory_cleanup cleanup(run_root);
+  const auto workspace_root = run_root / "workspace";
+  const auto readable_root = run_root / "readable";
+  const auto denied_root = run_root / "denied";
+  const auto denied_child = denied_root / "child";
+  const auto escape_link = readable_root / "escape-link";
+  std::filesystem::create_directories(workspace_root);
+  std::filesystem::create_directories(readable_root);
+  std::filesystem::create_directories(denied_child);
+  {
+    std::ofstream(denied_child / "secret.txt", std::ios::binary)
+      << "should-not-be-granted";
+  }
+
+  if (!create_test_symlink(escape_link, denied_child, true)) {
+    std::cerr
+      << "Skipping restricted reparse escape plan probe: symlink creation "
+      << "is not allowed on this Windows configuration. GetLastError="
+      << GetLastError() << "\n";
+    return;
+  }
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+  config.readable_roots.push_back(readable_root);
+
+  execution::execution_request request;
+  request.code = "print('should_not_launch')\n";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+
+  auto plan_result =
+    execution_detail::prepare_restricted_execution_plan(config, request);
+  require_condition(
+    plan_result.status ==
+      execution_detail::restricted_execution_plan_status::acl_grant_failed,
+    "restricted execution plan should fail closed on readable-root reparse points");
+  require_condition(
+    plan_result.detail.find("reparse_point_not_allowed") != std::string::npos,
+    "restricted execution plan should report reparse point rejection");
+  require_condition(
+    !plan_result.plan.has_value(),
+    "restricted execution plan should not return a plan after reparse rejection");
+}
+
 void test_restricted_process_backend_candidate_runs_python() {
   const auto workspace_root = make_probe_run_directory("restricted-candidate");
   probe_directory_cleanup cleanup(workspace_root);
@@ -2672,6 +2744,59 @@ void test_restricted_process_backend_candidate_times_out() {
   require_condition(
     result.metadata.at("backend_candidate") == "true",
     "restricted backend timeout result should mark candidate metadata");
+}
+
+void test_restricted_process_backend_candidate_audits_result_metadata() {
+  const auto workspace_root =
+    make_probe_run_directory("restricted-candidate-audit");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+
+  auto backend =
+    execution_detail::make_restricted_process_backend_candidate(config);
+  wuwe::agent::audit::in_memory_audit_sink audit;
+  execution::execution_runtime runtime(std::move(backend), {}, &audit);
+
+  execution::execution_request request;
+  request.code = "print('candidate_audit_ok')\n";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+
+  const auto result = runtime.run(request, {});
+  require_condition(
+    result.termination_reason == execution::execution_termination_reason::exited,
+    "restricted backend candidate audit test should exit successfully");
+
+  const auto events = audit.events();
+  require_condition(
+    events.size() == 3,
+    "restricted backend candidate audit test should publish policy/start/finish");
+  const auto& finished = events.back();
+  require_condition(
+    finished.name == "execution_finished",
+    "restricted backend candidate audit test should finish with execution_finished");
+  require_condition(
+    finished.attributes.at("backend") == "restricted_process",
+    "restricted candidate audit should record backend name");
+  require_condition(
+    finished.attributes.at("backend_available") == "false",
+    "restricted candidate audit should preserve unavailable descriptor state");
+  require_condition(
+    finished.attributes.at("result_backend_candidate") == "true",
+    "restricted candidate audit should include result candidate metadata");
+  require_condition(
+    finished.attributes.at("result_restricted_plan_status") == "ok",
+    "restricted candidate audit should include plan status");
+  require_condition(
+    finished.attributes.at("result_restricted_launch_status") == "ok",
+    "restricted candidate audit should include launch status");
+  require_condition(
+    finished.attributes.at("result_backend_stage") == "internal_execution_plan",
+    "restricted candidate audit should include internal backend stage");
 }
 
 void test_windows_appcontainer_runs_minimal_python_runtime() {
@@ -3501,8 +3626,10 @@ int main(int argc, char** argv) {
     test_restricted_process_execution_plan_returns_execution_result();
     test_restricted_process_execution_plan_carries_resource_limits();
     test_restricted_process_execution_plan_reports_timeout_result();
+    test_restricted_process_execution_plan_rejects_reparse_root_escape();
     test_restricted_process_backend_candidate_runs_python();
     test_restricted_process_backend_candidate_times_out();
+    test_restricted_process_backend_candidate_audits_result_metadata();
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif
 #endif

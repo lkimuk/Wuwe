@@ -291,6 +291,9 @@ execution_result execution_runtime::run(
     if (!result.error_message.empty()) {
       event.attributes["error"] = result.error_message;
     }
+    for (const auto& [key, value] : result.metadata) {
+      event.attributes["result_" + key] = value;
+    }
     add_backend_attributes(event, backend_.get());
     audit_->publish(event);
   }

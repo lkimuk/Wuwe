@@ -181,12 +181,20 @@ An internal restricted backend candidate now wraps this execution plan behind
 the normal `execution_backend` interface for tests. It is intentionally not a
 public factory, not registered in the default registry, and its descriptor still
 advertises `available=false`. This provides an integration-shaped test surface
-without letting hosts accidentally select an incomplete sandbox.
+without letting hosts accidentally select an incomplete sandbox. When run
+through `execution_runtime`, the finished audit event now receives the
+candidate's result metadata under `result_*` keys, including plan status, launch
+status, backend stage, and candidate marker.
+
+The internal execution plan now also has a fail-closed reparse-point test for
+readable roots. If an allowed root contains a symlink-style reparse point that
+could redirect traversal outside the granted tree, ACL grant planning fails
+with `reparse_point_not_allowed` before any restricted child is launched.
 
 The backend must still remain descriptor-only until the remaining work is
 factored into a production `execution_backend` implementation with
-policy-driven readable/writable root orchestration, network blocking,
-symlink/junction escape tests, and audit metadata.
+policy-driven readable/writable root orchestration, network blocking, and a
+dedicated junction acceptance probe.
 
 ## Non-Acceptable Shortcuts
 
