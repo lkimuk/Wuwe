@@ -1800,6 +1800,33 @@ void test_backend_registry_selects_only_available_enforced_backends() {
   assert(registry.describe("missing") == std::nullopt);
 }
 
+void test_backend_registry_explicitly_enables_restricted_process() {
+  execution::execution_backend_registry_options options;
+  options.enable_restricted_process_backend = true;
+
+  auto registry = execution::make_execution_backend_registry(options);
+  const auto restricted = registry.describe("restricted_process");
+  assert(restricted.has_value());
+#ifdef _WIN32
+  assert(restricted->available);
+  assert(restricted->enforcement.filesystem_read_deny ==
+         sandbox::enforcement_level::enforced);
+  assert(registry.create("restricted_process") != nullptr);
+
+  execution::execution_backend_requirements requirements;
+  requirements.require_filesystem_read_deny = true;
+  requirements.require_filesystem_write_deny = true;
+  requirements.require_network_deny = true;
+  const auto selected = registry.select_backend_name(requirements);
+  assert(selected.has_value());
+  assert(*selected == "restricted_process");
+  assert(registry.create_best(requirements) != nullptr);
+#else
+  assert(!restricted->available);
+  assert(registry.create("restricted_process") == nullptr);
+#endif
+}
+
 void test_planned_backend_descriptors_are_not_executable() {
   auto registry = execution::make_default_execution_backend_registry();
   execution::restricted_process_backend_config config;
@@ -1867,6 +1894,13 @@ void test_restricted_process_configured_contract_is_candidate_only() {
            availability.blockers.end(),
            "restricted_process_backend_not_registered") !=
          availability.blockers.end());
+  const auto registered_availability =
+    execution::evaluate_restricted_process_backend_availability(
+      config,
+      execution::restricted_process_backend_registration::registered_factory);
+  assert(registered_availability.available);
+  assert(registered_availability.blockers.empty());
+  assert(execution::make_restricted_process_backend(config) != nullptr);
 
   config.use_job_object = false;
   contract = execution::restricted_process_backend_configured_contract(config);
@@ -2961,6 +2995,51 @@ void test_restricted_process_backend_candidate_runs_python() {
     "restricted backend candidate should report requested CPU limit");
 }
 
+void test_restricted_process_backend_runs_python_when_explicitly_enabled() {
+  const auto workspace_root = make_probe_run_directory("restricted-public");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+
+  auto backend = execution::make_restricted_process_backend(config);
+  require_condition(
+    backend != nullptr,
+    "restricted backend factory should create backend when explicitly available");
+
+  const auto info = backend->info();
+  require_condition(info.available, "restricted backend should advertise availability");
+  require_condition(
+    info.enforcement.filesystem_read_deny == sandbox::enforcement_level::enforced,
+    "restricted backend should report enforced read deny");
+
+  execution::execution_request request;
+  request.code = "print('restricted_public_ok')\n";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+  request.limits.max_process_count = 2;
+
+  const auto result = backend->run(request, {});
+  if (result.exit_code.value_or(1) != 0 || !result.stderr_text.empty()) {
+    std::cerr << "restricted public stdout:\n" << result.stdout_text << "\n";
+    std::cerr << "restricted public stderr:\n" << result.stderr_text << "\n";
+  }
+  require_condition(
+    result.termination_reason == execution::execution_termination_reason::exited,
+    "restricted backend should return exited result");
+  require_condition(
+    result.exit_code.has_value() && *result.exit_code == 0,
+    "restricted backend should return exit code zero");
+  require_condition(
+    result.stdout_text.find("restricted_public_ok") != std::string::npos,
+    "restricted backend should run Python code");
+  require_condition(
+    result.metadata.find("backend_candidate") == result.metadata.end(),
+    "restricted backend should not mark public runs as candidate");
+}
+
 void test_restricted_process_backend_candidate_times_out() {
   const auto workspace_root = make_probe_run_directory("restricted-candidate-timeout");
   probe_directory_cleanup cleanup(workspace_root);
@@ -3967,6 +4046,7 @@ int main(int argc, char** argv) {
     test_runtime_audit_records_clamped_limits();
     test_default_backend_registry_exposes_controlled_process();
     test_backend_registry_selects_only_available_enforced_backends();
+    test_backend_registry_explicitly_enables_restricted_process();
     test_planned_backend_descriptors_are_not_executable();
     test_restricted_process_configured_contract_is_candidate_only();
     test_controlled_process_contract_reflects_job_object_config();
@@ -3991,6 +4071,7 @@ int main(int argc, char** argv) {
     test_restricted_process_execution_plan_rejects_reparse_root_escape();
     test_restricted_process_execution_plan_rejects_junction_root_escape();
     test_restricted_process_backend_candidate_runs_python();
+    test_restricted_process_backend_runs_python_when_explicitly_enabled();
     test_restricted_process_backend_candidate_times_out();
     test_restricted_process_backend_candidate_enforces_configured_roots();
     test_restricted_process_backend_candidate_audits_result_metadata();

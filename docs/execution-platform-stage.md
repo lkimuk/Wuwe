@@ -1,7 +1,8 @@
 # Controlled Local Execution Stage Record
 
 Status: P0/P1 complete and pushed; P2/P3 platform contract and backend
-selection surfaces are implemented; P2/P3 strong OS/container/WASM execution
+selection surfaces are implemented; the Windows restricted-process backend is
+available only through an explicit registry opt-in; container/WASM execution
 backends remain future work.
 
 Date: 2026-06-23
@@ -112,11 +113,12 @@ WASM backend.
   but it deliberately advertises `available=false` and is not registered in the
   default backend registry.
 - `restricted_process_backend_configured_contract(...)` exposes the current
-  candidate's configured enforcement diagnostics separately from the public
-  planned descriptor. On Windows this reports core launch/lifecycle controls as
-  `enforced`, no-capability AppContainer network denial as `enforced`, and
-  configured filesystem read/write root isolation as `enforced`; the default registry still
-  exposes `restricted_process` as unavailable and planned.
+  restricted-process configured enforcement diagnostics separately from the
+  default planned descriptor. On Windows this reports core launch/lifecycle
+  controls as `enforced`, no-capability AppContainer network denial as
+  `enforced`, and configured filesystem read/write root isolation as
+  `enforced`; the default registry still exposes `restricted_process` as
+  unavailable and planned.
 - A configured-roots candidate test now runs real Python through the restricted
   execution plan and proves readable roots can be read but not written,
   writable roots can update existing files and create new files, and unlisted
@@ -137,8 +139,13 @@ WASM backend.
 
 - Backend metadata now exposes `available` and `unavailable_reason`.
 - `restricted_process_backend_descriptor()` and
-  `restricted_process_backend_config` provide a stable public contract surface
-  for the future backend without exposing an executable backend factory.
+  `restricted_process_backend_config` provide a stable public contract surface.
+- `make_restricted_process_backend(...)` exposes a real Windows
+  restricted-process backend factory when the configured contract is available;
+  it returns `nullptr` on unsupported or under-enforced configurations.
+- `make_execution_backend_registry(...)` accepts explicit registry options so a
+  host can opt in to registering `restricted_process` without changing the
+  default registry behavior.
 - The restricted-process config defaults to request-scoped minimal Python
   runtime staging, no parent environment inheritance, network denial, Job Object
   lifecycle, and runtime staging cleanup.
@@ -147,29 +154,34 @@ WASM backend.
   - `restricted_process`: planned and unavailable.
   - `container`: planned and unavailable.
   - `wasm`: planned and unavailable.
-- Planned backend slots are descriptors only; they are not executable backend
-  factories.
-- `create("restricted_process")`, `create("container")`, and `create("wasm")`
-  return `nullptr` until real implementations are registered.
+- The default restricted/container/WASM slots are descriptors only; they are not
+  executable backend factories.
+- In the default registry, `create("restricted_process")`,
+  `create("container")`, and `create("wasm")` return `nullptr`.
+- In an explicitly configured Windows registry with
+  `enable_restricted_process_backend=true`, `restricted_process` can be
+  described as available, selected for enforced filesystem/network-deny
+  requirements, created, and run.
 - Planned backend contracts mark future enforcement as `planned`, not
   `enforced`.
 - Registry selection can require specific enforced capabilities such as process
   tree cleanup, CPU/memory limits, filesystem read/write deny, or network deny.
 - Registry selection skips unavailable backends.
 - Registry selection returns no backend when strong filesystem/network isolation
-  is required in the current build.
+  is required in the default registry.
 - Package smoke now verifies the backend registry, selection API, Python
-  interpreter diagnostics API, restricted-process configured contract API, and
-  restricted-process availability blocker API are visible from the installed
-  package.
+  interpreter diagnostics API, restricted-process configured contract API,
+  restricted-process availability blocker API, and explicit restricted registry
+  opt-in API are visible from the installed package.
 
 ## Not Completed
 
 - `controlled_process` still does not enforce file read denial inside Python.
 - `controlled_process` still does not enforce file write denial inside Python.
 - `controlled_process` still does not enforce network denial inside Python.
-- Public Windows `restricted_process` backend factory and registry availability
-  are not implemented.
+- The default registry deliberately does not auto-enable `restricted_process`;
+  hosts must opt in with explicit config after choosing interpreter/workdir/root
+  policy.
 - Windows restricted backend acceptance criteria and implementation sequence
   are recorded in
   [Restricted Execution Backend Plan](execution-restricted-backend-plan.md).

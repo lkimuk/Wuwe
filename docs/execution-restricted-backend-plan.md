@@ -1,7 +1,8 @@
 # Restricted Execution Backend Plan
 
-Status: design and acceptance record for the future P2 backend. No public
-restricted backend is available in the current build.
+Status: design and acceptance record for the P2 backend. The default registry
+still keeps `restricted_process` unavailable, while Windows builds now expose an
+explicit opt-in restricted backend factory and registry path.
 
 Date: 2026-06-23
 
@@ -16,8 +17,10 @@ must return `nullptr`.
 
 The public `restricted_process_backend_descriptor()` and
 `restricted_process_backend_config` types now provide a stable contract surface
-for the future backend. They do not expose a backend factory, and they do not
-make `restricted_process` available.
+for the backend. `make_restricted_process_backend(...)` exposes a real factory
+only when the configured contract is available. The default registry still does
+not make `restricted_process` available; hosts must opt in through
+`make_execution_backend_registry(...)` options.
 
 The config already encodes the intended production defaults: host-selected
 Python interpreter, request/workdir fallback, readable and writable roots,
@@ -108,7 +111,7 @@ The backend may advertise `available=true` only after automated tests prove:
 5. Add network-deny verification.
 6. Factor the proven launch path into `restricted_process_backend`.
 7. Register the backend only on platforms/builds where its advertised contract
-   passes the same checks.
+   passes the same checks, and only behind an explicit host opt-in.
 
 ## Current Probe Checkpoints
 
@@ -177,28 +180,37 @@ memory, and CPU-time limits and applies them through the Job Object instead of
 using a hard-coded active-process limit. Result metadata records those requested
 limits and the active Job Object enforcement state.
 
-An internal restricted backend candidate now wraps this execution plan behind
-the normal `execution_backend` interface for tests. It is intentionally not a
-public factory, not registered in the default registry, and its descriptor still
-advertises `available=false`. This provides an integration-shaped test surface
-without letting hosts accidentally select an incomplete sandbox. When run
-through `execution_runtime`, the finished audit event now receives the
-candidate's result metadata under `result_*` keys, including plan status, launch
-status, backend stage, candidate marker, and configured enforcement fields.
+An internal restricted backend candidate wraps this execution plan behind the
+normal `execution_backend` interface for tests. It intentionally advertises
+`available=false` and is not registered in the default backend registry. This
+keeps an integration-shaped test surface for negative/default behavior. When run
+through `execution_runtime`, the finished audit event receives the candidate's
+result metadata under `result_*` keys, including plan status, launch status,
+backend stage, candidate marker, and configured enforcement fields.
 
 The public `restricted_process_backend_configured_contract(...)` helper exposes
-the candidate's current configured enforcement diagnostics without changing
+the current configured enforcement diagnostics without changing default
 registry behavior. On Windows, the helper reports no-shell launch, stdio,
 environment, working directory, timeout, cancellation, and Job Object resource
-controls as `enforced` when enabled. No-capability AppContainer outbound
-network denial is now `enforced`. Configured filesystem read/write root
-isolation is also reported as `enforced`: a candidate test runs real Python and
-proves readable roots can be read but not written, writable roots can update
-existing files and create new files, and unlisted roots cannot be read or
-written. The availability helper still reports the candidate unavailable because
-the production backend factory is intentionally not registered yet; the default
-registry continues to expose `restricted_process` only as an unavailable planned
-descriptor.
+controls as `enforced` when enabled. No-capability AppContainer outbound network
+denial is `enforced`. Configured filesystem read/write root isolation is also
+reported as `enforced`: a candidate test runs real Python and proves readable
+roots can be read but not written, writable roots can update existing files and
+create new files, and unlisted roots cannot be read or written.
+
+The public `make_restricted_process_backend(...)` factory now uses the same
+configured availability checks with a `registered_factory` gate. On Windows, a
+fully enforced configuration returns a real restricted-process backend; on
+unsupported or under-enforced configurations it returns `nullptr`. A dedicated
+test runs real Python through this public backend and verifies that public runs
+do not carry the internal candidate marker.
+
+`make_execution_backend_registry(...)` now accepts explicit registry options. If
+`enable_restricted_process_backend=true` and availability checks pass, the
+registry registers a real `restricted_process` factory that can be selected for
+enforced filesystem read/write denial and network denial requirements. The
+default registry remains descriptor-only for `restricted_process`, so existing
+hosts do not accidentally opt into a sandbox policy.
 
 The internal execution plan now also has a fail-closed reparse-point test for
 readable roots. If an allowed root contains a symlink-style reparse point that
@@ -208,9 +220,9 @@ dedicated junction probe now creates a Windows mount-point reparse point through
 `FSCTL_SET_REPARSE_POINT` and verifies the same fail-closed behavior for that
 escape shape.
 
-The backend must still remain descriptor-only until the remaining work is
-factored into a production `execution_backend` implementation and registry
-availability is explicitly enabled.
+The backend must still remain default-off until host products explicitly choose
+the interpreter, workdir, readable roots, writable roots, and UX/policy around
+restricted execution.
 
 ## Non-Acceptable Shortcuts
 

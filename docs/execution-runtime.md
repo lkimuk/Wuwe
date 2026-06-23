@@ -1,8 +1,9 @@
 # Controlled Local Execution Runtime
 
 Status: P0/P1 controlled-process baseline implemented; P2/P3 backend contract
-and selection surfaces implemented; stronger restricted, container, and WASM
-execution backends remain future work.
+and selection surfaces implemented; Windows restricted-process execution is
+available through explicit host opt-in; container and WASM execution backends
+remain future work.
 
 Use `<wuwe/agent/execution/execution.hpp>` as the planned module entry header.
 
@@ -41,6 +42,8 @@ Implemented in the first baseline:
 - Backend availability metadata for planned or unavailable backends.
 - Default execution backend registry with `controlled_process`,
   `restricted_process`, `container`, and `wasm` slots.
+- Explicit registry options for host-enabled Windows `restricted_process`
+  registration.
 - Registry selection by enforced backend requirements.
 - Host-side path boundary helpers for canonical root checks.
 - `execution_tool_provider` exposing `run_python_snippet` or a host-selected
@@ -50,9 +53,8 @@ Implemented in the first baseline:
 
 Still future work:
 
-- Strong OS sandboxing beyond `controlled_process`.
+- Default-on strong OS sandboxing beyond `controlled_process`.
 - Cross-platform process backend implementations for Linux and macOS.
-- Strong path-root enforcement inside executed code.
 - Container and WASM backends.
 - ReArk-side UI approval and audit persistence integration.
 
@@ -660,10 +662,14 @@ Phase 1 should implement:
 - Requirement-based backend selection that skips unavailable or under-enforced
   backends.
 - `restricted_process_backend_configured_contract(...)` for library-level
-  diagnostics of the current restricted candidate without making the planned
-  registry descriptor executable or available.
+  diagnostics of the current restricted-process configuration without making
+  the default registry descriptor executable or available.
 - `evaluate_restricted_process_backend_availability(...)` for stable blocker
-  diagnostics explaining why the restricted candidate is still unavailable.
+  diagnostics, including the difference between descriptor-only and explicitly
+  registered factory contexts.
+- `make_restricted_process_backend(...)` and
+  `make_execution_backend_registry(...)` for explicit Windows restricted-process
+  opt-in when the configured enforcement contract is available.
 - Host-side canonical path/root boundary helpers.
 - stdout and stderr capture with byte limits.
 - stdout and stderr truncation flags.
@@ -684,13 +690,13 @@ would delay the usable execution path.
 
 ### Phase 2: Stronger Local Restrictions
 
-- Replace the planned `restricted_process` placeholder with an available
-  backend only when the configured backend can enforce its advertised contract.
-- Windows restricted backend using restricted tokens or AppContainer-style
-  execution.
-- OS-enforced filesystem read/write restrictions.
-- OS-enforced network denial.
-- Stronger workdir and root restrictions enforced inside executed code.
+- Keep the default `restricted_process` placeholder unavailable while allowing
+  host products to opt into the Windows backend explicitly.
+- Continue hardening the Windows AppContainer-style execution path.
+- Continue expanding OS-enforced filesystem read/write restriction coverage.
+- Continue expanding OS-enforced network denial coverage.
+- Stronger workdir and root restrictions enforced inside executed code across
+  more host configurations.
 - Optional explicit file materialization from host-provided inputs.
 
 ### Phase 3: Container Backend

@@ -76,6 +76,10 @@ target_include_directories(${PROJECT_NAME}
 
 target_link_libraries(${PROJECT_NAME} PRIVATE cpr::cpr)
 
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PUBLIC Advapi32 Userenv)
+endif()
+
 if(WUWE_HTTP_BACKEND_NORMALIZED STREQUAL "httplib")
     target_compile_definitions(${PROJECT_NAME} PRIVATE WUWE_DEFAULT_HTTP_BACKEND_HTTPLIB=1)
     message(STATUS "Wuwe default HTTP backend: cpp-httplib")

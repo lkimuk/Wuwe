@@ -7,7 +7,9 @@
 #include <string>
 #include <vector>
 
+#include <wuwe/agent/execution/controlled_process_backend.hpp>
 #include <wuwe/agent/execution/execution_backend.hpp>
+#include <wuwe/agent/execution/restricted_process_backend.hpp>
 
 namespace wuwe::agent::execution {
 
@@ -26,6 +28,12 @@ struct execution_backend_requirements {
   bool require_filesystem_read_deny { false };
   bool require_filesystem_write_deny { false };
   bool require_network_deny { false };
+};
+
+struct execution_backend_registry_options {
+  controlled_process_backend_config controlled_process;
+  bool enable_restricted_process_backend { false };
+  restricted_process_backend_config restricted_process;
 };
 
 class execution_backend_registry {
@@ -60,6 +68,9 @@ private:
 };
 
 [[nodiscard]] execution_backend_registry make_default_execution_backend_registry();
+
+[[nodiscard]] execution_backend_registry make_execution_backend_registry(
+  execution_backend_registry_options options);
 
 } // namespace wuwe::agent::execution
 

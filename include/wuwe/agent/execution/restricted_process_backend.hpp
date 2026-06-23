@@ -4,9 +4,11 @@
 #include <chrono>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include <wuwe/agent/execution/execution_backend.hpp>
 #include <wuwe/agent/sandbox/sandbox.hpp>
 
 namespace wuwe::agent::execution {
@@ -38,6 +40,11 @@ struct restricted_process_backend_availability {
   std::vector<std::string> blockers;
 };
 
+enum class restricted_process_backend_registration {
+  descriptor_only,
+  registered_factory,
+};
+
 [[nodiscard]] sandbox::sandbox_enforcement_contract
 restricted_process_backend_planned_contract();
 
@@ -49,11 +56,19 @@ restricted_process_backend_configured_contract(
 evaluate_restricted_process_backend_availability(
   const restricted_process_backend_config& config);
 
+[[nodiscard]] restricted_process_backend_availability
+evaluate_restricted_process_backend_availability(
+  const restricted_process_backend_config& config,
+  restricted_process_backend_registration registration);
+
 [[nodiscard]] const char* to_string(
   restricted_process_runtime_staging staging) noexcept;
 
 [[nodiscard]] sandbox::sandbox_backend_info
 restricted_process_backend_descriptor();
+
+[[nodiscard]] std::unique_ptr<execution_backend> make_restricted_process_backend(
+  restricted_process_backend_config config = {});
 
 } // namespace wuwe::agent::execution
 

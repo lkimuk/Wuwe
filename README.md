@@ -32,11 +32,11 @@ Wuwe is adding a controlled local execution runtime for host-approved agent
 tools such as bounded Python snippets. The design treats execution as a
 high-risk capability with explicit policy, approval, audit, and replaceable
 sandbox backends instead of a reasoning-mode feature or product-specific
-helper. The current backend is a controlled process baseline; strong filesystem
-or network isolation requires a backend that explicitly advertises those
-features. The backend registry exposes planned restricted-process, container,
-and WASM slots as unavailable until their enforcement contracts are actually
-implemented.
+helper. The current default backend is a controlled process baseline; strong
+filesystem or network isolation requires a backend that explicitly advertises
+those features. The default backend registry keeps restricted-process,
+container, and WASM slots unavailable unless a host explicitly opts into an
+available implementation, such as the Windows restricted-process backend.
 
 See [Controlled Local Execution Runtime](docs/execution-runtime.md) for the
 architecture, threat model, controlled-process scope, and ReArk integration

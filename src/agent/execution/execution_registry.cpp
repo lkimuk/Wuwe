@@ -133,6 +133,17 @@ bool satisfies_requirements(
            is_enforced(enforcement.network_deny));
 }
 
+std::string join_blockers(const std::vector<std::string>& blockers) {
+  std::string result;
+  for (const auto& blocker : blockers) {
+    if (!result.empty()) {
+      result += ", ";
+    }
+    result += blocker;
+  }
+  return result;
+}
+
 } // namespace
 
 void execution_backend_registry::register_backend(std::string name, factory create) {
@@ -210,18 +221,45 @@ std::unique_ptr<execution_backend> execution_backend_registry::create_best(
   return name.has_value() ? create(*name) : nullptr;
 }
 
-execution_backend_registry make_default_execution_backend_registry() {
+execution_backend_registry make_execution_backend_registry(
+  execution_backend_registry_options options) {
   execution_backend_registry registry;
-  registry.register_backend("controlled_process", [] {
-    return make_controlled_process_backend();
+  registry.register_backend("controlled_process", [config = options.controlled_process] {
+    return make_controlled_process_backend(config);
   });
-  registry.register_descriptor(restricted_process_backend_descriptor());
+  if (options.enable_restricted_process_backend) {
+    const auto availability = evaluate_restricted_process_backend_availability(
+      options.restricted_process,
+      restricted_process_backend_registration::registered_factory);
+    if (availability.available) {
+      registry.register_backend(
+        "restricted_process",
+        [config = options.restricted_process] {
+          return make_restricted_process_backend(config);
+        });
+    }
+    else {
+      auto descriptor = restricted_process_backend_descriptor();
+      descriptor.enforcement = availability.contract;
+      descriptor.unavailable_reason =
+        "restricted_process backend disabled by availability blockers: " +
+        join_blockers(availability.blockers);
+      registry.register_descriptor(std::move(descriptor));
+    }
+  }
+  else {
+    registry.register_descriptor(restricted_process_backend_descriptor());
+  }
   registry.register_descriptor(planned_backend_descriptor(
     "container",
     sandbox::isolation_level::container,
     planned_strong_process_contract()));
   registry.register_descriptor(planned_wasm_descriptor());
   return registry;
+}
+
+execution_backend_registry make_default_execution_backend_registry() {
+  return make_execution_backend_registry({});
 }
 
 } // namespace wuwe::agent::execution

@@ -43,6 +43,11 @@ int main() {
   auto restricted_availability =
     wuwe::agent::execution::evaluate_restricted_process_backend_availability(
       restricted_config);
+  auto registered_restricted_availability =
+    wuwe::agent::execution::evaluate_restricted_process_backend_availability(
+      restricted_config,
+      wuwe::agent::execution::restricted_process_backend_registration::
+        registered_factory);
   if (!restricted_config.deny_network || !restricted_config.use_job_object ||
       restricted_config.inherit_parent_environment ||
       !restricted_config.cleanup_runtime_staging ||
@@ -64,6 +69,15 @@ int main() {
   if (restricted_availability.available) {
     return 1;
   }
+#ifdef _WIN32
+  if (!registered_restricted_availability.available) {
+    return 1;
+  }
+#else
+  if (registered_restricted_availability.available) {
+    return 1;
+  }
+#endif
   wuwe::agent::execution::execution_backend_requirements requirements;
   requirements.require_timeout = true;
   if (registry.select_backend_name(requirements) != "controlled_process") {
@@ -76,6 +90,26 @@ int main() {
   if (registry.create_best(requirements) != nullptr) {
     return 1;
   }
+
+  wuwe::agent::execution::execution_backend_registry_options registry_options;
+  registry_options.enable_restricted_process_backend = true;
+  auto explicit_registry =
+    wuwe::agent::execution::make_execution_backend_registry(registry_options);
+  auto explicit_restricted = explicit_registry.describe("restricted_process");
+  if (!explicit_restricted.has_value()) {
+    return 1;
+  }
+#ifdef _WIN32
+  if (!explicit_restricted->available ||
+      explicit_registry.create("restricted_process") == nullptr) {
+    return 1;
+  }
+#else
+  if (explicit_restricted->available ||
+      explicit_registry.create("restricted_process") != nullptr) {
+    return 1;
+  }
+#endif
 
   wuwe::agent::mcp::mcp_server server;
   wuwe::agent::mcp::mcp_http_listener_options listener_options;
