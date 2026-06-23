@@ -3040,6 +3040,63 @@ void test_restricted_process_backend_runs_python_when_explicitly_enabled() {
     "restricted backend should not mark public runs as candidate");
 }
 
+void test_restricted_process_backend_audits_public_metadata() {
+  const auto workspace_root =
+    make_probe_run_directory("restricted-public-audit");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+
+  auto backend = execution::make_restricted_process_backend(config);
+  require_condition(
+    backend != nullptr,
+    "restricted backend public audit test should create backend");
+
+  wuwe::agent::audit::in_memory_audit_sink audit;
+  execution::execution_runtime runtime(std::move(backend), {}, &audit);
+
+  execution::execution_request request;
+  request.code = "print('restricted_public_audit_ok')\n";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+
+  const auto result = runtime.run(request, {});
+  require_condition(
+    result.termination_reason == execution::execution_termination_reason::exited,
+    "restricted public audit test should exit successfully");
+
+  const auto events = audit.events();
+  require_condition(
+    events.size() == 3,
+    "restricted public audit test should publish policy/start/finish");
+  const auto& finished = events.back();
+  require_condition(
+    finished.name == "execution_finished",
+    "restricted public audit test should finish with execution_finished");
+  require_condition(
+    finished.attributes.at("backend") == "restricted_process",
+    "restricted public audit should record backend name");
+  require_condition(
+    finished.attributes.at("backend_available") == "true",
+    "restricted public audit should report available backend");
+  require_condition(
+    finished.attributes.find("result_backend_candidate") ==
+      finished.attributes.end(),
+    "restricted public audit should not include candidate metadata");
+  require_condition(
+    finished.attributes.at("result_restricted_plan_status") == "ok",
+    "restricted public audit should include plan status");
+  require_condition(
+    finished.attributes.at("file_read_deny_enforcement") == "enforced",
+    "restricted public audit should report enforced read deny");
+  require_condition(
+    finished.attributes.at("result_network_deny_enforcement") == "enforced",
+    "restricted public audit should include network deny enforcement");
+}
+
 void test_restricted_process_backend_candidate_times_out() {
   const auto workspace_root = make_probe_run_directory("restricted-candidate-timeout");
   probe_directory_cleanup cleanup(workspace_root);
@@ -4072,6 +4129,7 @@ int main(int argc, char** argv) {
     test_restricted_process_execution_plan_rejects_junction_root_escape();
     test_restricted_process_backend_candidate_runs_python();
     test_restricted_process_backend_runs_python_when_explicitly_enabled();
+    test_restricted_process_backend_audits_public_metadata();
     test_restricted_process_backend_candidate_times_out();
     test_restricted_process_backend_candidate_enforces_configured_roots();
     test_restricted_process_backend_candidate_audits_result_metadata();
