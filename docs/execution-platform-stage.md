@@ -73,11 +73,25 @@ WASM backend.
   validation and future restricted backends.
 - Tests cover default backend registry behavior, disabled Job Object contracts,
   resource limit clamping/audit metadata, path prefix traps, parent traversal,
-  and child-process cleanup on timeout.
+  child-process cleanup on timeout, AppContainer file boundaries, and a
+  host-reachable loopback network-blocking probe.
+- A private Windows AppContainer probe can launch a temporary minimal Python
+  runtime copied into the AppContainer profile storage path without mutating the
+  host Python installation; it verifies stdin/stdout/stderr handling,
+  explicit environment allowlisting, stdout/stderr byte-limit truncation,
+  allowed-write/denied-read behavior, parent-traversal and hardlink escape
+  denial, Job active-process limits, and Job-backed timeout for the real
+  interpreter, plus explicit cancellation through the same Job termination path.
 
 ## Completed In P2/P3 Platform Contract
 
 - Backend metadata now exposes `available` and `unavailable_reason`.
+- `restricted_process_backend_descriptor()` and
+  `restricted_process_backend_config` provide a stable public contract surface
+  for the future backend without exposing an executable backend factory.
+- The restricted-process config defaults to request-scoped minimal Python
+  runtime staging, no parent environment inheritance, network denial, Job Object
+  lifecycle, and runtime staging cleanup.
 - The default registry exposes four backend slots:
   - `controlled_process`: available.
   - `restricted_process`: planned and unavailable.
@@ -94,8 +108,8 @@ WASM backend.
 - Registry selection skips unavailable backends.
 - Registry selection returns no backend when strong filesystem/network isolation
   is required in the current build.
-- Package smoke now verifies the backend registry and selection API are visible
-  from the installed package.
+- Package smoke now verifies the backend registry, selection API, and Python
+  interpreter diagnostics API are visible from the installed package.
 
 ## Not Completed
 

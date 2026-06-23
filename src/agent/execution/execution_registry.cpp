@@ -3,6 +3,7 @@
 #include <utility>
 
 #include <wuwe/agent/execution/controlled_process_backend.hpp>
+#include <wuwe/agent/execution/restricted_process_backend.hpp>
 
 namespace wuwe::agent::execution {
 namespace {
@@ -11,7 +12,7 @@ bool is_enforced(sandbox::enforcement_level level) {
   return level == sandbox::enforcement_level::enforced;
 }
 
-sandbox::sandbox_enforcement_contract planned_restricted_contract() {
+sandbox::sandbox_enforcement_contract planned_strong_process_contract() {
   return {
     .shell_execution = sandbox::enforcement_level::planned,
     .timeout = sandbox::enforcement_level::planned,
@@ -214,14 +215,11 @@ execution_backend_registry make_default_execution_backend_registry() {
   registry.register_backend("controlled_process", [] {
     return make_controlled_process_backend();
   });
-  registry.register_descriptor(planned_backend_descriptor(
-    "restricted_process",
-    sandbox::isolation_level::restricted_process,
-    planned_restricted_contract()));
+  registry.register_descriptor(restricted_process_backend_descriptor());
   registry.register_descriptor(planned_backend_descriptor(
     "container",
     sandbox::isolation_level::container,
-    planned_restricted_contract()));
+    planned_strong_process_contract()));
   registry.register_descriptor(planned_wasm_descriptor());
   return registry;
 }

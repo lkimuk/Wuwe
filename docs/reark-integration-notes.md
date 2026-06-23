@@ -470,8 +470,10 @@ Initial ReArk verification:
 - Verify denied or failed attempts emit audit events.
 
 Next Wuwe-side enhancements after ReArk feedback should be tracked separately:
-Windows restricted-process support, OS-enforced read/write root restrictions,
-OS-enforced network denial, container backend, and WASM backend.
+Windows restricted-process backend extraction from the current AppContainer
+file-boundary, loopback network-blocking, and minimal Python runtime launch
+probes, including real-interpreter stdin/stdout and timeout behavior; then
+container backend and WASM backend.
 
 ### Knowledge And URL Loading
 

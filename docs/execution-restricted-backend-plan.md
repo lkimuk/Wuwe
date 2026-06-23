@@ -14,6 +14,18 @@ advertises. Until then, the default registry should expose it as an unavailable
 descriptor with planned enforcement fields, and `create("restricted_process")`
 must return `nullptr`.
 
+The public `restricted_process_backend_descriptor()` and
+`restricted_process_backend_config` types now provide a stable contract surface
+for the future backend. They do not expose a backend factory, and they do not
+make `restricted_process` available.
+
+The config already encodes the intended production defaults: host-selected
+Python interpreter, request/workdir fallback, readable and writable roots,
+explicit base environment, no parent environment inheritance, no network,
+Windows Job Object lifecycle, request-scoped minimal Python runtime staging, and
+runtime staging cleanup. These defaults mirror the current AppContainer probes
+without claiming that the backend is executable yet.
+
 ## Windows Candidate
 
 The Windows implementation should be based on OS-enforced process identity and
@@ -50,11 +62,12 @@ test-only child executable, launches the child with
 explicit inherited handle list, assigns the child to a Job Object, and verifies
 that the child reports `TokenIsAppContainer`.
 
-The same probe currently records a socket attempt, but it does not prove network
-denial on this host. A no-capability AppContainer child reported a pending
-nonblocking external connect (`WSAEWOULDBLOCK`) instead of access denied
-(`WSAEACCES`). Therefore network denial remains unaccepted, and the public
-`restricted_process` backend must stay unavailable.
+The same probe starts a host-reachable loopback TCP listener, verifies that the
+host can connect to it, then launches the no-capability AppContainer child
+against that listener. The child reports an initial pending connect
+(`WSAEWOULDBLOCK`) followed by timeout (`WSAETIMEDOUT`) instead of a successful
+connection. The probe treats this as network-blocked evidence for the
+AppContainer identity without requiring the OS to surface `WSAEACCES`.
 
 A follow-up AppContainer file-boundary probe runs the copied test executable
 inside the AppContainer profile storage path and performs file operations from
@@ -121,15 +134,39 @@ allowed roots before any public backend is exposed. Do not expose
 
 The AppContainer probe proves a second launch path: a child can be created under
 an AppContainer identity with stdio capture, an explicit inherited handle list,
-and Job Object assignment. It also records that network denial is not yet proven
-by the no-capability AppContainer profile on this host, so it is a checkpoint,
-not an acceptance pass.
+and Job Object assignment. It also records immediate and final socket errors and
+proves that the child cannot reach a loopback listener that the host can reach.
+This is still a checkpoint, not a public backend acceptance pass, because the
+final runtime launch contract still needs to run the real interpreter with the
+same file, network, lifecycle, and resource controls.
 
 The AppContainer file-boundary probe also proves child-process enforcement for
 allowed read, allowed write, denied read, denied write, and `..` traversal
-denial within the AppContainer profile storage root. This advances the Windows
-candidate materially, but the backend must remain descriptor-only until network
-denial and the final runtime launch contract are proven in the same style.
+denial within the AppContainer profile storage root. Together with the
+host-reachable loopback network-blocking probe, this advances the Windows
+candidate materially.
+
+A minimal Python runtime launch probe now copies the host-selected Python
+interpreter, required adjacent runtime DLLs, and a minimal standard-library
+subset into the AppContainer profile storage path. It grants the AppContainer
+SID read/execute access to that temporary runtime, launches Python with no shell
+through the same AppContainer stdio/Job Object helper, verifies that a tiny
+script reads stdin and writes stdout without stderr, verifies explicit
+environment allowlisting without leaking an unrelated parent-process variable,
+proves that real Python can write an explicitly granted writable root while
+failing to read a denied file, proves parent traversal back to the denied file
+is blocked, proves a hardlink in the allowed tree cannot bypass the denied file
+object's ACL, verifies stdout/stderr byte-limit truncation, proves Job
+active-process limits prevent Python from spawning a child process, and verifies
+that a hanging Python script is terminated by both the Job-backed timeout path
+and an explicit cancellation request. This proves a real interpreter can start
+and observe the same stdio, environment, file-boundary, process-count, and
+lifecycle controls inside the restricted identity without mutating ACLs on the
+host Python installation. The backend must still remain descriptor-only until
+these probes are factored into a production backend with request-scoped script
+handling, policy-driven readable/writable roots, network blocking,
+lifecycle/resource limits, symlink and junction escape tests, and result/audit
+metadata.
 
 ## Non-Acceptable Shortcuts
 
