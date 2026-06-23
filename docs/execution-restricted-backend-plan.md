@@ -1,9 +1,9 @@
 # Restricted Execution Backend Plan
 
-Status: design and acceptance record for the future P2 backend. No restricted
-backend is available in the current build.
+Status: design and acceptance record for the future P2 backend. No public
+restricted backend is available in the current build.
 
-Date: 2026-06-22
+Date: 2026-06-23
 
 ## Boundary
 
@@ -170,11 +170,23 @@ trees, plus request-scoped workspace/script lifecycle handling, have also been
 factored into internal components. A library-internal restricted execution plan
 now composes these pieces into one real Python launch path exercised by tests.
 An internal runner maps successful and timeout executions into
-`execution_result` metadata, but it is still only a backend skeleton. The
-backend must still remain descriptor-only until the remaining work is factored
-into a production `execution_backend` implementation with policy-driven
-readable/writable root orchestration, network blocking, lifecycle/resource
-limits, symlink and junction escape tests, and audit metadata.
+`execution_result` metadata.
+
+The AppContainer launch request now receives the request's process-count,
+memory, and CPU-time limits and applies them through the Job Object instead of
+using a hard-coded active-process limit. Result metadata records those requested
+limits and the active Job Object enforcement state.
+
+An internal restricted backend candidate now wraps this execution plan behind
+the normal `execution_backend` interface for tests. It is intentionally not a
+public factory, not registered in the default registry, and its descriptor still
+advertises `available=false`. This provides an integration-shaped test surface
+without letting hosts accidentally select an incomplete sandbox.
+
+The backend must still remain descriptor-only until the remaining work is
+factored into a production `execution_backend` implementation with
+policy-driven readable/writable root orchestration, network blocking,
+symlink/junction escape tests, and audit metadata.
 
 ## Non-Acceptable Shortcuts
 

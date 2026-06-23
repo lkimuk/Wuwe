@@ -43,6 +43,7 @@ namespace execution_detail = wuwe::agent::execution::detail;
 #include "../src/agent/execution/restricted_process_appcontainer_win32.hpp"
 #include "../src/agent/execution/restricted_process_appcontainer_launch_win32.hpp"
 #include "../src/agent/execution/restricted_process_acl_win32.hpp"
+#include "../src/agent/execution/restricted_process_backend_candidate.hpp"
 #include "../src/agent/execution/restricted_process_execution_plan_win32.hpp"
 #include "../src/agent/execution/restricted_process_request_workspace.hpp"
 
@@ -550,7 +551,11 @@ child_process_capture run_appcontainer_probe_child(
   std::size_t max_stdout_bytes = 65536,
   std::size_t max_stderr_bytes = 65536,
   std::optional<std::map<std::wstring, std::wstring>> environment = std::nullopt,
-  std::stop_token stop_token = {}) {
+  std::stop_token stop_token = {},
+  std::size_t max_process_count = 1,
+  std::uint64_t max_memory_bytes = 0,
+  std::chrono::milliseconds max_cpu_time = std::chrono::milliseconds(0),
+  bool use_job_object = true) {
   auto result = execution_detail::launch_restricted_appcontainer_process({
     .executable = executable,
     .appcontainer_sid = appcontainer_sid,
@@ -560,6 +565,10 @@ child_process_capture run_appcontainer_probe_child(
     .timeout = timeout,
     .max_stdout_bytes = max_stdout_bytes,
     .max_stderr_bytes = max_stderr_bytes,
+    .use_job_object = use_job_object,
+    .max_process_count = max_process_count,
+    .max_memory_bytes = max_memory_bytes,
+    .max_cpu_time = max_cpu_time,
     .environment = std::move(environment),
     .stop_token = stop_token,
   });
@@ -2466,6 +2475,9 @@ void test_restricted_process_execution_plan_returns_execution_result() {
   request.limits.timeout = std::chrono::milliseconds(5000);
   request.limits.max_stdout_bytes = 65536;
   request.limits.max_stderr_bytes = 65536;
+  request.limits.max_process_count = 3;
+  request.limits.max_memory_bytes = 128ULL * 1024ULL * 1024ULL;
+  request.limits.max_cpu_time = std::chrono::milliseconds(2000);
 
   const auto result =
     execution_detail::run_restricted_execution_plan(config, request);
@@ -2488,6 +2500,73 @@ void test_restricted_process_execution_plan_returns_execution_result() {
   require_condition(
     result.metadata.at("restricted_launch_status") == "ok",
     "restricted execution result should report launch success");
+  require_condition(
+    result.metadata.at("process_count_limit_enforcement") == "job_object",
+    "restricted execution result should report process count enforcement");
+  require_condition(
+    result.metadata.at("cpu_time_limit_enforcement") == "job_object",
+    "restricted execution result should report CPU time enforcement");
+  require_condition(
+    result.metadata.at("memory_limit_enforcement") == "job_object",
+    "restricted execution result should report memory enforcement");
+  require_condition(
+    result.metadata.at("max_process_count") == "3",
+    "restricted execution result should report requested process count limit");
+  require_condition(
+    result.metadata.at("max_memory_bytes") == std::to_string(128ULL * 1024ULL * 1024ULL),
+    "restricted execution result should report requested memory limit");
+  require_condition(
+    result.metadata.at("max_cpu_time_ms") == "2000",
+    "restricted execution result should report requested CPU time limit");
+}
+
+void test_restricted_process_execution_plan_carries_resource_limits() {
+  const auto workspace_root = make_probe_run_directory("restricted-plan-limits");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+
+  execution::execution_request request;
+  request.code = "print('limits_ok')\n";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+  request.limits.max_stdout_bytes = 1234;
+  request.limits.max_stderr_bytes = 5678;
+  request.limits.max_process_count = 2;
+  request.limits.max_memory_bytes = 64ULL * 1024ULL * 1024ULL;
+  request.limits.max_cpu_time = std::chrono::milliseconds(1500);
+
+  auto plan_result =
+    execution_detail::prepare_restricted_execution_plan(config, request);
+  require_condition(
+    plan_result.status == execution_detail::restricted_execution_plan_status::ok,
+    std::string("restricted execution plan with limits failed: ") +
+      execution_detail::to_string(plan_result.status) + " " +
+      plan_result.detail);
+  require_condition(
+    plan_result.plan.has_value(),
+    "restricted execution plan with limits should return a plan");
+
+  const auto& launch_request = plan_result.plan->launch_request;
+  require_condition(
+    launch_request.use_job_object,
+    "restricted execution plan should request Job Object enforcement");
+  require_condition(
+    launch_request.max_stdout_bytes == 1234,
+    "restricted execution plan should carry stdout limit");
+  require_condition(
+    launch_request.max_stderr_bytes == 5678,
+    "restricted execution plan should carry stderr limit");
+  require_condition(
+    launch_request.max_process_count == 2,
+    "restricted execution plan should carry process count limit");
+  require_condition(
+    launch_request.max_memory_bytes == 64ULL * 1024ULL * 1024ULL,
+    "restricted execution plan should carry memory limit");
+  require_condition(
+    launch_request.max_cpu_time == std::chrono::milliseconds(1500),
+    "restricted execution plan should carry CPU time limit");
 }
 
 void test_restricted_process_execution_plan_reports_timeout_result() {
@@ -2516,6 +2595,83 @@ void test_restricted_process_execution_plan_reports_timeout_result() {
   require_condition(
     result.metadata.at("error_code") == "restricted_execution_timeout",
     "restricted execution timeout should report stable error code");
+}
+
+void test_restricted_process_backend_candidate_runs_python() {
+  const auto workspace_root = make_probe_run_directory("restricted-candidate");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+
+  auto backend =
+    execution_detail::make_restricted_process_backend_candidate(config);
+  const auto info = backend->info();
+  require_condition(
+    !info.available,
+    "restricted backend candidate should not advertise availability");
+
+  execution::execution_request request;
+  request.code = "print('candidate_ok')\n";
+  request.limits.timeout = std::chrono::milliseconds(5000);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+  request.limits.max_process_count = 2;
+  request.limits.max_memory_bytes = 96ULL * 1024ULL * 1024ULL;
+  request.limits.max_cpu_time = std::chrono::milliseconds(1800);
+
+  const auto result = backend->run(request, {});
+  require_condition(
+    result.termination_reason == execution::execution_termination_reason::exited,
+    "restricted backend candidate should return exited result");
+  require_condition(
+    result.exit_code.has_value() && *result.exit_code == 0,
+    "restricted backend candidate should return exit code zero");
+  require_condition(
+    result.stdout_text.find("candidate_ok") != std::string::npos,
+    "restricted backend candidate should run Python code");
+  require_condition(
+    result.metadata.at("backend_candidate") == "true",
+    "restricted backend candidate should mark candidate metadata");
+  require_condition(
+    result.metadata.at("process_count_limit_enforcement") == "job_object",
+    "restricted backend candidate should report process count enforcement");
+  require_condition(
+    result.metadata.at("max_process_count") == "2",
+    "restricted backend candidate should report requested process count");
+  require_condition(
+    result.metadata.at("max_memory_bytes") == std::to_string(96ULL * 1024ULL * 1024ULL),
+    "restricted backend candidate should report requested memory limit");
+  require_condition(
+    result.metadata.at("max_cpu_time_ms") == "1800",
+    "restricted backend candidate should report requested CPU limit");
+}
+
+void test_restricted_process_backend_candidate_times_out() {
+  const auto workspace_root = make_probe_run_directory("restricted-candidate-timeout");
+  probe_directory_cleanup cleanup(workspace_root);
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+
+  auto backend =
+    execution_detail::make_restricted_process_backend_candidate(config);
+
+  execution::execution_request request;
+  request.code = "import time\ntime.sleep(10)\n";
+  request.limits.timeout = std::chrono::milliseconds(100);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+
+  const auto result = backend->run(request, {});
+  require_condition(
+    result.termination_reason == execution::execution_termination_reason::timeout,
+    "restricted backend candidate should return timeout result");
+  require_condition(
+    result.metadata.at("backend_candidate") == "true",
+    "restricted backend timeout result should mark candidate metadata");
 }
 
 void test_windows_appcontainer_runs_minimal_python_runtime() {
@@ -3343,7 +3499,10 @@ int main(int argc, char** argv) {
 #ifdef WUWE_EXECUTION_TEST_PYTHON
     test_restricted_process_execution_plan_runs_python();
     test_restricted_process_execution_plan_returns_execution_result();
+    test_restricted_process_execution_plan_carries_resource_limits();
     test_restricted_process_execution_plan_reports_timeout_result();
+    test_restricted_process_backend_candidate_runs_python();
+    test_restricted_process_backend_candidate_times_out();
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif
 #endif

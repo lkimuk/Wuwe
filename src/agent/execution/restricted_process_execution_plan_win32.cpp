@@ -247,6 +247,10 @@ restricted_execution_plan_result prepare_restricted_execution_plan(
     .timeout = request.limits.timeout,
     .max_stdout_bytes = request.limits.max_stdout_bytes,
     .max_stderr_bytes = request.limits.max_stderr_bytes,
+    .use_job_object = config.use_job_object,
+    .max_process_count = request.limits.max_process_count,
+    .max_memory_bytes = request.limits.max_memory_bytes,
+    .max_cpu_time = request.limits.max_cpu_time,
     .environment = make_environment(config, request),
   };
   const auto python_executable = runtime_staging.python_executable;
@@ -304,6 +308,18 @@ void add_restricted_metadata(
     std::to_string(request.limits.max_stdout_bytes);
   result.metadata["max_stderr_bytes"] =
     std::to_string(request.limits.max_stderr_bytes);
+  result.metadata["process_count_limit_enforcement"] =
+    config.use_job_object ? "job_object" : "not_enforced";
+  result.metadata["cpu_time_limit_enforcement"] =
+    config.use_job_object ? "job_object" : "not_enforced";
+  result.metadata["memory_limit_enforcement"] =
+    config.use_job_object ? "job_object" : "not_enforced";
+  result.metadata["max_process_count"] =
+    std::to_string(request.limits.max_process_count);
+  result.metadata["max_memory_bytes"] =
+    std::to_string(request.limits.max_memory_bytes);
+  result.metadata["max_cpu_time_ms"] =
+    std::to_string(request.limits.max_cpu_time.count());
 }
 
 void add_plan_metadata(

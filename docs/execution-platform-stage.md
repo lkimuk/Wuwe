@@ -4,7 +4,7 @@ Status: P0/P1 complete and pushed; P2/P3 platform contract and backend
 selection surfaces are implemented; P2/P3 strong OS/container/WASM execution
 backends remain future work.
 
-Date: 2026-06-22
+Date: 2026-06-23
 
 ## Boundary Statement
 
@@ -102,8 +102,15 @@ WASM backend.
   minimal Python runtime staging, request workspace, ACL grants, environment
   allowlist, and AppContainer launch request into one tested execution path.
   A library-internal runner maps that path into `execution_result` metadata for
-  successful and timeout executions. This is still not exposed as an executable
-  backend factory.
+  successful and timeout executions.
+- The internal AppContainer launch request now carries `execution_limits`
+  process-count, memory, and CPU-time fields into Job Object configuration
+  instead of using a fixed process count. The resulting execution metadata
+  reports the requested limits and whether Job Object enforcement is active.
+- A library-internal restricted backend candidate can execute the restricted
+  execution plan through the normal `execution_backend` interface for tests,
+  but it deliberately advertises `available=false` and is not registered in the
+  default backend registry.
 
 ## Completed In P2/P3 Platform Contract
 
@@ -138,7 +145,10 @@ WASM backend.
 - `controlled_process` still does not enforce file read denial inside Python.
 - `controlled_process` still does not enforce file write denial inside Python.
 - `controlled_process` still does not enforce network denial inside Python.
-- Windows restricted token/AppContainer backend is not implemented.
+- Public Windows `restricted_process` backend factory and registry availability
+  are not implemented.
+- Symlink/junction escape acceptance tests for the internal restricted
+  execution plan are not complete.
 - Windows restricted backend acceptance criteria and implementation sequence
   are recorded in
   [Restricted Execution Backend Plan](execution-restricted-backend-plan.md).

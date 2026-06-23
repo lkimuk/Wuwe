@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -52,6 +53,10 @@ struct restricted_appcontainer_launch_request {
   std::chrono::milliseconds timeout { 5000 };
   std::size_t max_stdout_bytes { 65536 };
   std::size_t max_stderr_bytes { 65536 };
+  bool use_job_object { true };
+  std::size_t max_process_count { 1 };
+  std::uint64_t max_memory_bytes { 0 };
+  std::chrono::milliseconds max_cpu_time { 0 };
   std::optional<std::map<std::wstring, std::wstring>> environment;
   std::stop_token stop_token;
 };

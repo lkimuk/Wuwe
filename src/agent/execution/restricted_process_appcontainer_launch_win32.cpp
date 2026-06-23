@@ -184,11 +184,26 @@ std::wstring quote_windows_arg(std::wstring arg) {
   return result;
 }
 
-bool configure_job(HANDLE job, restricted_appcontainer_launch_result& result) {
+bool configure_job(
+  HANDLE job,
+  const restricted_appcontainer_launch_request& request,
+  restricted_appcontainer_launch_result& result) {
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits {};
-  limits.BasicLimitInformation.LimitFlags =
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-  limits.BasicLimitInformation.ActiveProcessLimit = 1;
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (request.max_process_count > 0) {
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+    limits.BasicLimitInformation.ActiveProcessLimit =
+      static_cast<DWORD>(request.max_process_count);
+  }
+  if (request.max_memory_bytes > 0) {
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+    limits.JobMemoryLimit = static_cast<SIZE_T>(request.max_memory_bytes);
+  }
+  if (request.max_cpu_time.count() > 0) {
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_TIME;
+    limits.BasicLimitInformation.PerJobUserTimeLimit.QuadPart =
+      request.max_cpu_time.count() * 10000LL;
+  }
   if (!SetInformationJobObject(
         job,
         JobObjectExtendedLimitInformation,
@@ -201,6 +216,17 @@ bool configure_job(HANDLE job, restricted_appcontainer_launch_result& result) {
     return false;
   }
   return true;
+}
+
+void terminate_restricted_process(
+  HANDLE job,
+  HANDLE process,
+  UINT exit_code) noexcept {
+  if (job != nullptr && job != INVALID_HANDLE_VALUE) {
+    TerminateJobObject(job, exit_code);
+    return;
+  }
+  TerminateProcess(process, exit_code);
 }
 
 std::string read_pipe_to_limit(
@@ -442,15 +468,18 @@ restricted_appcontainer_launch_result launch_restricted_appcontainer_process(
   }
   startup_ex.lpAttributeList = attribute_list.get();
 
-  unique_handle job(CreateJobObjectW(nullptr, nullptr));
-  if (!job.valid()) {
-    return make_launch_result(
-      restricted_appcontainer_launch_status::create_job_failed,
-      GetLastError(),
-      "CreateJobObjectW");
-  }
-  if (!configure_job(job.get(), result)) {
-    return result;
+  unique_handle job;
+  if (request.use_job_object) {
+    job.reset(CreateJobObjectW(nullptr, nullptr));
+    if (!job.valid()) {
+      return make_launch_result(
+        restricted_appcontainer_launch_status::create_job_failed,
+        GetLastError(),
+        "CreateJobObjectW");
+    }
+    if (!configure_job(job.get(), request, result)) {
+      return result;
+    }
   }
 
   auto command_line = quote_windows_arg(request.executable.wstring());
@@ -510,15 +539,17 @@ restricted_appcontainer_launch_result launch_restricted_appcontainer_process(
   stdout_write.reset();
   stderr_write.reset();
 
-  if (!AssignProcessToJobObject(job.get(), process_handle.get())) {
-    TerminateJobObject(job.get(), 1);
-    return make_launch_result(
-      restricted_appcontainer_launch_status::assign_job_failed,
-      GetLastError(),
-      "AssignProcessToJobObject");
+  if (request.use_job_object) {
+    if (!AssignProcessToJobObject(job.get(), process_handle.get())) {
+      terminate_restricted_process(job.get(), process_handle.get(), 1);
+      return make_launch_result(
+        restricted_appcontainer_launch_status::assign_job_failed,
+        GetLastError(),
+        "AssignProcessToJobObject");
+    }
   }
   if (ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1)) {
-    TerminateJobObject(job.get(), 1);
+    terminate_restricted_process(job.get(), process_handle.get(), 1);
     return make_launch_result(
       restricted_appcontainer_launch_status::resume_failed,
       GetLastError(),
@@ -553,7 +584,7 @@ restricted_appcontainer_launch_result launch_restricted_appcontainer_process(
       break;
     }
     if (wait_result != WAIT_TIMEOUT) {
-      TerminateJobObject(job.get(), 1);
+      terminate_restricted_process(job.get(), process_handle.get(), 1);
       WaitForSingleObject(process_handle.get(), INFINITE);
       result.status = restricted_appcontainer_launch_status::wait_failed;
       result.win32_error = GetLastError();
@@ -563,14 +594,14 @@ restricted_appcontainer_launch_result launch_restricted_appcontainer_process(
 
     if (request.stop_token.stop_requested()) {
       result.capture.cancelled = true;
-      TerminateJobObject(job.get(), 1);
+      terminate_restricted_process(job.get(), process_handle.get(), 1);
       WaitForSingleObject(process_handle.get(), INFINITE);
       break;
     }
     if (request.timeout.count() > 0 &&
         std::chrono::steady_clock::now() - started >= request.timeout) {
       result.capture.timed_out = true;
-      TerminateJobObject(job.get(), 1);
+      terminate_restricted_process(job.get(), process_handle.get(), 1);
       WaitForSingleObject(process_handle.get(), INFINITE);
       break;
     }
