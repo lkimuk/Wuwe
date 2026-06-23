@@ -1840,8 +1840,8 @@ void test_restricted_process_configured_contract_is_candidate_only() {
   assert(contract.process_count_limit == sandbox::enforcement_level::enforced);
   assert(contract.cpu_time_limit == sandbox::enforcement_level::enforced);
   assert(contract.memory_limit == sandbox::enforcement_level::enforced);
-  assert(contract.filesystem_read_deny == sandbox::enforcement_level::partial);
-  assert(contract.filesystem_write_deny == sandbox::enforcement_level::partial);
+  assert(contract.filesystem_read_deny == sandbox::enforcement_level::enforced);
+  assert(contract.filesystem_write_deny == sandbox::enforcement_level::enforced);
   assert(contract.network_deny == sandbox::enforcement_level::enforced);
   auto availability =
     execution::evaluate_restricted_process_backend_availability(config);
@@ -1851,17 +1851,22 @@ void test_restricted_process_configured_contract_is_candidate_only() {
   assert(std::find(
            availability.blockers.begin(),
            availability.blockers.end(),
-           "filesystem_read_deny_not_enforced") !=
+           "filesystem_read_deny_not_enforced") ==
          availability.blockers.end());
   assert(std::find(
            availability.blockers.begin(),
            availability.blockers.end(),
-           "filesystem_write_deny_not_enforced") !=
+           "filesystem_write_deny_not_enforced") ==
          availability.blockers.end());
   assert(std::find(
            availability.blockers.begin(),
            availability.blockers.end(),
            "network_deny_not_enforced") == availability.blockers.end());
+  assert(std::find(
+           availability.blockers.begin(),
+           availability.blockers.end(),
+           "restricted_process_backend_not_registered") !=
+         availability.blockers.end());
 
   config.use_job_object = false;
   contract = execution::restricted_process_backend_configured_contract(config);
@@ -2695,11 +2700,11 @@ void test_restricted_process_execution_plan_returns_execution_result() {
     result.metadata.at("memory_limit_enforcement") == "enforced",
     "restricted execution result should report memory enforcement");
   require_condition(
-    result.metadata.at("file_read_deny_enforcement") == "partial",
-    "restricted execution result should report read deny candidate enforcement");
+    result.metadata.at("file_read_deny_enforcement") == "enforced",
+    "restricted execution result should report read deny enforcement");
   require_condition(
-    result.metadata.at("file_write_deny_enforcement") == "partial",
-    "restricted execution result should report write deny candidate enforcement");
+    result.metadata.at("file_write_deny_enforcement") == "enforced",
+    "restricted execution result should report write deny enforcement");
   require_condition(
     result.metadata.at("network_deny_enforcement") == "enforced",
     "restricted execution result should report network deny enforcement");
@@ -2908,8 +2913,8 @@ void test_restricted_process_backend_candidate_runs_python() {
     info.enforcement.process_count_limit == sandbox::enforcement_level::enforced,
     "restricted backend candidate should report enforced process count limit");
   require_condition(
-    info.enforcement.filesystem_read_deny == sandbox::enforcement_level::partial,
-    "restricted backend candidate should report partial read deny enforcement");
+    info.enforcement.filesystem_read_deny == sandbox::enforcement_level::enforced,
+    "restricted backend candidate should report enforced read deny");
   require_condition(
     info.enforcement.network_deny == sandbox::enforcement_level::enforced,
     "restricted backend candidate should report enforced network deny");
@@ -2940,8 +2945,8 @@ void test_restricted_process_backend_candidate_runs_python() {
     result.metadata.at("process_count_limit_enforcement") == "enforced",
     "restricted backend candidate should report process count enforcement");
   require_condition(
-    result.metadata.at("file_read_deny_enforcement") == "partial",
-    "restricted backend candidate should report read deny candidate enforcement");
+    result.metadata.at("file_read_deny_enforcement") == "enforced",
+    "restricted backend candidate should report read deny enforcement");
   require_condition(
     result.metadata.at("network_deny_enforcement") == "enforced",
     "restricted backend candidate should report network deny enforcement");
@@ -2980,6 +2985,117 @@ void test_restricted_process_backend_candidate_times_out() {
   require_condition(
     result.metadata.at("backend_candidate") == "true",
     "restricted backend timeout result should mark candidate metadata");
+}
+
+void test_restricted_process_backend_candidate_enforces_configured_roots() {
+  const auto run_root = make_probe_run_directory("restricted-candidate-roots");
+  probe_directory_cleanup cleanup(run_root);
+  const auto workspace_root = run_root / "workspace";
+  const auto readable_root = run_root / "readable";
+  const auto writable_root = run_root / "writable";
+  const auto denied_root = run_root / "denied";
+  const auto readable_file = readable_root / "allowed-read.txt";
+  const auto readable_write_file = readable_root / "should-not-write.txt";
+  const auto writable_existing_file = writable_root / "existing.txt";
+  const auto writable_new_file = writable_root / "created.txt";
+  const auto denied_read_file = denied_root / "secret.txt";
+  const auto denied_write_file = denied_root / "should-not-write.txt";
+
+  std::filesystem::create_directories(workspace_root);
+  std::filesystem::create_directories(readable_root);
+  std::filesystem::create_directories(writable_root);
+  std::filesystem::create_directories(denied_root);
+  {
+    std::ofstream(readable_file, std::ios::binary) << "readable-ok";
+    std::ofstream(writable_existing_file, std::ios::binary) << "old";
+    std::ofstream(denied_read_file, std::ios::binary) << "denied-secret";
+  }
+
+  execution::restricted_process_backend_config config;
+  config.python_interpreter = std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON);
+  config.fallback_workdir = workspace_root;
+  config.readable_roots.push_back(readable_root);
+  config.writable_roots.push_back(writable_root);
+
+  auto backend =
+    execution_detail::make_restricted_process_backend_candidate(config);
+
+  const auto readable_file_text = escape_python_string(readable_file.string());
+  const auto readable_write_file_text =
+    escape_python_string(readable_write_file.string());
+  const auto writable_existing_file_text =
+    escape_python_string(writable_existing_file.string());
+  const auto writable_new_file_text =
+    escape_python_string(writable_new_file.string());
+  const auto denied_read_file_text =
+    escape_python_string(denied_read_file.string());
+  const auto denied_write_file_text =
+    escape_python_string(denied_write_file.string());
+
+  execution::execution_request request;
+  request.limits.timeout = std::chrono::milliseconds(5000);
+  request.limits.max_stdout_bytes = 65536;
+  request.limits.max_stderr_bytes = 65536;
+  request.code =
+    "def can_read(path):\n"
+    "    try:\n"
+    "        with open(path, 'r', encoding='utf-8') as f:\n"
+    "            f.read()\n"
+    "        return True\n"
+    "    except OSError:\n"
+    "        return False\n"
+    "def can_write(path):\n"
+    "    try:\n"
+    "        with open(path, 'w', encoding='utf-8') as f:\n"
+    "            f.write('written')\n"
+    "        return True\n"
+    "    except OSError:\n"
+    "        return False\n"
+    "print('readable_read=' + str(can_read('" + readable_file_text + "')))\n"
+    "print('readable_write_denied=' + str(not can_write('" +
+      readable_write_file_text + "')))\n"
+    "print('writable_existing_write=' + str(can_write('" +
+      writable_existing_file_text + "')))\n"
+    "print('writable_new_write=' + str(can_write('" + writable_new_file_text +
+      "')))\n"
+    "print('denied_read=' + str(not can_read('" + denied_read_file_text + "')))\n"
+    "print('denied_write=' + str(not can_write('" + denied_write_file_text +
+      "')))\n";
+
+  const auto result = backend->run(request, {});
+  if (result.exit_code.value_or(1) != 0 || !result.stderr_text.empty()) {
+    std::cerr << "restricted configured-roots stdout:\n"
+              << result.stdout_text << "\n";
+    std::cerr << "restricted configured-roots stderr:\n"
+              << result.stderr_text << "\n";
+  }
+  require_condition(
+    result.termination_reason == execution::execution_termination_reason::exited,
+    "restricted candidate configured-roots test should exit successfully");
+  require_condition(
+    result.exit_code.has_value() && *result.exit_code == 0,
+    "restricted candidate configured-roots test should return exit code zero");
+  require_condition(
+    result.stderr_text.empty(),
+    "restricted candidate configured-roots test should not write stderr");
+  require_condition(
+    result.stdout_text.find("readable_read=True") != std::string::npos,
+    "restricted candidate should read configured readable root");
+  require_condition(
+    result.stdout_text.find("readable_write_denied=True") != std::string::npos,
+    "restricted candidate should deny writes to readable root");
+  require_condition(
+    result.stdout_text.find("writable_existing_write=True") != std::string::npos,
+    "restricted candidate should write existing file in writable root");
+  require_condition(
+    result.stdout_text.find("writable_new_write=True") != std::string::npos,
+    "restricted candidate should create file in writable root");
+  require_condition(
+    result.stdout_text.find("denied_read=True") != std::string::npos,
+    "restricted candidate should deny reads outside configured roots");
+  require_condition(
+    result.stdout_text.find("denied_write=True") != std::string::npos,
+    "restricted candidate should deny writes outside configured roots");
 }
 
 void test_restricted_process_backend_candidate_audits_result_metadata() {
@@ -3037,8 +3153,8 @@ void test_restricted_process_backend_candidate_audits_result_metadata() {
     finished.attributes.at("process_count_limit_enforcement") == "enforced",
     "restricted candidate audit should use configured candidate enforcement");
   require_condition(
-    finished.attributes.at("file_read_deny_enforcement") == "partial",
-    "restricted candidate audit should report partial read deny enforcement");
+    finished.attributes.at("file_read_deny_enforcement") == "enforced",
+    "restricted candidate audit should report read deny enforcement");
   require_condition(
     finished.attributes.at("result_network_deny_enforcement") == "enforced",
     "restricted candidate audit should include result network enforcement");
@@ -3876,6 +3992,7 @@ int main(int argc, char** argv) {
     test_restricted_process_execution_plan_rejects_junction_root_escape();
     test_restricted_process_backend_candidate_runs_python();
     test_restricted_process_backend_candidate_times_out();
+    test_restricted_process_backend_candidate_enforces_configured_roots();
     test_restricted_process_backend_candidate_audits_result_metadata();
     test_windows_appcontainer_runs_minimal_python_runtime();
 #endif

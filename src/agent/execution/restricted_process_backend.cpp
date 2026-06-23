@@ -57,8 +57,8 @@ restricted_process_backend_configured_contract(
     .process_count_limit = job_enforcement,
     .cpu_time_limit = job_enforcement,
     .memory_limit = job_enforcement,
-    .filesystem_read_deny = sandbox::enforcement_level::partial,
-    .filesystem_write_deny = sandbox::enforcement_level::partial,
+    .filesystem_read_deny = sandbox::enforcement_level::enforced,
+    .filesystem_write_deny = sandbox::enforcement_level::enforced,
     .network_deny = config.deny_network
                       ? sandbox::enforcement_level::enforced
                       : sandbox::enforcement_level::not_enforced,
@@ -144,6 +144,7 @@ evaluate_restricted_process_backend_availability(
     result.blockers,
     result.contract.network_deny,
     "network_deny_not_enforced");
+  result.blockers.emplace_back("restricted_process_backend_not_registered");
 
   result.available = result.blockers.empty();
   return result;

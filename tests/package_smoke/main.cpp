@@ -52,7 +52,7 @@ int main() {
   }
 #ifdef _WIN32
   const auto expected_restricted_read_deny =
-    wuwe::agent::sandbox::enforcement_level::partial;
+    wuwe::agent::sandbox::enforcement_level::enforced;
 #else
   const auto expected_restricted_read_deny =
     wuwe::agent::sandbox::enforcement_level::not_enforced;

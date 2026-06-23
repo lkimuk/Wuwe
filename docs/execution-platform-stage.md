@@ -115,8 +115,12 @@ WASM backend.
   candidate's configured enforcement diagnostics separately from the public
   planned descriptor. On Windows this reports core launch/lifecycle controls as
   `enforced`, no-capability AppContainer network denial as `enforced`, and
-  filesystem read/write isolation as `partial`; the default registry still
+  configured filesystem read/write root isolation as `enforced`; the default registry still
   exposes `restricted_process` as unavailable and planned.
+- A configured-roots candidate test now runs real Python through the restricted
+  execution plan and proves readable roots can be read but not written,
+  writable roots can update existing files and create new files, and unlisted
+  roots cannot be read or written.
 - Execution-finished audit events now include backend result metadata under
   `result_*` keys, so restricted-plan status, launch status, candidate markers,
   backend stage, and configured enforcement fields are visible to host audit
@@ -155,8 +159,9 @@ WASM backend.
 - Registry selection returns no backend when strong filesystem/network isolation
   is required in the current build.
 - Package smoke now verifies the backend registry, selection API, Python
-  interpreter diagnostics API, and restricted-process configured contract API
-  are visible from the installed package.
+  interpreter diagnostics API, restricted-process configured contract API, and
+  restricted-process availability blocker API are visible from the installed
+  package.
 
 ## Not Completed
 

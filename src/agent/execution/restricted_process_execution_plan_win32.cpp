@@ -224,9 +224,10 @@ restricted_execution_plan_result prepare_restricted_execution_plan(
     }
   }
   for (const auto& root : config.writable_roots) {
-    if (auto grant = grant_directory_or_fail(
+    if (auto grant = grant_tree_or_fail(
           root,
           profile.sid(),
+          GENERIC_ALL,
           GENERIC_ALL,
           "writable_root");
         grant.status != restricted_execution_plan_status::ok) {

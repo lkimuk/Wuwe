@@ -190,11 +190,14 @@ The public `restricted_process_backend_configured_contract(...)` helper exposes
 the candidate's current configured enforcement diagnostics without changing
 registry behavior. On Windows, the helper reports no-shell launch, stdio,
 environment, working directory, timeout, cancellation, and Job Object resource
-controls as `enforced` when enabled. Filesystem read/write denial and network
-denial are reported separately: no-capability AppContainer outbound network
-denial is now `enforced`, while filesystem read/write denial remains `partial`
-until the public backend's root orchestration is finalized. The default registry
-continues to expose `restricted_process` only as an unavailable planned
+controls as `enforced` when enabled. No-capability AppContainer outbound
+network denial is now `enforced`. Configured filesystem read/write root
+isolation is also reported as `enforced`: a candidate test runs real Python and
+proves readable roots can be read but not written, writable roots can update
+existing files and create new files, and unlisted roots cannot be read or
+written. The availability helper still reports the candidate unavailable because
+the production backend factory is intentionally not registered yet; the default
+registry continues to expose `restricted_process` only as an unavailable planned
 descriptor.
 
 The internal execution plan now also has a fail-closed reparse-point test for
@@ -206,8 +209,8 @@ dedicated junction probe now creates a Windows mount-point reparse point through
 escape shape.
 
 The backend must still remain descriptor-only until the remaining work is
-factored into a production `execution_backend` implementation with
-policy-driven readable/writable root orchestration and network blocking.
+factored into a production `execution_backend` implementation and registry
+availability is explicitly enabled.
 
 ## Non-Acceptable Shortcuts
 
