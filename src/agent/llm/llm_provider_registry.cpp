@@ -16,11 +16,20 @@ llm_provider_capabilities cloud_chat_capabilities() {
   };
 }
 
+llm_provider_capabilities reasoning_openai_compatible_capabilities() {
+  auto capabilities = cloud_chat_capabilities();
+  capabilities.reasoning_summary = true;
+  capabilities.streaming_reasoning_summary = true;
+  return capabilities;
+}
+
 llm_provider_capabilities anthropic_capabilities() {
   return {
     .streaming = true,
     .tools = true,
     .tool_choice = true,
+    .reasoning_summary = true,
+    .streaming_reasoning_summary = true,
   };
 }
 
@@ -29,6 +38,8 @@ llm_provider_capabilities gemini_capabilities() {
     .streaming = true,
     .tools = true,
     .tool_choice = true,
+    .reasoning_summary = true,
+    .streaming_reasoning_summary = true,
     .multimodal_input = true,
   };
 }
@@ -38,6 +49,8 @@ llm_provider_capabilities ollama_capabilities() {
     .streaming = true,
     .tools = true,
     .json_response_format = true,
+    .reasoning_summary = true,
+    .streaming_reasoning_summary = true,
     .local_runtime = true,
   };
 }
@@ -95,7 +108,7 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .default_base_url = "https://openrouter.ai/api",
       .default_chat_completions_path = "/v1/chat/completions",
       .api_key_env_names = {"OPENROUTER_API_KEY", "OPENAI_API_KEY"},
-      .capabilities = cloud_chat_capabilities(),
+      .capabilities = reasoning_openai_compatible_capabilities(),
     },
     {
       .id = "Anthropic",
@@ -128,7 +141,7 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .default_base_url = "https://api.deepseek.com",
       .default_chat_completions_path = "/v1/chat/completions",
       .api_key_env_names = {"DEEPSEEK_API_KEY", "OPENAI_API_KEY"},
-      .capabilities = cloud_chat_capabilities(),
+      .capabilities = reasoning_openai_compatible_capabilities(),
     },
     {
       .id = "DashScope",

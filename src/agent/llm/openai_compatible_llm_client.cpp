@@ -9,6 +9,7 @@
 #include <wuwe/net/sse_event_parser.h>
 
 #include <chrono>
+#include <initializer_list>
 #include <map>
 #include <sstream>
 #include <string>
@@ -48,6 +49,122 @@ void emit_stream_event(const llm_stream_callbacks& callbacks, llm_stream_event e
   if (callbacks.on_event) {
     callbacks.on_event(event);
   }
+  if (event.type == llm_stream_event_type::reasoning_delta &&
+      callbacks.on_reasoning_delta && !event.reasoning_delta.empty()) {
+    callbacks.on_reasoning_delta(event.reasoning_delta);
+  }
+  if (event.type == llm_stream_event_type::reasoning_done &&
+      callbacks.on_reasoning_done && !event.reasoning_summary.empty()) {
+    callbacks.on_reasoning_done(event.reasoning_summary);
+  }
+}
+
+std::string json_scalar_to_string(const json& value) {
+  if (value.is_string()) {
+    return value.get<std::string>();
+  }
+  if (value.is_number_integer()) {
+    return std::to_string(value.get<long long>());
+  }
+  if (value.is_number_unsigned()) {
+    return std::to_string(value.get<unsigned long long>());
+  }
+  if (value.is_number_float()) {
+    return std::to_string(value.get<double>());
+  }
+  if (value.is_boolean()) {
+    return value.get<bool>() ? "true" : "false";
+  }
+  return {};
+}
+
+std::string object_scalar_value(const json& object, const char* key) {
+  if (!object.is_object()) {
+    return {};
+  }
+  const auto it = object.find(key);
+  if (it == object.end()) {
+    return {};
+  }
+  return json_scalar_to_string(*it);
+}
+
+std::string first_string_field(const json& object, std::initializer_list<const char*> keys) {
+  if (!object.is_object()) {
+    return {};
+  }
+  for (const auto* key : keys) {
+    const auto it = object.find(key);
+    if (it != object.end() && it->is_string()) {
+      return it->get<std::string>();
+    }
+  }
+  return {};
+}
+
+std::string reasoning_text_from_object(const json& object) {
+  const auto direct = first_string_field(object, {
+    "reasoning_delta",
+    "reasoning_summary_delta",
+    "reasoning_content",
+    "reasoning_summary",
+    "reasoning",
+    "thinking_delta",
+    "thinking",
+  });
+  if (!direct.empty()) {
+    return direct;
+  }
+
+  for (const auto* key : { "reasoning", "thinking" }) {
+    const auto it = object.find(key);
+    if (it != object.end() && it->is_object()) {
+      const auto nested = first_string_field(*it, { "summary", "text", "content" });
+      if (!nested.empty()) {
+        return nested;
+      }
+    }
+  }
+
+  return {};
+}
+
+std::map<std::string, std::string> reasoning_metadata_from_object(const json& object) {
+  std::map<std::string, std::string> metadata;
+  if (!object.is_object()) {
+    return metadata;
+  }
+
+  const auto signature = first_string_field(object, {
+    "reasoning_signature",
+    "thinking_signature",
+    "signature",
+  });
+  if (!signature.empty()) {
+    metadata["signature"] = signature;
+  }
+
+  for (const auto* key : {
+         "reasoning_details",
+         "reasoning_metadata",
+         "thinking_details",
+         "thinking_metadata",
+       }) {
+    const auto it = object.find(key);
+    if (it != object.end() && (it->is_object() || it->is_array())) {
+      metadata[key] = it->dump();
+    }
+  }
+
+  return metadata;
+}
+
+void merge_reasoning_metadata(
+  std::map<std::string, std::string>& destination,
+  const std::map<std::string, std::string>& source) {
+  for (const auto& [key, value] : source) {
+    destination[key] = value;
+  }
 }
 
 std::error_code classify_openai_error(const std::error_code& transport_or_http_error,
@@ -68,19 +185,20 @@ std::error_code classify_openai_error(const std::error_code& transport_or_http_e
 
   if (body.is_object() && body.contains("error") && body["error"].is_object()) {
     const auto& error = body["error"];
-    const auto code = error.value("code", std::string {});
-    const auto type = error.value("type", std::string {});
+    const auto code = object_scalar_value(error, "code");
+    const auto type = object_scalar_value(error, "type");
 
     if (code == "invalid_api_key" || type == "invalid_api_key" ||
-        code == "unauthorized" || type == "authentication_error") {
+        code == "unauthorized" || type == "authentication_error" ||
+        code == "401" || code == "403") {
       return agent::make_error_code(agent::llm_error_code::authentication_failed);
     }
     if (code == "rate_limit_exceeded" || type == "rate_limit_exceeded" ||
-        code == "rate_limited") {
+        code == "rate_limited" || code == "429") {
       return agent::make_error_code(agent::llm_error_code::rate_limited);
     }
     if (code == "model_not_found" || type == "model_not_found" ||
-        code == "model_unavailable") {
+        code == "model_unavailable" || code == "404") {
       return agent::make_error_code(agent::llm_error_code::model_unavailable);
     }
 
@@ -93,11 +211,12 @@ std::error_code classify_openai_error(const std::error_code& transport_or_http_e
 std::string openai_error_message(const std::error_code& error_code, const json& body) {
   if (body.is_object() && body.contains("error") && body["error"].is_object()) {
     const auto& error = body["error"];
-    if (error.contains("message") && error["message"].is_string()) {
-      return error["message"].get<std::string>();
+    const auto explicit_message = object_scalar_value(error, "message");
+    if (!explicit_message.empty()) {
+      return explicit_message;
     }
-    const auto type = error.value("type", std::string {});
-    const auto code = error.value("code", std::string {});
+    const auto type = object_scalar_value(error, "type");
+    const auto code = object_scalar_value(error, "code");
     if (!type.empty() || !code.empty()) {
       std::ostringstream message;
       message << "OpenAI-compatible API error";
@@ -112,9 +231,9 @@ std::string openai_error_message(const std::error_code& error_code, const json& 
   }
 
   if (error_code) {
-    return "OpenAI-compatible streaming request failed: " + error_code.message();
+    return "OpenAI-compatible request failed: " + error_code.message();
   }
-  return "OpenAI-compatible streaming request failed.";
+  return "OpenAI-compatible request failed.";
 }
 
 std::string invalid_stream_event_message() {
@@ -361,6 +480,20 @@ llm_response openai_compatible_llm_client::complete_stream(
         }
 
         const auto& delta = choice["delta"];
+        const auto reasoning_delta = reasoning_text_from_object(delta);
+        if (!reasoning_delta.empty()) {
+          result.reasoning_summary += reasoning_delta;
+          merge_reasoning_metadata(
+            result.reasoning_metadata,
+            reasoning_metadata_from_object(delta));
+          emitted_output = true;
+          emit_stream_event(callbacks, {
+            .type = llm_stream_event_type::reasoning_delta,
+            .reasoning_delta = reasoning_delta,
+            .reasoning_metadata = result.reasoning_metadata,
+          });
+        }
+
         if (delta.contains("content") && delta["content"].is_string()) {
           const auto content_delta = delta["content"].get<std::string>();
           if (!content_delta.empty()) {
@@ -502,6 +635,14 @@ llm_response openai_compatible_llm_client::complete_stream(
           .content_delta = result.content,
         });
       }
+      if (!result.reasoning_summary.empty()) {
+        emit_stream_event(callbacks, {
+          .type = llm_stream_event_type::reasoning_done,
+          .reasoning_summary = result.reasoning_summary,
+          .reasoning_metadata = result.reasoning_metadata,
+          .response = result,
+        });
+      }
       for (const auto& call : result.tool_calls) {
         emit_stream_event(callbacks, {
           .type = llm_stream_event_type::tool_call_done,
@@ -524,7 +665,8 @@ llm_response openai_compatible_llm_client::complete_stream(
       });
     }
 
-    if (!saw_done && result.content.empty() && result.tool_calls.empty()) {
+    if (!saw_done && result.content.empty() && result.reasoning_summary.empty() &&
+        result.tool_calls.empty()) {
       result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
       result.content = "OpenAI-compatible streaming response ended without content, tool calls, or [DONE].";
       emit_stream_event(callbacks, {
@@ -536,6 +678,14 @@ llm_response openai_compatible_llm_client::complete_stream(
       return result;
     }
 
+    if (!result.reasoning_summary.empty()) {
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::reasoning_done,
+        .reasoning_summary = result.reasoning_summary,
+        .reasoning_metadata = result.reasoning_metadata,
+        .response = result,
+      });
+    }
     emit_stream_event(callbacks, {
       .type = llm_stream_event_type::done,
       .response = result,
@@ -635,10 +785,12 @@ llm_response openai_compatible_llm_client::parse_openai_response(const http_resp
   llm_response result;
 
   if (response.error_code) {
-    result.content = response.body;
     const auto body = json::parse(response.body, nullptr, false);
     result.error_code =
       classify_openai_error(response.error_code, body.is_discarded() ? json::object() : body);
+    result.content = openai_error_message(
+      result.error_code,
+      body.is_discarded() ? json::object() : body);
     return result;
   }
 
@@ -653,7 +805,7 @@ llm_response openai_compatible_llm_client::parse_openai_response(const http_resp
     result.error_code = classify_openai_error(
       agent::make_error_code(agent::llm_error_code::api_error),
       data);
-    result.content = response.body;
+    result.content = openai_error_message(result.error_code, data);
     return result;
   }
 
@@ -674,6 +826,9 @@ llm_response openai_compatible_llm_client::parse_openai_response(const http_resp
   if (message.contains("content") && message["content"].is_string()) {
     result.content = message["content"].get<std::string>();
   }
+
+  result.reasoning_summary = reasoning_text_from_object(message);
+  result.reasoning_metadata = reasoning_metadata_from_object(message);
 
   if (message.contains("tool_calls") && message["tool_calls"].is_array()) {
     for (const auto& call : message["tool_calls"]) {

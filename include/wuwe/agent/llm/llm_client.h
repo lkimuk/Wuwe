@@ -47,37 +47,55 @@ public:
     const llm_request& request,
     const llm_stream_callbacks& callbacks,
     std::stop_token stop_token = {}) {
+    const auto emit_event = [&](const llm_stream_event& event) {
+      if (callbacks.on_event) {
+        callbacks.on_event(event);
+      }
+      if (event.type == llm_stream_event_type::reasoning_delta &&
+          callbacks.on_reasoning_delta && !event.reasoning_delta.empty()) {
+        callbacks.on_reasoning_delta(event.reasoning_delta);
+      }
+      if (event.type == llm_stream_event_type::reasoning_done &&
+          callbacks.on_reasoning_done && !event.reasoning_summary.empty()) {
+        callbacks.on_reasoning_done(event.reasoning_summary);
+      }
+    };
+
     auto response = complete(request, stop_token);
     if (response.error_code) {
-      if (callbacks.on_event) {
-        callbacks.on_event({
-          .type = llm_stream_event_type::error,
-          .response = response,
-          .error_code = response.error_code,
-          .message = response.content,
-        });
-      }
+      emit_event({
+        .type = llm_stream_event_type::error,
+        .response = response,
+        .error_code = response.error_code,
+        .message = response.content,
+      });
       return response;
     }
 
-    if (callbacks.on_event) {
-      if (!response.content.empty()) {
-        callbacks.on_event({
-          .type = llm_stream_event_type::content_delta,
-          .content_delta = response.content,
-        });
-      }
-      for (const auto& call : response.tool_calls) {
-        callbacks.on_event({
-          .type = llm_stream_event_type::tool_call_done,
-          .tool_call = call,
-        });
-      }
-      callbacks.on_event({
-        .type = llm_stream_event_type::done,
+    if (!response.content.empty()) {
+      emit_event({
+        .type = llm_stream_event_type::content_delta,
+        .content_delta = response.content,
+      });
+    }
+    if (!response.reasoning_summary.empty()) {
+      emit_event({
+        .type = llm_stream_event_type::reasoning_done,
+        .reasoning_summary = response.reasoning_summary,
+        .reasoning_metadata = response.reasoning_metadata,
         .response = response,
       });
     }
+    for (const auto& call : response.tool_calls) {
+      emit_event({
+        .type = llm_stream_event_type::tool_call_done,
+        .tool_call = call,
+      });
+    }
+    emit_event({
+      .type = llm_stream_event_type::done,
+      .response = response,
+    });
 
     return response;
   }

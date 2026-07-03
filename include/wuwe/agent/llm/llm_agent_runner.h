@@ -23,6 +23,8 @@ enum class llm_agent_event_type {
   model_started,
   model_first_event,
   model_content_delta,
+  model_reasoning_delta,
+  model_reasoning_completed,
   tool_call_building,
   tool_call_ready,
   tool_started,
@@ -49,6 +51,8 @@ struct llm_agent_callbacks {
   std::function<bool(const llm_tool_call&)> allow_tool_call;
   std::function<void(const llm_agent_event&)> on_event;
   std::function<void(std::string_view)> on_delta;
+  std::function<void(std::string_view)> on_reasoning_delta;
+  std::function<void(std::string_view)> on_reasoning_done;
   std::function<void(const llm_stream_event&)> on_stream_event;
   std::function<void(const llm_tool_call&)> on_tool_start;
   std::function<void(const llm_tool_call&, const llm_tool_result&)> on_tool_result;
@@ -244,6 +248,8 @@ private:
     const bool use_streaming =
       client_.supports_streaming() &&
       (static_cast<bool>(options.callbacks.on_delta) ||
+       static_cast<bool>(options.callbacks.on_reasoning_delta) ||
+       static_cast<bool>(options.callbacks.on_reasoning_done) ||
        static_cast<bool>(options.callbacks.on_event) ||
        static_cast<bool>(options.callbacks.on_stream_event));
     llm_response response =
@@ -257,6 +263,7 @@ private:
     }
     if (!use_streaming) {
       emit_delta(options.callbacks, response);
+      emit_reasoning_done(options.callbacks, response);
     }
     observe_assistant_response(response);
 
@@ -318,6 +325,7 @@ private:
       }
       if (!use_streaming) {
         emit_delta(options.callbacks, response);
+        emit_reasoning_done(options.callbacks, response);
       }
       observe_assistant_response(response);
     }
@@ -341,6 +349,29 @@ private:
     if (callbacks.on_delta && !response.content.empty()) {
       callbacks.on_delta(response.content);
     }
+  }
+
+  static void emit_reasoning_done(
+    const llm_agent_callbacks& callbacks,
+    const llm_response& response) {
+    if (response.reasoning_summary.empty()) {
+      return;
+    }
+    llm_stream_event stream_event {
+      .type = llm_stream_event_type::reasoning_done,
+      .reasoning_summary = response.reasoning_summary,
+      .reasoning_metadata = response.reasoning_metadata,
+      .response = response,
+    };
+    if (callbacks.on_reasoning_done) {
+      callbacks.on_reasoning_done(response.reasoning_summary);
+    }
+    emit_agent_event(callbacks, {
+      .type = llm_agent_event_type::model_reasoning_completed,
+      .message = response.reasoning_summary,
+      .stream_event = &stream_event,
+      .response = &response,
+    });
   }
 
   llm_response complete_model(
@@ -367,6 +398,7 @@ private:
 
     llm_stream_callbacks stream_callbacks;
     bool saw_first_event = false;
+    bool saw_reasoning_completed = false;
     stream_callbacks.on_event = [&](const llm_stream_event& event) {
       if (!saw_first_event) {
         saw_first_event = true;
@@ -392,6 +424,32 @@ private:
           .stream_event = &event,
         });
       }
+      else if (event.type == llm_stream_event_type::reasoning_delta &&
+               !event.reasoning_delta.empty()) {
+        if (callbacks.on_reasoning_delta) {
+          callbacks.on_reasoning_delta(event.reasoning_delta);
+        }
+        emit_agent_event(callbacks, {
+          .type = llm_agent_event_type::model_reasoning_delta,
+          .delta = event.reasoning_delta,
+          .request = &request,
+          .stream_event = &event,
+        });
+      }
+      else if (event.type == llm_stream_event_type::reasoning_done &&
+               !event.reasoning_summary.empty()) {
+        saw_reasoning_completed = true;
+        if (callbacks.on_reasoning_done) {
+          callbacks.on_reasoning_done(event.reasoning_summary);
+        }
+        emit_agent_event(callbacks, {
+          .type = llm_agent_event_type::model_reasoning_completed,
+          .message = event.reasoning_summary,
+          .request = &request,
+          .stream_event = &event,
+          .response = event.response ? &*event.response : nullptr,
+        });
+      }
       else if (event.type == llm_stream_event_type::tool_call_delta) {
         emit_agent_event(callbacks, {
           .type = llm_agent_event_type::tool_call_building,
@@ -411,6 +469,9 @@ private:
       }
     };
     auto response = client_.complete_stream(request, stream_callbacks, stop_token);
+    if (!response.reasoning_summary.empty() && !saw_reasoning_completed) {
+      emit_reasoning_done(callbacks, response);
+    }
     emit_agent_event(callbacks, {
       .type = llm_agent_event_type::model_completed,
       .request = &request,

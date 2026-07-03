@@ -17,6 +17,7 @@
 #include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/print.h>
 #include <wuwe/net/http_client.h>
+#include <wuwe/net/http_status_code.h>
 #include <wuwe/net/sse_event_parser.h>
 
 namespace agent_runtime_test_tools {
@@ -157,8 +158,11 @@ public:
 
 class streaming_capture_http_client final : public http_client {
 public:
-  explicit streaming_capture_http_client(std::vector<std::string> chunks)
-      : chunks_(std::move(chunks)) {
+  explicit streaming_capture_http_client(
+    std::vector<std::string> chunks,
+    http_response response = {})
+      : chunks_(std::move(chunks)),
+        response_(std::move(response)) {
   }
 
   http_response send(const http_request& request) override {
@@ -585,8 +589,78 @@ void test_openrouter_streaming_content_and_tool_call_accumulation() {
   require(payload.value("stream", false), "streaming request should set stream=true");
 }
 
+void test_openai_compatible_streaming_separates_reasoning_from_content() {
+  auto http = std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Checking inputs. \"},"
+    "\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"### Final\\n\"},"
+    "\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Ready.\"},"
+    "\"finish_reason\":null}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Answer\"},"
+    "\"finish_reason\":\"stop\"}]}\n\n",
+    "data: [DONE]\n\n",
+  });
+
+  openai_compatible_llm_client client({
+    .base_url = "https://compatible.example",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, http);
+
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  std::vector<llm_stream_event> events;
+  std::string reasoning_callback;
+  llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const llm_stream_event& event) {
+    events.push_back(event);
+  };
+  callbacks.on_reasoning_delta = [&](std::string_view delta) {
+    reasoning_callback += delta;
+  };
+
+  const auto response = client.complete_stream(request, callbacks);
+  require(!response.error_code, "reasoning stream should succeed");
+  require(response.content == "### Final\nAnswer",
+    "content deltas should remain final answer content only");
+  require(response.reasoning_summary == "Checking inputs. Ready.",
+    "reasoning deltas should aggregate separately");
+  require(reasoning_callback == response.reasoning_summary,
+    "reasoning callback should receive only reasoning deltas");
+
+  int content_deltas = 0;
+  int reasoning_deltas = 0;
+  int reasoning_done = 0;
+  for (const auto& event : events) {
+    if (event.type == llm_stream_event_type::content_delta) {
+      ++content_deltas;
+      require(event.reasoning_delta.empty(),
+        "content events should not carry reasoning deltas");
+    }
+    if (event.type == llm_stream_event_type::reasoning_delta) {
+      ++reasoning_deltas;
+      require(event.content_delta.empty(),
+        "reasoning events should not carry content deltas");
+    }
+    if (event.type == llm_stream_event_type::reasoning_done) {
+      ++reasoning_done;
+      require(event.reasoning_summary == response.reasoning_summary,
+        "reasoning_done should carry the final reasoning summary");
+    }
+  }
+  require(content_deltas == 2, "streaming should emit content deltas separately");
+  require(reasoning_deltas == 2, "streaming should emit reasoning deltas separately");
+  require(reasoning_done == 1, "streaming should emit one reasoning_done event");
+}
+
 void test_agent_runner_forwards_structured_stream_events() {
   auto http = std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"inspect\"},"
+    "\"finish_reason\":null}]}\n\n",
     "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n",
     "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\","
     "\"type\":\"function\",\"function\":{\"name\":\"echo_\",\"arguments\":\"{\\\"text\\\"\"}}]},"
@@ -687,6 +761,8 @@ void test_agent_runner_stream_event_callback_enables_streaming_without_text_delt
 
 void test_agent_runner_emits_agent_native_streaming_events() {
   auto http = std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"inspect\"},"
+    "\"finish_reason\":null}]}\n\n",
     "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n",
     "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\","
     "\"type\":\"function\",\"function\":{\"name\":\"echo_\",\"arguments\":\"{\\\"text\\\"\"}}]},"
@@ -726,6 +802,10 @@ void test_agent_runner_emits_agent_native_streaming_events() {
     "agent event stream should include model_first_event");
   require(has(llm_agent_event_type::model_content_delta),
     "agent event stream should include model_content_delta");
+  require(has(llm_agent_event_type::model_reasoning_delta),
+    "agent event stream should include model_reasoning_delta");
+  require(has(llm_agent_event_type::model_reasoning_completed),
+    "agent event stream should include model_reasoning_completed");
   require(has(llm_agent_event_type::tool_call_building),
     "agent event stream should include tool_call_building");
   require(has(llm_agent_event_type::tool_call_ready),
@@ -1011,6 +1091,52 @@ void test_openai_compatible_and_openrouter_config_boundaries() {
     "OpenRouter preset should allow callers to suppress title attribution");
 }
 
+void test_openai_compatible_client_accepts_numeric_error_fields() {
+  llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+
+  auto completion_http = std::make_shared<streaming_capture_http_client>(
+    std::vector<std::string> {},
+    http_response {
+      .error_code = http_status_code::not_found,
+      .status_code = 404,
+      .body = R"({"error":{"message":"No endpoints found for this model","code":404}})",
+    });
+
+  openai_compatible_llm_client completion_client({
+    .base_url = "https://openrouter.ai/api/v1",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, completion_http);
+
+  const auto completion_response = completion_client.complete(request);
+  require(completion_response.error_code == agent::llm_error_code::model_unavailable,
+    "numeric OpenAI-compatible error code 404 should classify as model_unavailable");
+  require(completion_response.content == "No endpoints found for this model",
+    "numeric OpenAI-compatible error fields should preserve the provider message");
+
+  auto streaming_http = std::make_shared<streaming_capture_http_client>(
+    std::vector<std::string> {
+      "data: {\"error\":{\"message\":\"No endpoints found for this model\",\"code\":404}}\n\n",
+    });
+
+  openai_compatible_llm_client streaming_client({
+    .base_url = "https://openrouter.ai/api/v1",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+    .max_retries = 0,
+  }, streaming_http);
+
+  const auto streaming_response = streaming_client.complete_stream(request, {});
+  require(streaming_response.error_code == agent::llm_error_code::model_unavailable,
+    "numeric streaming OpenAI-compatible error code 404 should classify as model_unavailable");
+  require(streaming_response.content == "No endpoints found for this model",
+    "numeric streaming OpenAI-compatible error fields should preserve the provider message");
+}
+
 void test_openai_compatible_client_reports_missing_api_key_without_network() {
   openai_compatible_llm_client client({
     .base_url = "https://openrouter.ai/api",
@@ -1057,6 +1183,8 @@ int main() {
       test_sse_parser_handles_split_and_batched_events);
     run("OpenRouter streaming content and tool call accumulation",
       test_openrouter_streaming_content_and_tool_call_accumulation);
+    run("OpenAI-compatible streaming separates reasoning from content",
+      test_openai_compatible_streaming_separates_reasoning_from_content);
     run("agent runner forwards structured stream events",
       test_agent_runner_forwards_structured_stream_events);
     run("agent runner stream event callback enables streaming without text delta",
@@ -1075,6 +1203,8 @@ int main() {
       test_openai_compatible_streaming_invalid_event_uses_sanitized_error);
     run("OpenAI-compatible and OpenRouter config boundaries",
       test_openai_compatible_and_openrouter_config_boundaries);
+    run("OpenAI-compatible client accepts numeric error fields",
+      test_openai_compatible_client_accepts_numeric_error_fields);
     run("OpenAI-compatible client reports missing api key without network",
       test_openai_compatible_client_reports_missing_api_key_without_network);
   }

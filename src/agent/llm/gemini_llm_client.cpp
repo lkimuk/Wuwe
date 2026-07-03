@@ -94,7 +94,16 @@ void append_candidate(llm_response& result, const json& candidate) {
       continue;
     }
     if (part.contains("text") && part["text"].is_string()) {
-      result.content += part["text"].get<std::string>();
+      if (part.value("thought", false)) {
+        result.reasoning_summary += part["text"].get<std::string>();
+      }
+      else {
+        result.content += part["text"].get<std::string>();
+      }
+      if (part.contains("thoughtSignature") && part["thoughtSignature"].is_string()) {
+        result.reasoning_metadata["thought_signature"] =
+          part["thoughtSignature"].get<std::string>();
+      }
     }
     else if (part.contains("functionCall") && part["functionCall"].is_object()) {
       const auto& function = part["functionCall"];
@@ -110,6 +119,14 @@ void append_candidate(llm_response& result, const json& candidate) {
 void emit_stream_event(const llm_stream_callbacks& callbacks, llm_stream_event event) {
   if (callbacks.on_event) {
     callbacks.on_event(event);
+  }
+  if (event.type == llm_stream_event_type::reasoning_delta &&
+      callbacks.on_reasoning_delta && !event.reasoning_delta.empty()) {
+    callbacks.on_reasoning_delta(event.reasoning_delta);
+  }
+  if (event.type == llm_stream_event_type::reasoning_done &&
+      callbacks.on_reasoning_done && !event.reasoning_summary.empty()) {
+    callbacks.on_reasoning_done(event.reasoning_summary);
   }
 }
 
@@ -380,6 +397,18 @@ llm_response gemini_llm_client::complete_stream(
         append_candidate(chunk, candidate);
       }
     }
+    if (!chunk.reasoning_summary.empty()) {
+      result.reasoning_summary += chunk.reasoning_summary;
+      for (const auto& [key, value] : chunk.reasoning_metadata) {
+        result.reasoning_metadata[key] = value;
+      }
+      emitted_output = true;
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::reasoning_delta,
+        .reasoning_delta = chunk.reasoning_summary,
+        .reasoning_metadata = result.reasoning_metadata,
+      });
+    }
     if (!chunk.content.empty()) {
       result.content += chunk.content;
       emitted_output = true;
@@ -468,6 +497,14 @@ llm_response gemini_llm_client::complete_stream(
     emit_stream_event(callbacks, { .type = llm_stream_event_type::error, .response = result, .error_code = result.error_code, .message = result.content });
   }
   else {
+    if (!result.reasoning_summary.empty()) {
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::reasoning_done,
+        .reasoning_summary = result.reasoning_summary,
+        .reasoning_metadata = result.reasoning_metadata,
+        .response = result,
+      });
+    }
     emit_stream_event(callbacks, { .type = llm_stream_event_type::done, .response = result });
   }
   return result;

@@ -75,6 +75,14 @@ void emit_stream_event(const llm_stream_callbacks& callbacks, llm_stream_event e
   if (callbacks.on_event) {
     callbacks.on_event(event);
   }
+  if (event.type == llm_stream_event_type::reasoning_delta &&
+      callbacks.on_reasoning_delta && !event.reasoning_delta.empty()) {
+    callbacks.on_reasoning_delta(event.reasoning_delta);
+  }
+  if (event.type == llm_stream_event_type::reasoning_done &&
+      callbacks.on_reasoning_done && !event.reasoning_summary.empty()) {
+    callbacks.on_reasoning_done(event.reasoning_summary);
+  }
 }
 
 } // namespace
@@ -244,6 +252,13 @@ llm_response anthropic_llm_client::parse_response(const http_response& response)
     if (type == "text") {
       result.content += block.value("text", std::string {});
     }
+    else if (type == "thinking") {
+      result.reasoning_summary += block.value("thinking", std::string {});
+      const auto signature = block.value("signature", std::string {});
+      if (!signature.empty()) {
+        result.reasoning_metadata["signature"] = signature;
+      }
+    }
     else if (type == "tool_use") {
       result.tool_calls.push_back({
         .id = block.value("id", std::string {}),
@@ -385,6 +400,24 @@ llm_response anthropic_llm_client::complete_stream(
         emitted_output = true;
         emit_stream_event(callbacks, { .type = llm_stream_event_type::content_delta, .content_delta = text });
       }
+      else if (delta.value("type", std::string {}) == "thinking_delta") {
+        const auto thinking = delta.value("thinking", std::string {});
+        if (!thinking.empty()) {
+          result.reasoning_summary += thinking;
+          emitted_output = true;
+          emit_stream_event(callbacks, {
+            .type = llm_stream_event_type::reasoning_delta,
+            .reasoning_delta = thinking,
+            .reasoning_metadata = result.reasoning_metadata,
+          });
+        }
+      }
+      else if (delta.value("type", std::string {}) == "signature_delta") {
+        const auto signature = delta.value("signature", std::string {});
+        if (!signature.empty()) {
+          result.reasoning_metadata["signature"] += signature;
+        }
+      }
       else if (delta.value("type", std::string {}) == "input_json_delta") {
         auto& call = tool_calls[index];
         const auto partial = delta.value("partial_json", std::string {});
@@ -421,6 +454,14 @@ llm_response anthropic_llm_client::complete_stream(
     }
     else if (type == "message_stop") {
       saw_done = true;
+      if (!result.reasoning_summary.empty()) {
+        emit_stream_event(callbacks, {
+          .type = llm_stream_event_type::reasoning_done,
+          .reasoning_summary = result.reasoning_summary,
+          .reasoning_metadata = result.reasoning_metadata,
+          .response = result,
+        });
+      }
       emit_stream_event(callbacks, { .type = llm_stream_event_type::done, .response = result });
     }
     return true;
@@ -505,6 +546,14 @@ llm_response anthropic_llm_client::complete_stream(
     });
   }
   else if ((ignored_stream_transport_error || ignored_invalid_stream_event) && !saw_done) {
+    if (!result.reasoning_summary.empty()) {
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::reasoning_done,
+        .reasoning_summary = result.reasoning_summary,
+        .reasoning_metadata = result.reasoning_metadata,
+        .response = result,
+      });
+    }
     emit_stream_event(callbacks, { .type = llm_stream_event_type::done, .response = result });
   }
   return result;

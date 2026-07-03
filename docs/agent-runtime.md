@@ -36,14 +36,22 @@ auto response = runner.complete(request, std::move(options));
 
 When the bound client supports true streaming and any streaming observer is set,
 the runner uses the client's streaming path. `on_delta` receives legacy text
-content deltas; `on_stream_event` receives the raw provider-normalized
-`llm_stream_event` values, including `tool_call_delta`; and `on_event` receives
-Agent-level lifecycle events such as `model_first_event`,
-`tool_call_building`, `tool_call_ready`, `tool_started`, `tool_completed`, and
-`model_completed`.
+content deltas; `on_reasoning_delta` and `on_reasoning_done` receive
+provider-supplied visible reasoning summaries when available; `on_stream_event`
+receives the raw provider-normalized `llm_stream_event` values, including
+`reasoning_delta` and `tool_call_delta`; and `on_event` receives Agent-level
+lifecycle events such as `model_first_event`, `model_content_delta`,
+`model_reasoning_delta`, `model_reasoning_completed`, `tool_call_building`,
+`tool_call_ready`, `tool_started`, `tool_completed`, and `model_completed`.
+
+`content_delta` is final answer text. Host applications should not render it as
+thinking progress. When the provider does not supply reasoning summaries, use
+real lifecycle states such as waiting for the model, preparing a tool call,
+running a tool, or generating the final answer.
 
 If the client does not support streaming, `on_delta` falls back to receiving the
-available response content after each completed model call.
+available response content after each completed model call, and
+`on_reasoning_done` receives any final `llm_response::reasoning_summary`.
 
 OpenAI-compatible streaming is documented in [LLM Streaming](llm-streaming.md).
 

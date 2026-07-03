@@ -274,6 +274,7 @@ private:
     std::vector<reasoning_trace_record> trace;
     bool budget_exceeded { false };
     bool defer_terminal_callbacks { false };
+    bool emitted_reasoning_completed { false };
     reasoning_error_code budget_error_code { reasoning_error_code::unknown };
     std::string budget_error;
   };
@@ -296,6 +297,15 @@ private:
     auto response = complete_agent(std::move(llm_request), std::move(run_options), request.policy);
     result.final_response = response;
     result.content = response.content;
+    result.reasoning_summary = response.reasoning_summary;
+    if (!response.reasoning_summary.empty() && !state->emitted_reasoning_completed) {
+      notify({
+        .type = reasoning_event_type::reasoning_completed,
+        .mode = request.policy.mode,
+        .reasoning_summary = response.reasoning_summary,
+        .metadata = response.reasoning_metadata,
+      }, state.get());
+    }
     result.completed = static_cast<bool>(response);
     if (response.error_code) {
       result.underlying_error = response.error_code;
@@ -348,6 +358,7 @@ private:
       auto candidate = run_model_once(request, current_input, state);
       last.final_response = candidate.final_response;
       last.content = candidate.content;
+      last.reasoning_summary = candidate.reasoning_summary;
       last.reasoning_error = candidate.reasoning_error;
       last.underlying_error = candidate.underlying_error;
       last.error_code = candidate.error_code;
@@ -519,6 +530,24 @@ private:
             notify({
               .type = reasoning_event_type::model_first_event,
               .mode = mode,
+            }, state.get());
+            break;
+          case llm_agent_event_type::model_reasoning_delta:
+            notify({
+              .type = reasoning_event_type::reasoning_delta,
+              .mode = mode,
+              .reasoning_delta = event.delta,
+              .metadata = event.stream_event ? event.stream_event->reasoning_metadata
+                                             : std::map<std::string, std::string> {},
+            }, state.get());
+            break;
+          case llm_agent_event_type::model_reasoning_completed:
+            notify({
+              .type = reasoning_event_type::reasoning_completed,
+              .mode = mode,
+              .reasoning_summary = event.message,
+              .metadata = event.stream_event ? event.stream_event->reasoning_metadata
+                                             : std::map<std::string, std::string> {},
             }, state.get());
             break;
           case llm_agent_event_type::tool_call_building:
@@ -738,6 +767,9 @@ private:
 
   void notify(reasoning_event event, run_state* state = nullptr) const {
     if (state) {
+      if (event.type == reasoning_event_type::reasoning_completed) {
+        state->emitted_reasoning_completed = true;
+      }
       if (event.elapsed.count() == 0) {
         event.elapsed = elapsed_since(state->started);
       }
@@ -756,6 +788,14 @@ private:
     if (event.type == reasoning_event_type::content_delta && callbacks.on_delta &&
         !event.delta.empty()) {
       callbacks.on_delta(event.delta);
+    }
+    if (event.type == reasoning_event_type::reasoning_delta &&
+        callbacks.on_reasoning_delta && !event.reasoning_delta.empty()) {
+      callbacks.on_reasoning_delta(event.reasoning_delta);
+    }
+    if (event.type == reasoning_event_type::reasoning_completed &&
+        callbacks.on_reasoning_done && !event.reasoning_summary.empty()) {
+      callbacks.on_reasoning_done(event.reasoning_summary);
     }
     if (state->defer_terminal_callbacks &&
         (event.type == reasoning_event_type::completed ||
@@ -882,6 +922,8 @@ private:
       .step_id = event.step_id,
       .message = event.message,
       .delta = event.delta,
+      .reasoning_delta = event.reasoning_delta,
+      .reasoning_summary = event.reasoning_summary,
       .error = event.type == reasoning_event_type::failed ||
                    event.type == reasoning_event_type::cancelled
                  ? event.message

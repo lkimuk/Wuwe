@@ -160,6 +160,8 @@ enum class reasoning_event_type {
   model_started,
   model_first_event,
   content_delta,
+  reasoning_delta,
+  reasoning_completed,
   tool_call_building,
   tool_call_ready,
   tool_started,
@@ -188,6 +190,10 @@ inline std::string to_string(reasoning_event_type type) {
       return "model_first_event";
     case reasoning_event_type::content_delta:
       return "content_delta";
+    case reasoning_event_type::reasoning_delta:
+      return "reasoning_delta";
+    case reasoning_event_type::reasoning_completed:
+      return "reasoning_completed";
     case reasoning_event_type::tool_call_building:
       return "tool_call_building";
     case reasoning_event_type::tool_call_ready:
@@ -354,6 +360,8 @@ struct reasoning_trace_record {
   std::string step_id;
   std::string message;
   std::string delta;
+  std::string reasoning_delta;
+  std::string reasoning_summary;
   std::string error;
   std::chrono::milliseconds elapsed { 0 };
   std::map<std::string, std::string> metadata;
@@ -372,6 +380,7 @@ struct reasoning_result {
   reasoning_mode mode { reasoning_mode::simple };
   bool completed { false };
   std::string content;
+  std::string reasoning_summary;
   llm_response final_response;
   std::optional<planning::plan_run_result> plan;
   std::vector<reflection::reflection_run_result> reflections;
@@ -394,6 +403,8 @@ struct reasoning_event {
   reasoning_mode mode { reasoning_mode::simple };
   std::string message;
   std::string delta;
+  std::string reasoning_delta;
+  std::string reasoning_summary;
   std::string step_id;
   const llm_tool_call* tool_call {};
   const llm_tool_result* tool_result {};
@@ -416,6 +427,8 @@ struct reasoning_error {
 struct reasoning_callbacks {
   reasoning_observer on_event;
   std::function<void(std::string_view)> on_delta;
+  std::function<void(std::string_view)> on_reasoning_delta;
+  std::function<void(std::string_view)> on_reasoning_done;
   std::function<void(const reasoning_result&)> on_done;
   std::function<void(const reasoning_error&)> on_error;
   std::function<void(const reasoning_result&)> on_cancelled;
@@ -445,6 +458,8 @@ inline nlohmann::json reasoning_trace_record_to_json(const reasoning_trace_recor
     { "step_id", record.step_id },
     { "message", record.message },
     { "delta", record.delta },
+    { "reasoning_delta", record.reasoning_delta },
+    { "reasoning_summary", record.reasoning_summary },
     { "error", record.error },
     { "elapsed_ms", record.elapsed.count() },
     { "metadata", record.metadata },
@@ -465,6 +480,7 @@ inline nlohmann::json reasoning_result_to_json(const reasoning_result& result) {
     { "mode", to_string(result.mode) },
     { "completed", result.completed },
     { "content", result.content },
+    { "reasoning_summary", result.reasoning_summary },
     { "reasoning_error", to_string(result.reasoning_error) },
     { "underlying_error", result.underlying_error ? result.underlying_error.message() : "" },
     { "error", result.error },

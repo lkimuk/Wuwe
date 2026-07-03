@@ -11,6 +11,7 @@ string handling into agent orchestration code.
 - Expose true provider streaming through `complete_stream()`.
 - Parse Server-Sent Events independently from provider-specific JSON.
 - Emit structured stream events, not only raw text chunks.
+- Keep provider-supplied reasoning summaries separate from final answer text.
 - Accumulate streamed tool calls before the agent runner invokes tools.
 - Keep runner callbacks stable: applications can use `on_delta` without knowing
   whether a client used true streaming or a fallback full response.
@@ -74,11 +75,20 @@ content event plus a done event. Providers that can stream override
 
 Stream callbacks receive `llm_stream_event`:
 
-- `content_delta`: text generated so far.
+- `content_delta`: final answer text generated so far.
+- `reasoning_delta`: provider-supplied visible reasoning/thinking summary
+  generated so far.
+- `reasoning_done`: final accumulated reasoning summary, if one was supplied.
 - `tool_call_delta`: partial tool id, name, or arguments.
 - `tool_call_done`: one fully accumulated tool call.
 - `done`: final accumulated `llm_response`.
 - `error`: terminal failure, with partial response content when available.
+
+`content_delta` is never a thinking channel. Hosts that want an "analyzing"
+surface should use `reasoning_delta`, Agent lifecycle events, and tool events;
+they should not display partial Markdown answer text as if it were model
+reasoning. Wuwe does not fabricate reasoning summaries for providers or models
+that do not supply them.
 
 ### Provider Clients
 
@@ -90,6 +100,13 @@ their native stream format into Wuwe's shared events:
 - Anthropic parses Messages API SSE events.
 - Gemini parses `streamGenerateContent?alt=sse` events.
 - Ollama parses line-delimited JSON chat chunks.
+
+When a provider emits explicit reasoning or thinking fields, Wuwe maps them to
+`reasoning_delta` and `llm_response::reasoning_summary`. Provider-specific
+signature or detail fields are preserved in `reasoning_metadata` when present.
+These fields are intended for provider-supplied visible summaries or exposed
+thinking streams, not for prompting the model to write fake status text in the
+answer body.
 
 ### OpenAI-Compatible Client And Provider Presets
 
@@ -120,12 +137,18 @@ For tool calls, OpenAI-compatible providers may stream `function.name` and
 index, emits `tool_call_delta` events for observability, and returns complete
 `llm_tool_call` values to the runner.
 
+OpenAI-compatible providers that expose fields such as `reasoning_content`,
+`reasoning_summary`, `thinking`, or `thinking_delta` are normalized into the
+reasoning-summary channel. If those fields are absent, no reasoning events are
+emitted.
+
 ### Agent Runner
 
 `llm_agent_runner` chooses true streaming when both conditions are met:
 
 - `client.supports_streaming()` is true,
-- at least one of `on_delta`, `on_stream_event`, or `on_event` is set.
+- at least one of `on_delta`, `on_reasoning_delta`,
+  `on_reasoning_done`, `on_stream_event`, or `on_event` is set.
 
 Otherwise the runner keeps the existing synchronous behavior.
 
@@ -136,6 +159,8 @@ Agent-native events through `llm_agent_callbacks::on_event`:
 - `model_started`
 - `model_first_event`
 - `model_content_delta`
+- `model_reasoning_delta`
+- `model_reasoning_completed`
 - `tool_call_building`
 - `tool_call_ready`
 - `tool_started`
@@ -160,6 +185,8 @@ streaming is enabled:
 
 - `model_first_event`
 - `content_delta`
+- `reasoning_delta`
+- `reasoning_completed`
 - `tool_call_building`
 - `tool_call_ready`
 - `model_started`
@@ -250,6 +277,9 @@ callbacks.on_event = [](const wuwe::llm_stream_event& event) {
   if (event.type == wuwe::llm_stream_event_type::content_delta) {
     wuwe::print("{}", event.content_delta);
   }
+  if (event.type == wuwe::llm_stream_event_type::reasoning_delta) {
+    // Render as temporary analysis/status UI, not final Markdown answer text.
+  }
 };
 
 auto response = client->complete_stream(request, callbacks);
@@ -261,6 +291,9 @@ Runner streaming:
 wuwe::llm_agent_run_options options;
 options.callbacks.on_delta = [](std::string_view delta) {
   wuwe::print("{}", delta);
+};
+options.callbacks.on_reasoning_delta = [](std::string_view delta) {
+  // Render provider-supplied visible reasoning summary.
 };
 options.callbacks.on_event = [](const wuwe::llm_agent_event& event) {
   if (event.type == wuwe::llm_agent_event_type::tool_call_building) {

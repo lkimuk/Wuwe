@@ -62,12 +62,14 @@ struct llm_usage {
 
 struct llm_response {
   std::string content;
+  std::string reasoning_summary;
   std::error_code error_code;
   llm_usage usage;
   std::string finish_reason;
   std::string stop_reason;
   std::vector<llm_tool_call> tool_calls;
   std::map<std::string, std::string> metadata;
+  std::map<std::string, std::string> reasoning_metadata;
 
   explicit operator bool() const noexcept {
     return !error_code;
@@ -76,6 +78,8 @@ struct llm_response {
 
 enum class llm_stream_event_type {
   content_delta,
+  reasoning_delta,
+  reasoning_done,
   tool_call_delta,
   tool_call_done,
   done,
@@ -92,6 +96,9 @@ struct llm_tool_call_delta {
 struct llm_stream_event {
   llm_stream_event_type type { llm_stream_event_type::content_delta };
   std::string content_delta;
+  std::string reasoning_delta;
+  std::string reasoning_summary;
+  std::map<std::string, std::string> reasoning_metadata;
   std::optional<llm_tool_call_delta> tool_call_delta;
   std::optional<llm_tool_call> tool_call;
   std::optional<llm_response> response;
@@ -101,6 +108,8 @@ struct llm_stream_event {
 
 struct llm_stream_callbacks {
   std::function<void(const llm_stream_event&)> on_event;
+  std::function<void(std::string_view)> on_reasoning_delta;
+  std::function<void(std::string_view)> on_reasoning_done;
 };
 
 WUWE_NAMESPACE_END

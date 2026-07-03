@@ -82,9 +82,30 @@ void append_tool_calls(llm_response& result, const json& message) {
   }
 }
 
+std::string message_reasoning_text(const json& message) {
+  if (!message.is_object()) {
+    return {};
+  }
+  for (const auto* key : { "thinking", "reasoning", "reasoning_content" }) {
+    const auto it = message.find(key);
+    if (it != message.end() && it->is_string()) {
+      return it->get<std::string>();
+    }
+  }
+  return {};
+}
+
 void emit_stream_event(const llm_stream_callbacks& callbacks, llm_stream_event event) {
   if (callbacks.on_event) {
     callbacks.on_event(event);
+  }
+  if (event.type == llm_stream_event_type::reasoning_delta &&
+      callbacks.on_reasoning_delta && !event.reasoning_delta.empty()) {
+    callbacks.on_reasoning_delta(event.reasoning_delta);
+  }
+  if (event.type == llm_stream_event_type::reasoning_done &&
+      callbacks.on_reasoning_done && !event.reasoning_summary.empty()) {
+    callbacks.on_reasoning_done(event.reasoning_summary);
   }
 }
 
@@ -204,6 +225,7 @@ llm_response ollama_llm_client::parse_response(const http_response& response) co
   }
   const auto& message = data["message"];
   result.content = message.value("content", std::string {});
+  result.reasoning_summary = message_reasoning_text(message);
   append_tool_calls(result, message);
   result.finish_reason = data.value("done_reason", std::string {});
   result.usage.prompt_tokens = data.value("prompt_eval_count", 0);
@@ -304,6 +326,16 @@ llm_response ollama_llm_client::complete_stream(
     }
     if (data.contains("message") && data["message"].is_object()) {
       const auto& message = data["message"];
+      const auto reasoning_delta = message_reasoning_text(message);
+      if (!reasoning_delta.empty()) {
+        result.reasoning_summary += reasoning_delta;
+        emitted_output = true;
+        emit_stream_event(callbacks, {
+          .type = llm_stream_event_type::reasoning_delta,
+          .reasoning_delta = reasoning_delta,
+          .reasoning_metadata = result.reasoning_metadata,
+        });
+      }
       const auto delta = message.value("content", std::string {});
       if (!delta.empty()) {
         result.content += delta;
@@ -329,6 +361,14 @@ llm_response ollama_llm_client::complete_stream(
       result.usage.prompt_tokens = data.value("prompt_eval_count", 0);
       result.usage.completion_tokens = data.value("eval_count", 0);
       result.usage.total_tokens = result.usage.prompt_tokens + result.usage.completion_tokens;
+      if (!result.reasoning_summary.empty()) {
+        emit_stream_event(callbacks, {
+          .type = llm_stream_event_type::reasoning_done,
+          .reasoning_summary = result.reasoning_summary,
+          .reasoning_metadata = result.reasoning_metadata,
+          .response = result,
+        });
+      }
       emit_stream_event(callbacks, { .type = llm_stream_event_type::done, .response = result });
     }
     return true;
@@ -427,6 +467,14 @@ llm_response ollama_llm_client::complete_stream(
     });
   }
   else if ((ignored_stream_transport_error || ignored_invalid_stream_event) && !saw_done) {
+    if (!result.reasoning_summary.empty()) {
+      emit_stream_event(callbacks, {
+        .type = llm_stream_event_type::reasoning_done,
+        .reasoning_summary = result.reasoning_summary,
+        .reasoning_metadata = result.reasoning_metadata,
+        .response = result,
+      });
+    }
     emit_stream_event(callbacks, { .type = llm_stream_event_type::done, .response = result });
   }
   return result;

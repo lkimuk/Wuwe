@@ -23,6 +23,8 @@ struct llm_provider_capabilities {
   bool tools { false };
   bool tool_choice { false };
   bool json_response_format { false };
+  bool reasoning_summary { false };
+  bool streaming_reasoning_summary { false };
   bool multimodal_input { false };
   bool local_runtime { false };
 };

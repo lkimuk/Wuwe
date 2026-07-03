@@ -327,6 +327,8 @@ should marshal callbacks back to the UI thread before updating UI state.
 - `started`
 - `model_started`
 - `content_delta`
+- `reasoning_delta`
+- `reasoning_completed`
 - `tool_started`
 - `tool_completed`
 - `reflection_started`
@@ -354,6 +356,8 @@ For async runs, `reasoning_callbacks` separates common host needs:
 
 - `on_event`: every observable event.
 - `on_delta`: streamed or synthesized content deltas.
+- `on_reasoning_delta`: provider-supplied visible reasoning summary deltas.
+- `on_reasoning_done`: final provider-supplied reasoning summary.
 - `on_done`: successful terminal result.
 - `on_error`: failed terminal result with stable `reasoning_error_code` and
   optional underlying provider error.
@@ -375,13 +379,17 @@ Each trace record includes:
 - `step_id`: planning step id when available,
 - `message`: human-readable event message,
 - `delta`: streamed content delta when available,
+- `reasoning_delta`: streamed provider reasoning-summary delta when available,
+- `reasoning_summary`: final provider reasoning summary when available,
 - `error`: terminal error text for failed or cancelled events,
 - `elapsed`: elapsed time since the reasoning run started,
 - `metadata`: caller or subsystem metadata.
 
 Trace records are for observable execution. They are not hidden
 chain-of-thought. Wuwe records lifecycle events, actions, tool observations,
-planning events, reflection events, deltas, and terminal status.
+planning events, reflection events, final-answer deltas, provider-supplied
+visible reasoning summaries, and terminal status. If a provider does not expose
+reasoning summaries, Wuwe does not generate fake reasoning text.
 
 Typical use:
 

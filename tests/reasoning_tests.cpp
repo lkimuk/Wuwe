@@ -76,6 +76,7 @@ public:
     requests.push_back(request);
     llm_response response {
       .content = "draft",
+      .reasoning_summary = "checking streamed tool",
       .tool_calls = {
         {
           .id = "call-1",
@@ -85,6 +86,10 @@ public:
       },
     };
     if (callbacks.on_event) {
+      callbacks.on_event({
+        .type = llm_stream_event_type::reasoning_delta,
+        .reasoning_delta = "checking streamed tool",
+      });
       callbacks.on_event({
         .type = llm_stream_event_type::content_delta,
         .content_delta = "draft",
@@ -109,6 +114,11 @@ public:
       callbacks.on_event({
         .type = llm_stream_event_type::tool_call_done,
         .tool_call = response.tool_calls.front(),
+      });
+      callbacks.on_event({
+        .type = llm_stream_event_type::reasoning_done,
+        .reasoning_summary = response.reasoning_summary,
+        .response = response,
       });
       callbacks.on_event({
         .type = llm_stream_event_type::done,
@@ -401,6 +411,7 @@ void react_mode_maps_agent_stream_events_to_reasoning_events() {
   auto provider = std::make_shared<tool_provider<echo_tool>>();
 
   std::vector<reasoning::reasoning_event_type> events;
+  std::string streamed_reasoning;
   auto runner = reasoning::reasoning_runner::with_tools(client, provider, {
     .observer = [&](const reasoning::reasoning_event& event) {
       events.push_back(event.type);
@@ -416,10 +427,21 @@ void react_mode_maps_agent_stream_events_to_reasoning_events() {
       },
       .enable_streaming = true,
     },
+  },
+  {
+    .callbacks = {
+      .on_reasoning_delta = [&](std::string_view delta) {
+        streamed_reasoning += delta;
+      },
+    },
   });
 
   require(!result.completed,
     "streamed tool call with zero tool rounds should stop before tool execution");
+  require(result.reasoning_summary == "checking streamed tool",
+    "reasoning should preserve final provider reasoning summary");
+  require(streamed_reasoning == "checking streamed tool",
+    "reasoning callbacks should receive provider reasoning deltas");
   const auto has = [&](reasoning::reasoning_event_type type) {
     return std::find(events.begin(), events.end(), type) != events.end();
   };
@@ -427,6 +449,10 @@ void react_mode_maps_agent_stream_events_to_reasoning_events() {
     "reasoning should map agent model_first_event");
   require(has(reasoning::reasoning_event_type::content_delta),
     "reasoning should preserve streamed content deltas");
+  require(has(reasoning::reasoning_event_type::reasoning_delta),
+    "reasoning should preserve streamed reasoning deltas");
+  require(has(reasoning::reasoning_event_type::reasoning_completed),
+    "reasoning should preserve reasoning completion");
   require(has(reasoning::reasoning_event_type::tool_call_building),
     "reasoning should map streamed tool call deltas");
   require(has(reasoning::reasoning_event_type::tool_call_ready),

@@ -184,6 +184,8 @@ void test_provider_registry_exposes_default_metadata_and_config() {
     "OpenAI metadata should expose its protocol");
   require(openai->capabilities.streaming && openai->capabilities.tools,
     "OpenAI metadata should expose core chat capabilities");
+  require(!openai->capabilities.streaming_reasoning_summary,
+    "OpenAI chat-completions metadata should not advertise reasoning streams by default");
   require(wuwe::to_string(openai->protocol) == "openai_compatible",
     "provider protocol should have a stable string form");
 
@@ -202,6 +204,13 @@ void test_provider_registry_exposes_default_metadata_and_config() {
     "Ollama metadata should not require an API key by default");
   require(ollama->capabilities.local_runtime,
     "Ollama metadata should identify local runtime providers");
+  require(ollama->capabilities.streaming_reasoning_summary,
+    "Ollama metadata should expose provider-native thinking streams when models return them");
+
+  const auto* deepseek = wuwe::find_llm_provider("DeepSeek");
+  require(deepseek != nullptr, "provider registry should expose DeepSeek");
+  require(deepseek->capabilities.streaming_reasoning_summary,
+    "DeepSeek metadata should expose provider-native reasoning streams");
 
   const auto anthropic_config = wuwe::make_default_llm_config("Anthropic");
   require(anthropic_config.has_value(),
@@ -395,7 +404,7 @@ void test_native_provider_clients_parse_text_and_tools() {
   request.messages.push_back({ .role = "user", .content = "hello" });
 
   auto anthropic_http = std::make_shared<capture_http_client>(
-    R"({"content":[{"type":"text","text":"hi"},{"type":"tool_use","id":"t1","name":"lookup","input":{"q":"x"}}],"stop_reason":"tool_use","usage":{"input_tokens":2,"output_tokens":3}})");
+    R"({"content":[{"type":"thinking","thinking":"inspect","signature":"sig-a"},{"type":"text","text":"hi"},{"type":"tool_use","id":"t1","name":"lookup","input":{"q":"x"}}],"stop_reason":"tool_use","usage":{"input_tokens":2,"output_tokens":3}})");
   wuwe::anthropic_llm_client anthropic({
     .api_key = "",
     .require_api_key = false,
@@ -407,11 +416,15 @@ void test_native_provider_clients_parse_text_and_tools() {
   require(has_request_header(anthropic_http->requests.front(), "anthropic-version"),
     "Anthropic client should send anthropic-version");
   require(anthropic_response.content == "hi", "Anthropic client should parse text blocks");
+  require(anthropic_response.reasoning_summary == "inspect",
+    "Anthropic client should parse thinking blocks separately");
+  require(anthropic_response.reasoning_metadata.at("signature") == "sig-a",
+    "Anthropic client should preserve thinking signatures as metadata");
   require(anthropic_response.tool_calls.size() == 1,
     "Anthropic client should parse tool_use blocks");
 
   auto gemini_http = std::make_shared<capture_http_client>(
-    R"({"candidates":[{"content":{"parts":[{"text":"hi"},{"functionCall":{"name":"lookup","args":{"q":"x"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}})");
+    R"({"candidates":[{"content":{"parts":[{"text":"inspect","thought":true,"thoughtSignature":"sig-g"},{"text":"hi"},{"functionCall":{"name":"lookup","args":{"q":"x"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}})");
   wuwe::gemini_llm_client gemini({
     .api_key = "",
     .require_api_key = false,
@@ -424,11 +437,15 @@ void test_native_provider_clients_parse_text_and_tools() {
   require(has_request_header(gemini_http->requests.front(), "x-goog-api-key") == false,
     "Gemini client should omit empty API key header");
   require(gemini_response.content == "hi", "Gemini client should parse text parts");
+  require(gemini_response.reasoning_summary == "inspect",
+    "Gemini client should parse thought parts separately");
+  require(gemini_response.reasoning_metadata.at("thought_signature") == "sig-g",
+    "Gemini client should preserve thought signatures as metadata");
   require(gemini_response.tool_calls.size() == 1,
     "Gemini client should parse functionCall parts");
 
   auto ollama_http = std::make_shared<capture_http_client>(
-    R"({"message":{"role":"assistant","content":"hi","tool_calls":[{"function":{"name":"lookup","arguments":{"q":"x"}}}]},"done_reason":"stop","prompt_eval_count":2,"eval_count":3})");
+    R"({"message":{"role":"assistant","thinking":"inspect","content":"hi","tool_calls":[{"function":{"name":"lookup","arguments":{"q":"x"}}}]},"done_reason":"stop","prompt_eval_count":2,"eval_count":3})");
   wuwe::ollama_llm_client ollama({
     .model = "llama-test",
   }, ollama_http);
@@ -436,6 +453,8 @@ void test_native_provider_clients_parse_text_and_tools() {
   require(ollama_http->requests.front().url == "http://localhost:11434/api/chat",
     "Ollama client should use the local chat API URL");
   require(ollama_response.content == "hi", "Ollama client should parse message content");
+  require(ollama_response.reasoning_summary == "inspect",
+    "Ollama client should parse thinking content separately");
   require(ollama_response.tool_calls.size() == 1,
     "Ollama client should parse tool_calls");
 }
@@ -454,6 +473,10 @@ void test_native_provider_streaming_success_and_incomplete_streams() {
     "event: message_start\n"
     "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2}}}\n\n"
     "event: content_block_delta\n"
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"inspect\"}}\n\n"
+    "event: content_block_delta\n"
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-a\"}}\n\n"
+    "event: content_block_delta\n"
     "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
     "event: message_delta\n"
     "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n"
@@ -467,6 +490,10 @@ void test_native_provider_streaming_success_and_incomplete_streams() {
   auto anthropic_response = anthropic.complete_stream(request, callbacks);
   require(!anthropic_response.error_code, "Anthropic stream should succeed");
   require(anthropic_response.content == "hi", "Anthropic stream should aggregate text");
+  require(anthropic_response.reasoning_summary == "inspect",
+    "Anthropic stream should aggregate thinking deltas separately");
+  require(anthropic_response.reasoning_metadata.at("signature") == "sig-a",
+    "Anthropic stream should preserve thinking signature metadata");
   require(anthropic_response.usage.total_tokens == 5, "Anthropic stream should parse usage");
 
   auto anthropic_incomplete_http = std::make_shared<capture_http_client>(
@@ -482,7 +509,7 @@ void test_native_provider_streaming_success_and_incomplete_streams() {
     "Anthropic incomplete stream should fail");
 
   auto gemini_http = std::make_shared<capture_http_client>(
-    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],"
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"inspect\",\"thought\":true,\"thoughtSignature\":\"sig-g\"},{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],"
     "\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":3,\"totalTokenCount\":5}}\n\n");
   wuwe::gemini_llm_client gemini({
     .api_key = "",
@@ -492,6 +519,10 @@ void test_native_provider_streaming_success_and_incomplete_streams() {
   auto gemini_response = gemini.complete_stream(request, callbacks);
   require(!gemini_response.error_code, "Gemini stream should succeed");
   require(gemini_response.content == "hi", "Gemini stream should aggregate text");
+  require(gemini_response.reasoning_summary == "inspect",
+    "Gemini stream should aggregate thought parts separately");
+  require(gemini_response.reasoning_metadata.at("thought_signature") == "sig-g",
+    "Gemini stream should preserve thought signature metadata");
   require(gemini_response.usage.total_tokens == 5, "Gemini stream should parse usage");
 
   auto gemini_incomplete_http = std::make_shared<capture_http_client>(
@@ -506,7 +537,7 @@ void test_native_provider_streaming_success_and_incomplete_streams() {
     "Gemini incomplete stream should fail");
 
   auto ollama_http = std::make_shared<capture_http_client>(
-    "{\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":false}\n"
+    "{\"message\":{\"role\":\"assistant\",\"thinking\":\"inspect\",\"content\":\"hi\"},\"done\":false}\n"
     "{\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":2,\"eval_count\":3}\n");
   wuwe::ollama_llm_client ollama({
     .model = "llama-test",
@@ -514,7 +545,26 @@ void test_native_provider_streaming_success_and_incomplete_streams() {
   auto ollama_response = ollama.complete_stream(request, callbacks);
   require(!ollama_response.error_code, "Ollama stream should succeed");
   require(ollama_response.content == "hi", "Ollama stream should aggregate text");
+  require(ollama_response.reasoning_summary == "inspect",
+    "Ollama stream should aggregate thinking separately");
   require(ollama_response.usage.total_tokens == 5, "Ollama stream should parse usage");
+
+  int reasoning_delta_events = 0;
+  int reasoning_done_events = 0;
+  for (const auto& event : events) {
+    if (event.type == wuwe::llm_stream_event_type::reasoning_delta) {
+      ++reasoning_delta_events;
+      require(event.content_delta.empty(),
+        "provider reasoning events should not carry content deltas");
+    }
+    if (event.type == wuwe::llm_stream_event_type::reasoning_done) {
+      ++reasoning_done_events;
+    }
+  }
+  require(reasoning_delta_events == 3,
+    "native provider streams should emit reasoning deltas when supplied");
+  require(reasoning_done_events == 3,
+    "native provider streams should emit reasoning completion when supplied");
 
   auto ollama_incomplete_http = std::make_shared<capture_http_client>(
     "{\"message\":{\"role\":\"assistant\",\"content\":\"partial\"},\"done\":false}\n");
