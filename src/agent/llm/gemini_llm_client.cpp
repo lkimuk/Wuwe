@@ -155,7 +155,7 @@ llm_client_config gemini_llm_client::normalize_config(llm_client_config config) 
 
 json gemini_llm_client::build_payload(const llm_request& request) const {
   auto contents = json::array();
-  std::string system;
+  std::string system = llm_language_contract(request.language);
 
   for (const auto& msg : request.messages) {
     if (msg.role == "system") {
@@ -313,6 +313,12 @@ llm_response gemini_llm_client::complete(const llm_request& request, std::stop_t
       return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
     }
     auto result = parse_response(http_->send(req));
+    apply_reasoning_language_metadata(
+      result,
+      request.language,
+      has_language_preferences(request.language)
+        ? llm_reasoning_language_control::prompt_contract
+        : llm_reasoning_language_control::unsupported);
     if (stop_token.stop_requested() && !result.error_code) {
       result.error_code = agent::make_error_code(agent::llm_error_code::cancelled);
     }
@@ -345,6 +351,10 @@ llm_response gemini_llm_client::complete_stream(
   }
 
   llm_response result;
+  const auto reasoning_language_control =
+    has_language_preferences(request.language)
+      ? llm_reasoning_language_control::prompt_contract
+      : llm_reasoning_language_control::unsupported;
   sse_event_parser parser;
   bool emitted_output = false;
   bool saw_event = false;
@@ -402,6 +412,11 @@ llm_response gemini_llm_client::complete_stream(
       for (const auto& [key, value] : chunk.reasoning_metadata) {
         result.reasoning_metadata[key] = value;
       }
+      merge_reasoning_language_metadata(
+        result.reasoning_metadata,
+        request.language,
+        reasoning_language_control,
+        chunk.reasoning_summary);
       emitted_output = true;
       emit_stream_event(callbacks, {
         .type = llm_stream_event_type::reasoning_delta,
@@ -498,6 +513,7 @@ llm_response gemini_llm_client::complete_stream(
   }
   else {
     if (!result.reasoning_summary.empty()) {
+      apply_reasoning_language_metadata(result, request.language, reasoning_language_control);
       emit_stream_event(callbacks, {
         .type = llm_stream_event_type::reasoning_done,
         .reasoning_summary = result.reasoning_summary,

@@ -339,6 +339,7 @@ struct reasoning_request {
   std::string system_prompt;
   std::string model;
   double temperature { 0.2 };
+  llm_language_preferences language;
   reasoning_policy policy;
   reflection::reflection_rubric rubric;
   std::map<std::string, std::string> metadata;

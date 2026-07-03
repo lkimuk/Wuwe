@@ -194,6 +194,10 @@ void simple_mode_runs_model_and_emits_events() {
 
   auto result = runner.run({
     .input = "answer simply",
+    .language = {
+      .response_language = "zh-CN",
+      .reasoning_language = "zh-CN",
+    },
     .policy = {
       .mode = reasoning::reasoning_mode::simple,
     },
@@ -202,6 +206,10 @@ void simple_mode_runs_model_and_emits_events() {
   require(result.completed, "simple reasoning completes");
   require(result.content == "simple answer", "simple reasoning returns model content");
   require(client.requests.size() == 1, "simple reasoning calls model once");
+  require(client.requests.front().language.response_language == "zh-CN",
+    "reasoning runner should propagate response language to LLM requests");
+  require(client.requests.front().language.reasoning_language == "zh-CN",
+    "reasoning runner should propagate reasoning language to LLM requests");
   require(result.usage.model_calls == 1, "simple reasoning records model usage");
   require(!result.trace.empty(), "simple reasoning records a trace");
   require(result.trace.front().type == reasoning::reasoning_event_type::started,

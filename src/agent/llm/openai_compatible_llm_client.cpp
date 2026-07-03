@@ -316,6 +316,12 @@ llm_response openai_compatible_llm_client::complete(const llm_request& request, 
 
     const auto response = http_->send(req);
     llm_response parsed = parse_openai_response(response);
+    apply_reasoning_language_metadata(
+      parsed,
+      request.language,
+      has_language_preferences(request.language)
+        ? llm_reasoning_language_control::prompt_contract
+        : llm_reasoning_language_control::unsupported);
     if (stop_token.stop_requested()) {
       return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
     }
@@ -396,6 +402,10 @@ llm_response openai_compatible_llm_client::complete_stream(
     }
 
     llm_response result;
+    const auto reasoning_language_control =
+      has_language_preferences(request.language)
+        ? llm_reasoning_language_control::prompt_contract
+        : llm_reasoning_language_control::unsupported;
     sse_event_parser parser;
     std::map<int, llm_tool_call> tool_calls;
     bool emitted_output = false;
@@ -486,6 +496,11 @@ llm_response openai_compatible_llm_client::complete_stream(
           merge_reasoning_metadata(
             result.reasoning_metadata,
             reasoning_metadata_from_object(delta));
+          merge_reasoning_language_metadata(
+            result.reasoning_metadata,
+            request.language,
+            reasoning_language_control,
+            reasoning_delta);
           emitted_output = true;
           emit_stream_event(callbacks, {
             .type = llm_stream_event_type::reasoning_delta,
@@ -620,6 +635,7 @@ llm_response openai_compatible_llm_client::complete_stream(
 
     if (!saw_sse_event) {
       result = parse_openai_response(response);
+      apply_reasoning_language_metadata(result, request.language, reasoning_language_control);
       if (result.error_code) {
         emit_stream_event(callbacks, {
           .type = llm_stream_event_type::error,
@@ -679,6 +695,7 @@ llm_response openai_compatible_llm_client::complete_stream(
     }
 
     if (!result.reasoning_summary.empty()) {
+      apply_reasoning_language_metadata(result, request.language, reasoning_language_control);
       emit_stream_event(callbacks, {
         .type = llm_stream_event_type::reasoning_done,
         .reasoning_summary = result.reasoning_summary,
@@ -700,6 +717,13 @@ llm_response openai_compatible_llm_client::complete_stream(
 
 json openai_compatible_llm_client::build_openai_payload(const llm_request& request) const {
   auto messages = json::array();
+  const auto language_contract = llm_language_contract(request.language);
+  if (!language_contract.empty()) {
+    messages.push_back({
+      {"role", "system"},
+      {"content", language_contract}
+    });
+  }
 
   for (const auto& msg : request.messages) {
     json message = {

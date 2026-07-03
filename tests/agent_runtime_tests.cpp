@@ -611,6 +611,10 @@ void test_openai_compatible_streaming_separates_reasoning_from_content() {
   }, http);
 
   llm_request request;
+  request.language = {
+    .response_language = "zh-CN",
+    .reasoning_language = "zh-CN",
+  };
   request.messages.push_back({ .role = "user", .content = "hello" });
 
   std::vector<llm_stream_event> events;
@@ -629,8 +633,26 @@ void test_openai_compatible_streaming_separates_reasoning_from_content() {
     "content deltas should remain final answer content only");
   require(response.reasoning_summary == "Checking inputs. Ready.",
     "reasoning deltas should aggregate separately");
+  require(response.reasoning_metadata.count("requested_language") == 1,
+    "reasoning metadata should include requested reasoning language");
+  require(response.reasoning_metadata.at("requested_language") == "zh-CN",
+    "reasoning metadata should carry requested reasoning language");
+  require(response.reasoning_metadata.count("detected_language") == 1,
+    "reasoning metadata should include detected reasoning language");
+  require(response.reasoning_metadata.at("detected_language") == "en",
+    "reasoning metadata should detect obvious English reasoning");
+  require(response.reasoning_metadata.count("language_mismatch") == 1,
+    "reasoning metadata should include language mismatch state");
+  require(response.reasoning_metadata.at("language_mismatch") == "true",
+    "reasoning metadata should mark language mismatch");
   require(reasoning_callback == response.reasoning_summary,
     "reasoning callback should receive only reasoning deltas");
+  const auto payload = nlohmann::json::parse(http->requests.front().body);
+  require(payload["messages"].front().value("role", std::string {}) == "system",
+    "reasoning language contract should be sent as a leading system message");
+  require(payload["messages"].front().value("content", std::string {}).find("zh-CN") !=
+      std::string::npos,
+    "reasoning language contract should include requested language");
 
   int content_deltas = 0;
   int reasoning_deltas = 0;
@@ -645,6 +667,10 @@ void test_openai_compatible_streaming_separates_reasoning_from_content() {
       ++reasoning_deltas;
       require(event.content_delta.empty(),
         "reasoning events should not carry content deltas");
+      require(event.reasoning_metadata.count("requested_language") == 1,
+        "reasoning delta metadata should include requested language");
+      require(event.reasoning_metadata.at("requested_language") == "zh-CN",
+        "reasoning delta metadata should carry requested language");
     }
     if (event.type == llm_stream_event_type::reasoning_done) {
       ++reasoning_done;

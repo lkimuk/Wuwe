@@ -49,6 +49,13 @@ thinking progress. When the provider does not supply reasoning summaries, use
 real lifecycle states such as waiting for the model, preparing a tool call,
 running a tool, or generating the final answer.
 
+Set `llm_request::language.response_language` and
+`llm_request::language.reasoning_language` when the host needs localized final
+answers and localized provider-visible reasoning summaries. Built-in providers
+map this to a prompt-level language contract and annotate returned reasoning
+events with language metadata when available. Wuwe does not translate or invent
+reasoning text.
+
 If the client does not support streaming, `on_delta` falls back to receiving the
 available response content after each completed model call, and
 `on_reasoning_done` receives any final `llm_response::reasoning_summary`.

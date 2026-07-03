@@ -134,6 +134,13 @@ llm_client_config ollama_llm_client::normalize_config(llm_client_config config) 
 
 json ollama_llm_client::build_payload(const llm_request& request, bool stream) const {
   auto messages = json::array();
+  const auto language_contract = llm_language_contract(request.language);
+  if (!language_contract.empty()) {
+    messages.push_back({
+      {"role", "system"},
+      {"content", language_contract},
+    });
+  }
   for (const auto& msg : request.messages) {
     json message = {
       {"role", msg.role == "tool" ? "tool" : msg.role},
@@ -256,6 +263,12 @@ llm_response ollama_llm_client::complete(const llm_request& request, std::stop_t
       return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
     }
     auto result = parse_response(http_->send(req));
+    apply_reasoning_language_metadata(
+      result,
+      request.language,
+      has_language_preferences(request.language)
+        ? llm_reasoning_language_control::prompt_contract
+        : llm_reasoning_language_control::unsupported);
     if (stop_token.stop_requested() && !result.error_code) {
       result.error_code = agent::make_error_code(agent::llm_error_code::cancelled);
     }
@@ -283,6 +296,10 @@ llm_response ollama_llm_client::complete_stream(
   }
 
   llm_response result;
+  const auto reasoning_language_control =
+    has_language_preferences(request.language)
+      ? llm_reasoning_language_control::prompt_contract
+      : llm_reasoning_language_control::unsupported;
   std::string buffer;
   bool emitted_output = false;
   bool saw_event = false;
@@ -329,6 +346,11 @@ llm_response ollama_llm_client::complete_stream(
       const auto reasoning_delta = message_reasoning_text(message);
       if (!reasoning_delta.empty()) {
         result.reasoning_summary += reasoning_delta;
+        merge_reasoning_language_metadata(
+          result.reasoning_metadata,
+          request.language,
+          reasoning_language_control,
+          reasoning_delta);
         emitted_output = true;
         emit_stream_event(callbacks, {
           .type = llm_stream_event_type::reasoning_delta,
@@ -362,6 +384,7 @@ llm_response ollama_llm_client::complete_stream(
       result.usage.completion_tokens = data.value("eval_count", 0);
       result.usage.total_tokens = result.usage.prompt_tokens + result.usage.completion_tokens;
       if (!result.reasoning_summary.empty()) {
+        apply_reasoning_language_metadata(result, request.language, reasoning_language_control);
         emit_stream_event(callbacks, {
           .type = llm_stream_event_type::reasoning_done,
           .reasoning_summary = result.reasoning_summary,
@@ -468,6 +491,7 @@ llm_response ollama_llm_client::complete_stream(
   }
   else if ((ignored_stream_transport_error || ignored_invalid_stream_event) && !saw_done) {
     if (!result.reasoning_summary.empty()) {
+      apply_reasoning_language_metadata(result, request.language, reasoning_language_control);
       emit_stream_event(callbacks, {
         .type = llm_stream_event_type::reasoning_done,
         .reasoning_summary = result.reasoning_summary,

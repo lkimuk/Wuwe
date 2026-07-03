@@ -5,6 +5,8 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include <wuwe/net/http_status_code.h>
 #include <wuwe/net/net_errc.h>
 #include <wuwe/wuwe.h>
@@ -186,6 +188,9 @@ void test_provider_registry_exposes_default_metadata_and_config() {
     "OpenAI metadata should expose core chat capabilities");
   require(!openai->capabilities.streaming_reasoning_summary,
     "OpenAI chat-completions metadata should not advertise reasoning streams by default");
+  require(openai->capabilities.reasoning_language_control ==
+      wuwe::llm_reasoning_language_control::unsupported,
+    "OpenAI metadata should not advertise reasoning language control without reasoning streams");
   require(wuwe::to_string(openai->protocol) == "openai_compatible",
     "provider protocol should have a stable string form");
 
@@ -206,11 +211,17 @@ void test_provider_registry_exposes_default_metadata_and_config() {
     "Ollama metadata should identify local runtime providers");
   require(ollama->capabilities.streaming_reasoning_summary,
     "Ollama metadata should expose provider-native thinking streams when models return them");
+  require(ollama->capabilities.reasoning_language_control ==
+      wuwe::llm_reasoning_language_control::prompt_contract,
+    "Ollama metadata should not claim reliable native reasoning language control");
 
   const auto* deepseek = wuwe::find_llm_provider("DeepSeek");
   require(deepseek != nullptr, "provider registry should expose DeepSeek");
   require(deepseek->capabilities.streaming_reasoning_summary,
     "DeepSeek metadata should expose provider-native reasoning streams");
+  require(wuwe::to_string(deepseek->capabilities.reasoning_language_control) ==
+      "prompt_contract",
+    "reasoning language control should have a stable string form");
 
   const auto anthropic_config = wuwe::make_default_llm_config("Anthropic");
   require(anthropic_config.has_value(),
@@ -457,6 +468,78 @@ void test_native_provider_clients_parse_text_and_tools() {
     "Ollama client should parse thinking content separately");
   require(ollama_response.tool_calls.size() == 1,
     "Ollama client should parse tool_calls");
+}
+
+void test_reasoning_language_contract_is_mapped_to_provider_payloads() {
+  wuwe::llm_request request;
+  request.language = {
+    .response_language = "zh-CN",
+    .reasoning_language = "zh-CN",
+    .locale = "zh-CN",
+  };
+  request.messages.push_back({ .role = "user", .content = "分析一下当前应用" });
+
+  auto openai_http = std::make_shared<capture_http_client>(
+    R"({"choices":[{"message":{"reasoning_content":"The user wants analysis.","content":"好的"},"finish_reason":"stop"}]})");
+  wuwe::openai_compatible_llm_client openai({
+    .base_url = "https://compatible.example",
+    .api_key = "",
+    .require_api_key = false,
+    .model = "test-model",
+  }, openai_http);
+  const auto openai_response = openai.complete(request);
+  const auto openai_body = nlohmann::json::parse(openai_http->requests.front().body);
+  require(openai_body["messages"].front().value("role", std::string {}) == "system",
+    "OpenAI-compatible language contract should be the first system message");
+  require(openai_body["messages"].front().value("content", std::string {}).find("zh-CN") !=
+      std::string::npos,
+    "OpenAI-compatible language contract should include requested language");
+  require(openai_response.reasoning_metadata.at("requested_language") == "zh-CN",
+    "reasoning metadata should preserve requested reasoning language");
+  require(openai_response.reasoning_metadata.at("detected_language") == "en",
+    "reasoning metadata should detect obvious English reasoning");
+  require(openai_response.reasoning_metadata.at("language_mismatch") == "true",
+    "reasoning metadata should mark requested/detected language mismatch");
+  require(openai_response.reasoning_metadata.at("language_control") == "prompt_contract",
+    "reasoning metadata should identify prompt-contract language control");
+
+  auto anthropic_http = std::make_shared<capture_http_client>(
+    R"({"content":[{"type":"text","text":"好的"}],"stop_reason":"end_turn"})");
+  wuwe::anthropic_llm_client anthropic({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "claude-test",
+  }, anthropic_http);
+  (void)anthropic.complete(request);
+  const auto anthropic_body = nlohmann::json::parse(anthropic_http->requests.front().body);
+  require(anthropic_body.value("system", std::string {}).find("zh-CN") != std::string::npos,
+    "Anthropic language contract should be carried in system");
+
+  auto gemini_http = std::make_shared<capture_http_client>(
+    R"({"candidates":[{"content":{"parts":[{"text":"好的"}]},"finishReason":"STOP"}]})");
+  wuwe::gemini_llm_client gemini({
+    .api_key = "",
+    .require_api_key = false,
+    .model = "gemini-test",
+  }, gemini_http);
+  (void)gemini.complete(request);
+  const auto gemini_body = nlohmann::json::parse(gemini_http->requests.front().body);
+  require(gemini_body["systemInstruction"]["parts"].front().value("text", std::string {})
+        .find("zh-CN") != std::string::npos,
+    "Gemini language contract should be carried in systemInstruction");
+
+  auto ollama_http = std::make_shared<capture_http_client>(
+    R"({"message":{"role":"assistant","content":"好的"},"done_reason":"stop"})");
+  wuwe::ollama_llm_client ollama({
+    .model = "llama-test",
+  }, ollama_http);
+  (void)ollama.complete(request);
+  const auto ollama_body = nlohmann::json::parse(ollama_http->requests.front().body);
+  require(ollama_body["messages"].front().value("role", std::string {}) == "system",
+    "Ollama language contract should be the first system message");
+  require(ollama_body["messages"].front().value("content", std::string {}).find("zh-CN") !=
+      std::string::npos,
+    "Ollama language contract should include requested language");
 }
 
 void test_native_provider_streaming_success_and_incomplete_streams() {
@@ -844,6 +927,7 @@ int main() {
     test_aggregate_header_preserves_tool_reflection();
     test_openai_compatible_provider_presets();
     test_native_provider_clients_parse_text_and_tools();
+    test_reasoning_language_contract_is_mapped_to_provider_payloads();
     test_native_provider_streaming_success_and_incomplete_streams();
     test_native_provider_streaming_uses_stage_timeout_options();
     test_native_provider_streaming_sanitizes_tail_errors_after_output();

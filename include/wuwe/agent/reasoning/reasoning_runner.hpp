@@ -504,6 +504,7 @@ private:
     llm_request output;
     output.model = request.model;
     output.temperature = request.temperature;
+    output.language = request.language;
     if (!request.system_prompt.empty()) {
       output.messages.push_back({ .role = "system", .content = request.system_prompt });
     }

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <wuwe/agent/llm/llm_config.h>
+#include <wuwe/agent/llm/llm_types.h>
 #include <wuwe/common/wuwe_fwd.h>
 
 WUWE_NAMESPACE_BEGIN
@@ -25,6 +26,9 @@ struct llm_provider_capabilities {
   bool json_response_format { false };
   bool reasoning_summary { false };
   bool streaming_reasoning_summary { false };
+  llm_reasoning_language_control reasoning_language_control {
+    llm_reasoning_language_control::unsupported
+  };
   bool multimodal_input { false };
   bool local_runtime { false };
 };

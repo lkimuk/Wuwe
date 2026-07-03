@@ -367,6 +367,14 @@ Terminal callbacks are dispatched after the final trace and usage are attached
 to `reasoning_result`, so UI timelines and logs can consume the final result
 without reconstructing trace state from earlier events.
 
+`reasoning_request::language` is forwarded into the underlying `llm_request`.
+Set `response_language` for the final answer language and `reasoning_language`
+for provider-visible reasoning summaries. If `reasoning_language` is empty, it
+follows `response_language`; if both are empty, `locale` is used as a fallback.
+Wuwe passes this as a provider language contract and records language metadata
+on reasoning events when summaries are returned. It does not translate or
+fabricate reasoning text.
+
 ## Trace Records
 
 Every emitted event is also recorded in `reasoning_result::trace`.

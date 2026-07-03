@@ -20,6 +20,7 @@ llm_provider_capabilities reasoning_openai_compatible_capabilities() {
   auto capabilities = cloud_chat_capabilities();
   capabilities.reasoning_summary = true;
   capabilities.streaming_reasoning_summary = true;
+  capabilities.reasoning_language_control = llm_reasoning_language_control::prompt_contract;
   return capabilities;
 }
 
@@ -30,6 +31,7 @@ llm_provider_capabilities anthropic_capabilities() {
     .tool_choice = true,
     .reasoning_summary = true,
     .streaming_reasoning_summary = true,
+    .reasoning_language_control = llm_reasoning_language_control::prompt_contract,
   };
 }
 
@@ -40,6 +42,7 @@ llm_provider_capabilities gemini_capabilities() {
     .tool_choice = true,
     .reasoning_summary = true,
     .streaming_reasoning_summary = true,
+    .reasoning_language_control = llm_reasoning_language_control::prompt_contract,
     .multimodal_input = true,
   };
 }
@@ -51,6 +54,7 @@ llm_provider_capabilities ollama_capabilities() {
     .json_response_format = true,
     .reasoning_summary = true,
     .streaming_reasoning_summary = true,
+    .reasoning_language_control = llm_reasoning_language_control::prompt_contract,
     .local_runtime = true,
   };
 }

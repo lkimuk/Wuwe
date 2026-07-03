@@ -90,6 +90,39 @@ they should not display partial Markdown answer text as if it were model
 reasoning. Wuwe does not fabricate reasoning summaries for providers or models
 that do not supply them.
 
+### Reasoning Language Contract
+
+Callers can set `llm_request::language` to request a natural language for the
+final answer and provider-visible reasoning summaries:
+
+```cpp
+wuwe::llm_request request;
+request.language.response_language = "zh-CN";
+request.language.reasoning_language = "zh-CN";
+request.language.locale = "zh-CN";
+```
+
+If `reasoning_language` is empty, it follows `response_language`; if both are
+empty, `locale` is used as the fallback. Provider clients map this to the
+highest-priority prompt/system instruction available for their protocol. This is
+a formal prompt contract, not a translation layer and not a guarantee that every
+provider will obey it.
+
+When reasoning summaries are returned, `reasoning_metadata` can include:
+
+- `requested_language`
+- `response_language`
+- `locale`
+- `language_control`: `prompt_contract`, `provider_native`,
+  `verified_reliable`, or `unsupported`
+- `language_detection`: `heuristic` or `unavailable`
+- `detected_language`
+- `language_mismatch`
+
+Wuwe does not translate provider reasoning internally. If a provider returns
+English reasoning for a Chinese request, the original reasoning text is kept and
+metadata marks the mismatch when it is obvious enough to detect.
+
 ### Provider Clients
 
 All built-in LLM clients expose streaming through the same

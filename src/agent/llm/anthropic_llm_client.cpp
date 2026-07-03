@@ -110,7 +110,7 @@ llm_client_config anthropic_llm_client::normalize_config(llm_client_config confi
 
 json anthropic_llm_client::build_payload(const llm_request& request, bool stream) const {
   json messages = json::array();
-  std::string system;
+  std::string system = llm_language_contract(request.language);
 
   for (const auto& msg : request.messages) {
     if (msg.role == "system") {
@@ -297,6 +297,12 @@ llm_response anthropic_llm_client::complete(const llm_request& request, std::sto
       return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
     }
     auto result = parse_response(http_->send(req));
+    apply_reasoning_language_metadata(
+      result,
+      request.language,
+      has_language_preferences(request.language)
+        ? llm_reasoning_language_control::prompt_contract
+        : llm_reasoning_language_control::unsupported);
     if (stop_token.stop_requested() && !result.error_code) {
       result.error_code = agent::make_error_code(agent::llm_error_code::cancelled);
     }
@@ -329,6 +335,10 @@ llm_response anthropic_llm_client::complete_stream(
   }
 
   llm_response result;
+  const auto reasoning_language_control =
+    has_language_preferences(request.language)
+      ? llm_reasoning_language_control::prompt_contract
+      : llm_reasoning_language_control::unsupported;
   sse_event_parser parser;
   std::map<int, llm_tool_call> tool_calls;
   bool emitted_output = false;
@@ -404,6 +414,11 @@ llm_response anthropic_llm_client::complete_stream(
         const auto thinking = delta.value("thinking", std::string {});
         if (!thinking.empty()) {
           result.reasoning_summary += thinking;
+          merge_reasoning_language_metadata(
+            result.reasoning_metadata,
+            request.language,
+            reasoning_language_control,
+            thinking);
           emitted_output = true;
           emit_stream_event(callbacks, {
             .type = llm_stream_event_type::reasoning_delta,
@@ -455,6 +470,7 @@ llm_response anthropic_llm_client::complete_stream(
     else if (type == "message_stop") {
       saw_done = true;
       if (!result.reasoning_summary.empty()) {
+        apply_reasoning_language_metadata(result, request.language, reasoning_language_control);
         emit_stream_event(callbacks, {
           .type = llm_stream_event_type::reasoning_done,
           .reasoning_summary = result.reasoning_summary,
@@ -547,6 +563,7 @@ llm_response anthropic_llm_client::complete_stream(
   }
   else if ((ignored_stream_transport_error || ignored_invalid_stream_event) && !saw_done) {
     if (!result.reasoning_summary.empty()) {
+      apply_reasoning_language_metadata(result, request.language, reasoning_language_control);
       emit_stream_event(callbacks, {
         .type = llm_stream_event_type::reasoning_done,
         .reasoning_summary = result.reasoning_summary,
