@@ -2454,6 +2454,43 @@ void test_restricted_process_runtime_staging_reports_missing_python() {
     "restricted runtime staging status should have stable text");
 }
 
+void test_restricted_process_runtime_staging_resolves_python3_alias() {
+  const auto run_dir = make_probe_run_directory("runtime-staging-python3-alias");
+  probe_directory_cleanup cleanup(run_dir);
+  const auto source_home = run_dir / "source";
+  const auto destination_home = run_dir / "stage";
+  std::filesystem::create_directories(source_home / "Lib" / "encodings");
+  std::ofstream(source_home / "python3.exe", std::ios::binary) << "alias";
+  std::ofstream(source_home / "python.exe", std::ios::binary) << "interpreter";
+
+  const auto result =
+    execution_detail::stage_minimal_python_runtime_for_restricted_process({
+      .source_python = source_home / "python3.exe",
+      .destination_home = destination_home,
+    });
+
+  require_condition(
+    result.status ==
+      execution_detail::restricted_python_runtime_staging_status::ok,
+    std::string("restricted runtime alias staging failed: ") +
+      execution_detail::to_string(result.status) + " " + result.detail);
+  require_condition(
+    result.python_executable.filename() == "python.exe",
+    "restricted runtime staging should resolve python3.exe to python.exe");
+  require_condition(
+    std::filesystem::exists(destination_home / "python.exe") &&
+      !std::filesystem::exists(destination_home / "python3.exe"),
+    "restricted runtime staging should copy the resolved interpreter");
+  std::ifstream staged_python(destination_home / "python.exe", std::ios::binary);
+  const std::string staged_text {
+    std::istreambuf_iterator<char>(staged_python),
+    std::istreambuf_iterator<char>(),
+  };
+  require_condition(
+    staged_text == "interpreter",
+    "restricted runtime staging should copy the real interpreter contents");
+}
+
 void test_restricted_process_appcontainer_profile_reports_empty_name() {
   const auto result =
     execution_detail::create_restricted_appcontainer_profile({});
@@ -4120,6 +4157,7 @@ int main(int argc, char** argv) {
     test_windows_appcontainer_child_enforces_file_boundaries();
     test_windows_appcontainer_probe_launches_child_with_stdio_and_job();
     test_restricted_process_runtime_staging_reports_missing_python();
+    test_restricted_process_runtime_staging_resolves_python3_alias();
     test_restricted_process_appcontainer_profile_reports_empty_name();
     test_restricted_process_appcontainer_launch_reports_invalid_sid();
     test_restricted_process_acl_reports_invalid_sid();

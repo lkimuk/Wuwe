@@ -48,6 +48,22 @@ bool is_python_runtime_dll(const std::filesystem::path& path) {
   return extension == L".dll" && filename.rfind(L"python", 0) == 0;
 }
 
+std::filesystem::path resolve_source_python(
+  const std::filesystem::path& source_python) {
+  if (lowercase(source_python.filename().wstring()) != L"python3.exe") {
+    return source_python;
+  }
+
+  // Some Windows distributions expose python3.exe as a redirector that must
+  // remain beside python.exe. Stage the real interpreter when it is available.
+  const auto python_executable = source_python.parent_path() / "python.exe";
+  std::error_code error;
+  if (std::filesystem::is_regular_file(python_executable, error)) {
+    return python_executable;
+  }
+  return source_python;
+}
+
 bool write_python_path_configuration(
   const std::filesystem::path& path,
   restricted_python_runtime_staging_result& result) {
@@ -238,7 +254,8 @@ stage_minimal_python_runtime_for_restricted_process(
       request.source_python.string());
   }
 
-  const auto source_home = request.source_python.parent_path();
+  const auto source_python = resolve_source_python(request.source_python);
+  const auto source_home = source_python.parent_path();
   if (source_home.empty() || !std::filesystem::exists(source_home, error)) {
     return make_result(
       request,
@@ -250,6 +267,9 @@ stage_minimal_python_runtime_for_restricted_process(
   auto result = make_result(
     request,
     restricted_python_runtime_staging_status::ok);
+  result.source_home = source_home;
+  result.python_executable =
+    request.destination_home / source_python.filename();
 
   if (request.replace_existing) {
     std::filesystem::remove_all(request.destination_home, error);
@@ -272,14 +292,14 @@ stage_minimal_python_runtime_for_restricted_process(
   }
 
   if (!copy_required_file(
-        request.source_python,
+        source_python,
         result.python_executable,
         result)) {
     return result;
   }
   if (!write_python_path_configuration(
         request.destination_home /
-          (request.source_python.stem().wstring() + L"._pth"),
+          (source_python.stem().wstring() + L"._pth"),
         result)) {
     return result;
   }
