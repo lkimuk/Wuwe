@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <fstream>
 #include <utility>
 
 namespace wuwe::agent::execution::detail {
@@ -39,6 +40,27 @@ bool is_windows_runtime_dll(const std::filesystem::path& path) {
   const auto filename = lowercase(path.filename().wstring());
   return filename.rfind(L"python", 0) == 0 ||
          filename.rfind(L"vcruntime", 0) == 0;
+}
+
+bool is_python_runtime_dll(const std::filesystem::path& path) {
+  const auto extension = lowercase(path.extension().wstring());
+  const auto filename = lowercase(path.filename().wstring());
+  return extension == L".dll" && filename.rfind(L"python", 0) == 0;
+}
+
+bool write_python_path_configuration(
+  const std::filesystem::path& path,
+  restricted_python_runtime_staging_result& result) {
+  // Keep the staged interpreter independent of machine-wide Python registry
+  // entries, including unregistered installations used by CI tool caches.
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output || !(output << "Lib\r\n")) {
+    result.status =
+      restricted_python_runtime_staging_status::write_configuration_failed;
+    result.detail = path.string();
+    return false;
+  }
+  return true;
 }
 
 bool copy_required_file(
@@ -175,6 +197,8 @@ const char* to_string(restricted_python_runtime_staging_status status) noexcept 
       return "create_destination_failed";
     case restricted_python_runtime_staging_status::copy_failed:
       return "copy_failed";
+    case restricted_python_runtime_staging_status::write_configuration_failed:
+      return "write_configuration_failed";
   }
   return "unknown";
 }
@@ -253,6 +277,12 @@ stage_minimal_python_runtime_for_restricted_process(
         result)) {
     return result;
   }
+  if (!write_python_path_configuration(
+        request.destination_home /
+          (request.source_python.stem().wstring() + L"._pth"),
+        result)) {
+    return result;
+  }
 
   std::filesystem::directory_iterator it(source_home, error);
   if (error) {
@@ -274,6 +304,13 @@ stage_minimal_python_runtime_for_restricted_process(
       if (!copy_required_file(
             it->path(),
             request.destination_home / it->path().filename(),
+            result)) {
+        return result;
+      }
+      if (is_python_runtime_dll(it->path()) &&
+          !write_python_path_configuration(
+            request.destination_home /
+              (it->path().stem().wstring() + L"._pth"),
             result)) {
         return result;
       }

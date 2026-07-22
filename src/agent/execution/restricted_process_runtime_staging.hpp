@@ -19,6 +19,7 @@ enum class restricted_python_runtime_staging_status {
   source_lib_missing,
   create_destination_failed,
   copy_failed,
+  write_configuration_failed,
 };
 
 struct restricted_python_runtime_staging_request {

@@ -2670,7 +2670,8 @@ void test_restricted_process_execution_plan_runs_python() {
     "restricted execution plan Python launch should exit successfully");
   require_condition(
     capture.stderr_text.empty(),
-    "restricted execution plan Python launch should not write stderr");
+    std::string("restricted execution plan Python launch wrote stderr: ") +
+      capture.stderr_text);
   require_condition(
     capture.stdout_text.find("plan_python_ok") != std::string::npos,
     "restricted execution plan Python launch did not run script");
@@ -3328,6 +3329,12 @@ void test_windows_appcontainer_runs_minimal_python_runtime() {
   require_condition(
     !staging_result.copied_files.empty(),
     "AppContainer Python runtime staging did not copy runtime files");
+  require_condition(
+    std::filesystem::exists(
+      run_dir /
+      (std::filesystem::path(WUWE_EXECUTION_TEST_PYTHON).stem().wstring() +
+       L"._pth")),
+    "AppContainer Python runtime staging did not write path configuration");
 
   const auto python_exe = staging_result.python_executable;
   const auto script_path = run_dir / "probe.py";
