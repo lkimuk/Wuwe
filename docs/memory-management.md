@@ -195,14 +195,20 @@ public:
 | --- | --- | --- |
 | `in_memory_store` | 测试、示例、短生命周期 session | 单进程内加锁，不跨进程持久化。 |
 | `file_memory_store` | 本地工具、小规模持久化 | JSON Lines 格式；`add()` 追加，`update/erase/clear` 重写文件。 |
-| `sqlite_memory_store` | 本地生产级持久化 | 可选构建；CMake 找到 SQLite3 时启用。 |
+| `sqlite_memory_store` | 本地单进程持久化 | 可选构建；适合小到中等规模数据，不等同于服务端数据库。 |
 
 SQLite 开关：
 
-- `WUWE_ENABLE_SQLITE=ON` 时尝试查找 SQLite3。
-- 找到开发库时定义 `WUWE_HAS_SQLITE=1`。
-- 未找到时定义 `WUWE_HAS_SQLITE=0`，默认构建不失败。
+- `WUWE_SQLITE_MODE=on` 时 SQLite3 是必需依赖，找不到则配置失败；官方发行 preset 使用该模式。
+- `WUWE_SQLITE_MODE=auto` 时找到开发库就定义 `WUWE_HAS_SQLITE=1`，否则构建不带 SQLite 能力。
+- `WUWE_SQLITE_MODE=off` 时明确禁用 SQLite，并定义 `WUWE_HAS_SQLITE=0`。
 - 未启用时包含 `sqlite_memory_store` 头文件仍可编译，但运行时调用会抛出清晰错误。
+- 旧的 `WUWE_ENABLE_SQLITE` 仅用于兼容已有构建目录，新配置应使用 `WUWE_SQLITE_MODE`。
+
+0.1.0 的 SQLite Memory 查询先在 SQL 中约束 scope，再在 C++ 中完成部分 kind、
+expiry、metadata 过滤和词法排序。它是可靠的本地持久化基线，但当前不承诺 FTS5、
+WAL 调优、schema migration 或多进程高并发写入。完整依赖和能力边界见
+[Dependencies](dependencies.md)。
 
 ## 5. 排序与召回
 
@@ -736,9 +742,14 @@ ctest --test-dir build -C Debug --output-on-failure -R memory_tests
 Windows vcpkg preset：
 
 ```sh
+set VCPKG_ROOT=D:\tools\vcpkg
+cmake --preset windows-vcpkg
 cmake --build --preset windows-vcpkg-debug --target memory_tests
 ctest --test-dir build-vcpkg -C Debug --output-on-failure -R memory_tests
 ```
+
+`cmake --preset windows-vcpkg` 使用仓库中的 `vcpkg.json` 自动恢复固定版本的
+SQLite 到构建目录，无需预先在系统中安装 SQLite 开发包。
 
 Qdrant live test 是 opt-in：
 

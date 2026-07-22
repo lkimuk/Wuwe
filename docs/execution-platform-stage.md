@@ -20,8 +20,8 @@ result JSON, and audit metadata. Product-level Python discovery and selection
 remain host responsibilities.
 
 Strong filesystem and network isolation must come from a backend that explicitly
-advertises that contract, such as a future restricted-process, container, or
-WASM backend.
+advertises that contract, such as the explicit Windows restricted-process
+backend, a future container backend, or a future WASM backend.
 
 ## Completed In P0
 
@@ -191,6 +191,40 @@ WASM backend.
   implemented.
 - ReArk UI approval and audit persistence are host-side work and are not part of
   this library stage.
+
+## Longer-Term Roadmap
+
+The current stage is a useful checkpoint, not the end of Wuwe execution work.
+The following work should stay visible in planning and release notes:
+
+- Keep `controlled_process` as the conservative default for bounded local
+  computation, with explicit documentation that it is not a filesystem/network
+  sandbox.
+- Keep the Windows `restricted_process` backend default-off until host products
+  explicitly configure interpreter, workdir, readable roots, writable roots,
+  approval UX, and audit policy.
+- Broaden Windows restricted-process acceptance coverage across Python
+  distributions, virtual environments, conda layouts, long paths, non-ASCII
+  paths, concurrent runs, and packaged application layouts.
+- Add regression tests for restricted runtime cleanup and AppContainer profile
+  cleanup under repeated failure, cancellation, timeout, and process-limit
+  scenarios.
+- Decide whether ReArk or other hosts need bundled restricted-runtime guidance
+  beyond the current minimal runtime staging.
+- Implement Linux/macOS process governance: process-tree cleanup, process
+  limits, CPU/memory limits, environment control, filesystem root policy, and
+  network denial using platform-appropriate primitives.
+- Implement a real container backend with explicit image/runtime selection,
+  read-only mounts, writable scratch, network namespace policy, resource limits,
+  cleanup, and audit metadata.
+- Implement a real WASM/WASI backend with preopened roots, no-network default,
+  deterministic resource limits, stdout/stderr capture, and audit metadata.
+- Keep registry selection fail-closed: when a task requires enforced
+  filesystem or network denial and no configured backend can provide it, Wuwe
+  should return no backend rather than falling back to `controlled_process`.
+- Keep ReArk product strategy separate from Wuwe library mechanics: ReArk
+  chooses Python, roots, approvals, UI messaging, and persistence; Wuwe probes,
+  executes, enforces backend contracts, and reports structured results.
 
 ## Backend Enforcement Contract
 

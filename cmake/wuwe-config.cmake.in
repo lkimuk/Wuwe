@@ -2,24 +2,32 @@
 
 include(CMakeFindDependencyMacro)
 
+set(WUWE_PACKAGE_HTTP_BACKEND "@WUWE_HTTP_BACKEND_NORMALIZED@")
+set(WUWE_PACKAGE_TLS_BACKEND "@WUWE_TLS_BACKEND_RESOLVED@")
+set(WUWE_PACKAGE_WITH_OPENSSL @WUWE_BUILT_WITH_OPENSSL@)
+set(WUWE_PACKAGE_WITH_HTTPLIB_HTTPS @WUWE_BUILT_WITH_HTTPLIB_HTTPS@)
+set(WUWE_PACKAGE_WITH_SQLITE @WUWE_BUILT_WITH_SQLITE@)
+set(WUWE_PACKAGE_SQLITE_DEPENDENCY "@WUWE_SQLITE_DEPENDENCY@")
+
+if(WUWE_PACKAGE_WITH_OPENSSL AND NOT TARGET OpenSSL::SSL)
+    find_dependency(OpenSSL REQUIRED)
+endif()
+
+if(WUWE_PACKAGE_WITH_SQLITE)
+    if(WUWE_PACKAGE_SQLITE_DEPENDENCY STREQUAL "cmake" AND NOT TARGET SQLite::SQLite3)
+        find_dependency(SQLite3 REQUIRED)
+    elseif(WUWE_PACKAGE_SQLITE_DEPENDENCY STREQUAL "unofficial" AND
+           NOT TARGET unofficial::sqlite3::sqlite3)
+        find_dependency(unofficial-sqlite3 CONFIG REQUIRED)
+    endif()
+endif()
+
 if(NOT TARGET CURL::libcurl_static AND NOT TARGET CURL::libcurl)
     include("${PACKAGE_PREFIX_DIR}/lib/cmake/CURL/CURLConfig.cmake")
 endif()
 
 if(NOT TARGET cpr::cpr)
     include("${PACKAGE_PREFIX_DIR}/lib/cmake/cpr/cprTargets.cmake")
-endif()
-
-if(NOT TARGET OpenSSL::SSL)
-    find_package(OpenSSL QUIET)
-endif()
-
-if(NOT TARGET SQLite::SQLite3 AND NOT TARGET unofficial::sqlite3::sqlite3)
-    find_package(SQLite3 QUIET)
-endif()
-
-if(NOT TARGET unofficial::sqlite3::sqlite3)
-    find_package(unofficial-sqlite3 CONFIG QUIET)
 endif()
 
 set_and_check(WUWE_LIB_DIR "@PACKAGE_LIB_INSTALL_DIR@")

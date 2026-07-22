@@ -1,4 +1,5 @@
-#include <windows.h>
+#include "console_utf8.hpp"
+
 #include <wuwe/wuwe.h>
 
 struct get_weather {
@@ -18,8 +19,7 @@ struct get_weather {
 };
 
 int main() {
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
+  wuwe_example::configure_utf8_console();
   wuwe::llm_config config {
     .base_url = "https://openrouter.ai/api",
     .model = "openai/gpt-oss-120b:free",

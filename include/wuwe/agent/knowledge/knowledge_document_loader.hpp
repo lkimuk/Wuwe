@@ -6,6 +6,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -61,6 +62,32 @@ public:
     return knowledge_document_loader(std::move(registry),
       std::make_shared<url_knowledge_loader>(),
       std::move(runtimes));
+  }
+
+  std::vector<knowledge_document> load(
+    std::string_view source,
+    knowledge_document_load_options options = {}) const {
+    const std::string source_text(source);
+    if (url_knowledge_loader::is_supported_url(source_text)) {
+      return load_url(source_text, std::move(options));
+    }
+
+    return load(path_from_utf8(source_text), std::move(options));
+  }
+
+  std::vector<knowledge_document> load(
+    const std::string& source,
+    knowledge_document_load_options options = {}) const {
+    return load(std::string_view(source), std::move(options));
+  }
+
+  std::vector<knowledge_document> load(
+    const char* source,
+    knowledge_document_load_options options = {}) const {
+    if (source == nullptr) {
+      throw std::invalid_argument("knowledge source must not be null");
+    }
+    return load(std::string_view(source), std::move(options));
   }
 
   std::vector<knowledge_document> load(

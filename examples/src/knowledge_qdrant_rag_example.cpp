@@ -1,4 +1,4 @@
-#include <windows.h>
+#include "console_utf8.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -164,8 +164,7 @@ example_options parse_args(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
+  wuwe_example::configure_utf8_console();
 
   try {
     const auto options = parse_args(argc, argv);

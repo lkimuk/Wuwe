@@ -44,9 +44,12 @@ output as it arrives instead of waiting for the final response.
 The Agent runner no longer reduces streaming to text-only `content_delta`
 callbacks. ReArk can observe:
 
-- raw normalized `llm_stream_event` values, including `tool_call_delta`,
+- raw normalized `llm_stream_event` values, including `reasoning_delta`,
+  `reasoning_done`, and `tool_call_delta`,
 - Agent-level `model_first_event`,
 - Agent-level `model_content_delta`,
+- Agent-level `model_reasoning_delta`,
+- Agent-level `model_reasoning_completed`,
 - Agent-level `tool_call_building`,
 - Agent-level `tool_call_ready`,
 - Agent-level `tool_started` and `tool_completed`,
@@ -57,8 +60,15 @@ Integration expectation:
 
 - use streaming callbacks/event handling for interactive chat or long-running
   agent tasks,
+- render `reasoning_delta` as provider-supplied visible analysis summary when
+  present,
+- keep `content_delta` reserved for final answer Markdown/text,
 - show user-friendly Agent phases such as waiting for model, preparing a tool
   call, executing a tool, and generating the final answer,
+- do not treat partial Markdown content such as headings or tables as thinking
+  progress,
+- do not prompt models to write fake "I am thinking" status text in the final
+  answer body,
 - do not display raw streamed tool argument JSON directly unless ReArk makes an
   explicit product/security decision to reveal it,
 - preserve cancellation behavior during streaming,
@@ -77,6 +87,48 @@ Parser-observed first-event and idle timeouts return
 `llm_error_code::timeout` with `timeout_phase` and `timeout_ms` metadata.
 Transport-level timeouts are still classified as timeouts, but phase metadata is
 only available when the LLM streaming layer observes the phase boundary.
+
+### Reasoning Summary Stream
+
+Wuwe now exposes provider-supplied visible reasoning summaries separately from
+final answer content:
+
+```cpp
+enum class llm_stream_event_type {
+  content_delta,
+  reasoning_delta,
+  reasoning_done,
+  tool_call_delta,
+  tool_call_done,
+  done,
+  error,
+};
+```
+
+`llm_response` also carries:
+
+```cpp
+std::string reasoning_summary;
+std::map<std::string, std::string> reasoning_metadata;
+```
+
+This is a display channel for summaries or exposed thinking fields that the
+provider actually returns. It is not a request to expose hidden
+chain-of-thought, and Wuwe does not fabricate reasoning text when a provider or
+model does not provide it.
+
+Recommended ReArk behavior:
+
+- When `reasoning_delta` is present, show it as temporary "analysis" progress
+  and keep streaming `content_delta` into the final-answer renderer.
+- On `reasoning_done`, either collapse the summary, keep it in a timeline, or
+  replace the temporary analysis surface with the final answer.
+- When no reasoning events are present, show real lifecycle states such as
+  waiting for model, preparing tool call, executing tool, and generating final
+  answer.
+- Never render raw `content_delta` Markdown as if it were thinking progress.
+- Never hard-code fake thinking text in ReArk to make unsupported providers
+  appear to reason.
 
 ### LLM Provider Registry And Factory
 
@@ -100,6 +152,11 @@ table. The built-in OpenAI-compatible presets include `Zhipu` for Zhipu
 GLM/BigModel, with base URL `https://open.bigmodel.cn/api/paas/v4`, chat path
 `/chat/completions`, and API key environment names `ZHIPU_API_KEY` then
 `BIGMODEL_API_KEY`.
+
+Provider capabilities include `reasoning_summary` and
+`streaming_reasoning_summary`. ReArk can use these as UI hints, but actual
+rendering should still be driven by the stream events because support may vary
+by model under the same provider.
 
 ReArk should avoid including `<wuwe/wuwe.h>` in provider-selection translation
 units. The aggregation header remains available for convenience, but Wuwe no
@@ -129,9 +186,10 @@ and audit views.
 
 When streaming is enabled, the Reasoning facade now preserves model stream
 progress instead of only forwarding text deltas. ReArk can listen for
-`model_first_event`, `content_delta`, `tool_call_building`, `tool_call_ready`,
-`tool_started`, `tool_completed`, and `model_completed` from the same reasoning
-event stream it already uses for workflow progress.
+`model_first_event`, `content_delta`, `reasoning_delta`,
+`reasoning_completed`, `tool_call_building`, `tool_call_ready`, `tool_started`,
+`tool_completed`, and `model_completed` from the same reasoning event stream it
+already uses for workflow progress.
 
 Wuwe Reasoning now exposes a native async runner API. ReArk should prefer
 `reasoning_runner::run_async(...)` for interactive UI flows instead of wrapping
@@ -142,8 +200,8 @@ Relevant async capabilities:
 - `reasoning_run::request_stop()`,
 - `reasoning_run::wait()`,
 - `reasoning_run::get()`,
-- callback hooks for `on_event`, `on_delta`, `on_done`, `on_error`, and
-  `on_cancelled`,
+- callback hooks for `on_event`, `on_delta`, `on_reasoning_delta`,
+  `on_reasoning_done`, `on_done`, `on_error`, and `on_cancelled`,
 - cancellation through either a caller-provided `std::stop_token` or the run
   handle,
 - stable `reasoning_error_code` values with underlying LLM/provider errors
@@ -234,12 +292,13 @@ is intended for tasks such as decoding bytes, testing crypto hypotheses,
 transforming constants, validating generated scripts, and returning
 stdout/stderr to the agent for follow-up analysis.
 
-This is not a strong OS sandbox yet. The current backend is
-`controlled_process`: ReArk chooses the Python interpreter, and Wuwe validates
-or executes that host-selected interpreter with controlled environment,
-working directory, stdin/stdout/stderr, timeout, cancellation, and process
-lifecycle. Wuwe does not claim to enforce complete network or filesystem
-isolation against code running with the current OS user privileges.
+The default execution path is still not a strong OS sandbox. The default
+backend is `controlled_process`: ReArk chooses the Python interpreter, and Wuwe
+validates or executes that host-selected interpreter with controlled
+environment, working directory, stdin/stdout/stderr, timeout, cancellation, and
+process lifecycle. Wuwe does not claim `controlled_process` enforces complete
+network or filesystem isolation against code running with the current OS user
+privileges.
 
 For this backend, `network: false` and `file_write: false` mean the model cannot
 ask the tool to enable those capabilities and Wuwe will not treat them as
@@ -262,7 +321,8 @@ Available Wuwe pieces:
 - `wuwe::agent::sandbox`: explicit isolation levels including
   `controlled_process`, `restricted_process`, `container`, and `wasm`.
 - `wuwe::agent::execution`: request/result/policy/runtime/backend contracts,
-  `controlled_process_backend`, and `execution_tool_provider`.
+  `controlled_process_backend`, explicit restricted backend registration, and
+  `execution_tool_provider`.
 
 The first backend supports Windows Python snippets through `CreateProcessW`
 without invoking a system shell. It writes the snippet to a temporary script in
@@ -413,6 +473,9 @@ ReArk owns:
 - whether controlled execution is enabled,
 - Python interpreter discovery, selection, resolver policy, and packaging,
 - analysis workdir selection,
+- whether to stay on `controlled_process` or explicitly opt into
+  `restricted_process`,
+- readable and writable root policy for restricted execution,
 - selected input packaging into `stdin_text`,
 - user approval UI,
 - audit persistence policy,
@@ -427,19 +490,42 @@ enforced by the active backend. For `controlled_process`, file and network deny
 remain `not_enforced`.
 
 Wuwe's default execution backend registry now exposes backend availability and
-selection by enforced capability. In the current build, `controlled_process` is
-available; `restricted_process`, `container`, and `wasm` are visible as planned
-but unavailable backend slots. If ReArk requires enforced filesystem read/write
-denial or network denial for a task, registry selection returns no backend
+selection by enforced capability. In the default registry, `controlled_process`
+is available; `restricted_process`, `container`, and `wasm` remain visible as
+unavailable slots. If ReArk requires enforced filesystem read/write denial or
+network denial against the default registry, selection returns no backend
 rather than silently downgrading to `controlled_process`.
 
-Windows restricted-backend probes have advanced, but they are still not a
-public backend contract. Current tests prove AppContainer identity launch,
-stdio capture, Job Object assignment, and AppContainer child-process file
-boundaries for allowed read/write, denied read/write, and `..` traversal within
-the AppContainer profile storage root. Network denial and the final
-Python/runtime launch path are still unaccepted, so ReArk must continue to treat
-`restricted_process` as unavailable.
+Windows builds now also expose an explicit opt-in restricted-process path:
+
+```cpp
+execution::execution_backend_registry_options options;
+options.enable_restricted_process_backend = true;
+options.restricted_process.python_interpreter = reark_python_path;
+options.restricted_process.fallback_workdir = reark_analysis_temp_dir;
+options.restricted_process.readable_roots = reark_read_roots;
+options.restricted_process.writable_roots = reark_write_roots;
+
+auto registry = execution::make_execution_backend_registry(options);
+```
+
+When the configured Windows restricted backend is available, ReArk can require:
+
+```cpp
+execution::execution_backend_requirements requirements;
+requirements.isolation = sandbox::isolation_level::restricted_process;
+requirements.require_filesystem_read_deny = true;
+requirements.require_filesystem_write_deny = true;
+requirements.require_network_deny = true;
+```
+
+This path uses the Windows AppContainer-style restricted backend, no-shell
+launch, staged minimal Python runtime, Job Object lifecycle/resource limits,
+configured readable/writable roots, network denial, and audit/result metadata.
+The backend remains default-off: ReArk must opt in only after it has chosen the
+interpreter, workdir, readable roots, writable roots, approval UX, and result
+handling policy. ReArk should still display Wuwe's enforcement metadata instead
+of hard-coding claims about sandbox strength.
 
 Wuwe owns:
 
@@ -453,6 +539,31 @@ Wuwe owns:
 - stdin/stdout/stderr capture,
 - timeout and cancellation,
 - tool provider integration with ReAct and Planning.
+
+## Longer-Term Execution Work
+
+The following items are intentionally longer-term and should not block ReArk's
+first controlled-execution integration, but they should remain visible in
+planning:
+
+- Productize ReArk's restricted execution UX: interpreter resolver, opt-in
+  policy, readable/writable root selection, user-visible explanation, and audit
+  persistence.
+- Add broader Windows restricted-backend acceptance coverage for additional
+  Python distributions, venv/conda layouts, long paths, non-ASCII paths, and
+  multiple concurrent restricted runs.
+- Decide whether the Windows restricted backend should remain explicit opt-in
+  forever or become selectable by product policy in specific trusted
+  deployments.
+- Implement Linux and macOS process governance equivalents for timeout,
+  cancellation, process-tree cleanup, CPU/memory limits, filesystem roots, and
+  network denial.
+- Implement at least one true P3 backend beyond Windows restricted process:
+  container backend or WASM/WASI backend.
+- Add packaging guidance for any restricted backend runtime sidecars that ReArk
+  chooses to bundle.
+- Keep `controlled_process` documentation explicit: it is useful for bounded
+  computation, not a filesystem/network sandbox.
 
 Initial ReArk verification:
 
@@ -470,9 +581,7 @@ Initial ReArk verification:
 - Verify denied or failed attempts emit audit events.
 
 Next Wuwe-side enhancements after ReArk feedback should be tracked separately:
-Windows restricted-process backend extraction from the current AppContainer
-file-boundary, loopback network-blocking, and minimal Python runtime launch
-probes, including real-interpreter stdin/stdout and timeout behavior; then
+broader Windows restricted-process hardening, Linux/macOS backend parity, then
 container backend and WASM backend.
 
 ### Knowledge And URL Loading

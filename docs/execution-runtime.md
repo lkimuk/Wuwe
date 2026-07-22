@@ -57,6 +57,8 @@ Still future work:
 - Cross-platform process backend implementations for Linux and macOS.
 - Container and WASM backends.
 - ReArk-side UI approval and audit persistence integration.
+- Broader Windows restricted-process hardening across Python layouts, path
+  shapes, cleanup failures, and concurrent runs.
 
 See [Controlled Local Execution Stage Record](execution-platform-stage.md) for
 the current completed/not-completed checklist, registry behavior, and backend
@@ -698,6 +700,24 @@ would delay the usable execution path.
 - Stronger workdir and root restrictions enforced inside executed code across
   more host configurations.
 - Optional explicit file materialization from host-provided inputs.
+- Broader Python/runtime compatibility matrix: python.org, embeddable Python,
+  Microsoft Store Python, venv, conda, long paths, non-ASCII paths, and partial
+  runtime layouts.
+- Cleanup and stress testing for repeated profile creation/deletion, staged
+  runtime cleanup, request workspace cleanup, cancellation storms, timeouts,
+  and concurrent restricted executions.
+
+### Phase 2B: Cross-Platform Process Governance
+
+- Linux process governance using platform primitives such as process groups,
+  rlimits, cgroups, namespaces, seccomp, Landlock, and controlled mount/root
+  setup where available.
+- macOS process governance using platform primitives such as sandbox profiles,
+  resource limits, controlled temporary roots, and process-group cleanup.
+- Explicit platform capability reporting so registry selection remains
+  fail-closed when a platform cannot enforce a requested capability.
+- Installed-package smoke coverage for platform-specific dependencies and
+  exported link requirements.
 
 ### Phase 3: Container Backend
 
@@ -709,6 +729,9 @@ would delay the usable execution path.
 - Explicit writable scratch mount.
 - Image allowlist.
 - Per-run cleanup and audit.
+- Clear product boundary: Wuwe executes a host-configured container policy; it
+  does not silently choose images, pull images, or grant mounts on behalf of the
+  model.
 
 ### Phase 4: WASM Backend
 
@@ -718,6 +741,8 @@ would delay the usable execution path.
 - Capability-based filesystem preopens.
 - Stronger default no-network behavior.
 - Better portability for cloud and desktop hosts.
+- Deterministic resource limits, stdout/stderr capture, timeout/cancellation,
+  and package-smoke coverage for the selected WASI runtime.
 
 ### Phase 5: Additional Tool Surfaces
 

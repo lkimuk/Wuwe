@@ -450,6 +450,9 @@ void validate_object_keys(const json& json_value) {
   }
 }
 
+template<typename T>
+T tool_json_get(const json& json_value);
+
 template<std::size_t I, typename T>
 gmp::member_type_t<I, T> tool_object_member_get(const json& object) {
   using member_type = gmp::member_type_t<I, T>;

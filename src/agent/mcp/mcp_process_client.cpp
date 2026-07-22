@@ -423,8 +423,9 @@ struct mcp_process_client::impl {
     }
 
     if (child == 0) {
-      if (!command.working_directory.empty()) {
-        (void)chdir(command.working_directory.c_str());
+      if (!command.working_directory.empty() &&
+          chdir(command.working_directory.c_str()) != 0) {
+        _exit(127);
       }
       for (const auto& [key, value] : command.environment) {
         if (!key.empty()) {

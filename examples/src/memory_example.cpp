@@ -1,8 +1,4 @@
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <windows.h>
+#include "console_utf8.hpp"
 
 #include <string>
 
@@ -10,8 +6,7 @@
 #include <wuwe/wuwe.h>
 
 int main() {
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
+  wuwe_example::configure_utf8_console();
 
   wuwe::agent::memory::memory_policy policy {
     .max_recent_messages = 4,

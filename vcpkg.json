@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "wuwe",
+  "version-string": "0.1.0",
+  "builtin-baseline": "eb35a05cc21c69ec1399f7532b7dd61d271ac0d1",
+  "dependencies": [
+    {
+      "name": "sqlite3",
+      "default-features": false
+    }
+  ],
+  "features": {
+    "openssl": {
+      "description": "Provide OpenSSL for the optional OpenSSL TLS build variant.",
+      "dependencies": [
+        {
+          "name": "openssl",
+          "default-features": false
+        }
+      ]
+    }
+  }
+}

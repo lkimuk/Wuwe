@@ -215,8 +215,9 @@ struct tika_runtime_process::impl {
       throw std::runtime_error("failed to fork bundled Tika runtime");
     }
     if (child == 0) {
-      if (!config.runtime_dir.empty()) {
-        (void)chdir(config.runtime_dir.string().c_str());
+      if (!config.runtime_dir.empty() &&
+          chdir(config.runtime_dir.string().c_str()) != 0) {
+        _exit(127);
       }
       std::vector<std::string> args {
         config.java_path.string(),

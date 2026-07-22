@@ -1,4 +1,4 @@
-#include <windows.h>
+#include "console_utf8.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -59,8 +59,7 @@ routing_result unclear_lane(const wuwe::llm_response& response) {
 }
 
 int main() {
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
+  wuwe_example::configure_utf8_console();
 
   wuwe::llm_config config {
     .base_url = "https://openrouter.ai/api",

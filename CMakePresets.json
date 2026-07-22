@@ -6,10 +6,54 @@
       "displayName": "Windows vcpkg",
       "generator": "Visual Studio 17 2022",
       "binaryDir": "${sourceDir}/build-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows",
-        "WUWE_ENABLE_SQLITE": "ON"
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_MANIFEST_INSTALL": "ON",
+        "VCPKG_MANIFEST_DIR": "${sourceDir}",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build-vcpkg/vcpkg_installed",
+        "WUWE_TLS_BACKEND": "native",
+        "WUWE_SQLITE_MODE": "on"
+      }
+    },
+    {
+      "name": "windows-vcpkg-openssl",
+      "displayName": "Windows vcpkg with OpenSSL",
+      "inherits": "windows-vcpkg",
+      "binaryDir": "${sourceDir}/build-vcpkg-openssl",
+      "cacheVariables": {
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build-vcpkg-openssl/vcpkg_installed",
+        "VCPKG_MANIFEST_FEATURES": "openssl",
+        "WUWE_TLS_BACKEND": "openssl"
+      }
+    },
+    {
+      "name": "linux-vcpkg",
+      "displayName": "Linux x64 vcpkg (OpenSSL + SQLite)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-linux-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_MANIFEST_INSTALL": "ON",
+        "VCPKG_MANIFEST_DIR": "${sourceDir}",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build-linux-vcpkg/vcpkg_installed",
+        "VCPKG_MANIFEST_FEATURES": "openssl",
+        "WUWE_TLS_BACKEND": "openssl",
+        "WUWE_SQLITE_MODE": "on"
       }
     }
   ],
@@ -17,16 +61,97 @@
     {
       "name": "windows-vcpkg-debug",
       "configurePreset": "windows-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
       "configuration": "Debug"
+    },
+    {
+      "name": "windows-vcpkg-release",
+      "configurePreset": "windows-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-vcpkg-openssl-release",
+      "configurePreset": "windows-vcpkg-openssl",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-vcpkg-release",
+      "configurePreset": "linux-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "jobs": 2
     }
   ],
   "testPresets": [
     {
       "name": "windows-vcpkg-debug",
       "configurePreset": "windows-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
       "configuration": "Debug",
       "output": {
         "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vcpkg-release",
+      "configurePreset": "windows-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-vcpkg-openssl-release",
+      "configurePreset": "windows-vcpkg-openssl",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-vcpkg-release",
+      "configurePreset": "linux-vcpkg",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
       }
     }
   ]

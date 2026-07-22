@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include <windows.h>
+#include "console_utf8.hpp"
 
 #include <wuwe/wuwe.h>
 
@@ -143,8 +143,7 @@ void run_live_react_reasoning() {
 } // namespace
 
 int main() {
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
+  wuwe_example::configure_utf8_console();
 
   run_offline_plan_reasoning();
   run_live_react_reasoning();

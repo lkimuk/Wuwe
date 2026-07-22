@@ -26,6 +26,8 @@ struct restricted_request_workspace_request {
   bool cleanup_on_destroy { true };
 };
 
+struct restricted_request_workspace_result;
+
 class restricted_request_workspace {
 public:
   restricted_request_workspace() = default;

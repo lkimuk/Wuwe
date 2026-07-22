@@ -26,8 +26,8 @@ The config already encodes the intended production defaults: host-selected
 Python interpreter, request/workdir fallback, readable and writable roots,
 explicit base environment, no parent environment inheritance, no network,
 Windows Job Object lifecycle, request-scoped minimal Python runtime staging, and
-runtime staging cleanup. These defaults mirror the current AppContainer probes
-without claiming that the backend is executable yet.
+runtime staging cleanup. These defaults mirror the AppContainer-backed Windows
+implementation while leaving default registry enablement to the host product.
 
 ## Windows Candidate
 
@@ -77,8 +77,9 @@ inside the AppContainer profile storage path and performs file operations from
 inside the child process. It proves allowed file read, allowed directory write,
 denied file read, denied directory write, and parent traversal denial for that
 AppContainer identity. This is stronger than host-side `AccessCheck`, but it is
-still not enough to advertise a restricted backend because network denial and a
-real Python/runtime launch path remain unaccepted.
+best understood as an intermediate proof. The later minimal Python runtime,
+network-denial, configured-root, and public factory tests are what connect this
+proof to an explicit opt-in restricted backend.
 
 ## Minimum Acceptance Criteria
 
@@ -129,19 +130,18 @@ against the real file security descriptors. It proves that the host user can
 read/write the denied objects while the restricted token is allowed for the
 allowed roots and denied for the denied roots.
 
-This is still not a filesystem or network sandbox. A restricted-token child
-with restricting SIDs still needs a proven launch path through Windows process
-initialization objects, executable/DLL access, script files, workdir, and
-allowed roots before any public backend is exposed. Do not expose
-`restricted_process` from these probes alone.
+These early restricted-token probes remain historical checkpoints rather than
+the production backend path. They should not be used to expose
+`restricted_process` by themselves; the production path is the AppContainer
+execution plan and explicit factory/registry gate described below.
 
 The AppContainer probe proves a second launch path: a child can be created under
 an AppContainer identity with stdio capture, an explicit inherited handle list,
 and Job Object assignment. It also records immediate and final socket errors and
 proves that the child cannot reach a loopback listener that the host can reach.
-This is still a checkpoint, not a public backend acceptance pass, because the
-final runtime launch contract still needs to run the real interpreter with the
-same file, network, lifecycle, and resource controls.
+This was a checkpoint toward the public backend acceptance pass. The later
+minimal-runtime and execution-plan tests run the real interpreter with the same
+file, network, lifecycle, and resource controls.
 
 The AppContainer file-boundary probe also proves child-process enforcement for
 allowed read, allowed write, denied read, denied write, and `..` traversal
@@ -224,6 +224,45 @@ The backend must still remain default-off until host products explicitly choose
 the interpreter, workdir, readable roots, writable roots, and UX/policy around
 restricted execution.
 
+## Longer-Term Backlog
+
+The Windows backend has crossed the important line from probe-only to explicit
+opt-in execution backend, but several professional hardening tracks remain:
+
+- Broaden the Python matrix: python.org installs, embeddable Python,
+  Microsoft Store Python, pyenv-like layouts, venv, conda, long paths,
+  non-ASCII paths, and missing/partial standard-library layouts.
+- Strengthen runtime staging diagnostics for partially copied runtimes,
+  locked files, antivirus interference, path length failures, and cleanup
+  failures.
+- Add stress and concurrency coverage for simultaneous restricted executions,
+  repeated profile creation/deletion, cancellation storms, and timeout cleanup.
+- Record and test cleanup behavior for AppContainer profiles, staged runtimes,
+  request workspaces, and Job Objects after launch failure, timeout,
+  cancellation, and process-limit failures.
+- Expand filesystem tests beyond simple text files: nested directories,
+  existing writable subtrees, denied parent directories, read-only files,
+  inherited ACL edge cases, hardlinks, symlinks, junctions, and volume boundary
+  behavior.
+- Expand network-denial tests to additional outbound shapes that hosts may care
+  about, while keeping the no-capability AppContainer contract explicit.
+- Decide whether public restricted execution should expose richer configuration
+  validation APIs before backend creation, or whether hosts should rely on
+  `evaluate_restricted_process_backend_availability(...)` and dry-run tests.
+- Preserve the default-off stance until product UX clearly communicates the
+  selected roots, interpreter, output handling, and residual risk.
+
+Cross-platform and alternate-backend work remains separate:
+
+- Linux restricted process backend using platform primitives such as namespaces,
+  seccomp, cgroups, Landlock, rlimits, and controlled mount/root setup.
+- macOS restricted process backend using platform primitives such as sandbox
+  profiles, resource limits, and controlled temporary roots.
+- Container backend with explicit image/runtime selection, mount policy,
+  network namespace policy, resource limits, cleanup, and audit metadata.
+- WASM/WASI backend with preopened roots, deterministic limits, no-network
+  default, stdout/stderr capture, and installed-package smoke coverage.
+
 ## Non-Acceptable Shortcuts
 
 - Marking filesystem or network denial as enforced because policy says
@@ -239,11 +278,12 @@ restricted execution.
 
 ## ReArk Impact
 
-Until this backend is implemented and available, ReArk should continue to use
-`controlled_process` only for bounded local computation and should not present
-it as a secure file or network sandbox.
+Unless ReArk explicitly opts into and configures the Windows
+`restricted_process` backend, it should continue to use `controlled_process`
+only for bounded local computation and should not present it as a secure file
+or network sandbox.
 
-When `restricted_process` becomes available, ReArk can require:
+When ReArk opts into `restricted_process`, it can require:
 
 - `isolation=restricted_process`
 - `require_filesystem_read_deny=true`

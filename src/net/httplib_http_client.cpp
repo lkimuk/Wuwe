@@ -19,6 +19,7 @@ namespace {
 struct parsed_url {
   std::string scheme_host_port;
   std::string path;
+  bool uses_https = false;
 };
 
 struct parsed_proxy_url {
@@ -46,6 +47,10 @@ std::optional<parsed_url> parse_url(const std::string& url) {
   }
 
   const auto authority_begin = scheme_end + 3;
+  auto scheme = url.substr(0, scheme_end);
+  std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
   const auto path_begin = url.find_first_of("/?", authority_begin);
   const auto fragment_begin = url.find('#', authority_begin);
   const auto end = fragment_begin == std::string::npos ? url.size() : fragment_begin;
@@ -53,6 +58,7 @@ std::optional<parsed_url> parse_url(const std::string& url) {
   parsed.scheme_host_port = path_begin == std::string::npos || path_begin > end
                               ? url.substr(0, end)
                               : url.substr(0, path_begin);
+  parsed.uses_https = scheme == "https";
   if (path_begin == std::string::npos) {
     parsed.path = "/";
   }
@@ -155,11 +161,13 @@ void configure_client(httplib::Client& client, const http_request& request) {
   else if (request.timeout > 0) {
     client.set_write_timeout(std::chrono::milliseconds(request.timeout));
   }
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
   client.enable_server_certificate_verification(
     request.tls.verify_peer && request.tls.verify_host);
   if (!request.tls.ca_file.empty() || !request.tls.ca_directory.empty()) {
     client.set_ca_cert_path(request.tls.ca_file, request.tls.ca_directory);
   }
+#endif
   if (request.proxy && !request.proxy->url.empty()) {
     const auto proxy = parse_proxy_url(request.proxy->url);
     if (proxy) {
@@ -238,6 +246,11 @@ http_response make_http_response(const httplib::Result& result, std::string body
   return response;
 }
 
+http_response make_transport_failure(transport_error error) {
+  const auto code = make_error_code(error);
+  return { .error_code = code, .transport_error = code };
+}
+
 httplib::Result send_request(httplib::Client& client, const http_request& request) {
   httplib::Request req;
   req.method = normalize_http_method(request.method);
@@ -258,16 +271,22 @@ httplib::Result send_request(httplib::Client& client, const http_request& reques
 http_response httplib_http_client::send(const http_request& request) {
   const auto parsed = parse_url(request.url);
   if (!parsed) {
-    return { .error_code = make_error_code(transport_error::url_malformat) };
+    return make_transport_failure(transport_error::url_malformat);
   }
   if (!is_supported_method(normalize_http_method(request.method))) {
     return { .error_code = std::make_error_code(std::errc::invalid_argument) };
   }
 
+#ifndef CPPHTTPLIB_OPENSSL_SUPPORT
+  if (parsed->uses_https) {
+    return make_transport_failure(transport_error::not_built_in);
+  }
+#endif
+
   httplib::Client client(parsed->scheme_host_port);
   configure_client(client, request);
   if (!client.is_valid()) {
-    return { .error_code = make_error_code(transport_error::unsupported_protocol) };
+    return make_transport_failure(transport_error::unsupported_protocol);
   }
 
   return make_http_response(send_request(client, request));
@@ -283,13 +302,19 @@ http_response httplib_http_client::send_stream(
 
   const auto parsed = parse_url(request.url);
   if (!parsed) {
-    return { .error_code = make_error_code(transport_error::url_malformat) };
+    return make_transport_failure(transport_error::url_malformat);
   }
+
+#ifndef CPPHTTPLIB_OPENSSL_SUPPORT
+  if (parsed->uses_https) {
+    return make_transport_failure(transport_error::not_built_in);
+  }
+#endif
 
   httplib::Client client(parsed->scheme_host_port);
   configure_client(client, request);
   if (!client.is_valid()) {
-    return { .error_code = make_error_code(transport_error::unsupported_protocol) };
+    return make_transport_failure(transport_error::unsupported_protocol);
   }
 
   std::string body;

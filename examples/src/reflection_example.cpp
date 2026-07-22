@@ -7,9 +7,7 @@
 #include <memory>
 #include <string>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include "console_utf8.hpp"
 
 namespace {
 
@@ -38,10 +36,7 @@ std::string env_value(const char* name, std::string fallback = {}) {
 } // namespace
 
 int main() {
-#ifdef _WIN32
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
-#endif
+  wuwe_example::configure_utf8_console();
 
   namespace reflection = wuwe::agent::reflection;
 

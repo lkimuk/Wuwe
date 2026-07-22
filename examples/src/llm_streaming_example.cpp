@@ -2,7 +2,7 @@
 #include <iostream>
 #include <string>
 
-#include <windows.h>
+#include "console_utf8.hpp"
 
 #include <wuwe/net/net_errc.h>
 #include <wuwe/wuwe.h>
@@ -56,8 +56,7 @@ void print_error(const wuwe::llm_response& response) {
 } // namespace
 
 int main() {
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
+  wuwe_example::configure_utf8_console();
 
   wuwe::llm_config config {
     .base_url = env_or("OPENROUTER_BASE_URL", "https://openrouter.ai/api"),

@@ -10,7 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if (MSVC)
     add_compile_options(/Zc:__cplusplus /permissive- /utf-8)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(${PROJECT_NAME} PRIVATE -pedantic)
+    add_compile_options(-pedantic)
 endif()
 
 add_subdirectory(src)

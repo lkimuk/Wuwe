@@ -450,6 +450,22 @@ void test_default_http_client_uses_selected_backend() {
   exercise_client(client, server);
 }
 
+void test_httplib_https_capability_is_explicit() {
+#ifndef WUWE_NET_TESTS_HAS_HTTPLIB_HTTPS
+  httplib_http_client client;
+  const auto response = client.send({
+    .method = "GET",
+    .url = "https://127.0.0.1:1/",
+    .timeout = 100,
+  });
+  require(response.error_code == make_error_code(transport_error::not_built_in),
+    "httplib HTTPS should report not_built_in when OpenSSL support is disabled: " +
+      error_debug_string(response.error_code));
+  require(response.transport_error == response.error_code,
+    "httplib HTTPS capability failure should be reported as a transport error");
+#endif
+}
+
 #ifdef WUWE_NET_TESTS_HAS_OPENSSL
 void test_tls_verification_errors_are_classified() {
   local_https_server server;
@@ -464,6 +480,7 @@ void test_tls_verification_errors_are_classified() {
     "cpr HTTPS self-signed certificate failure should map to TLS error: " +
       cpr_response.error_code.message());
 
+#ifdef WUWE_NET_TESTS_HAS_HTTPLIB_HTTPS
   httplib_http_client httplib;
   const auto httplib_response = httplib.send({
     .method = "GET",
@@ -473,6 +490,7 @@ void test_tls_verification_errors_are_classified() {
   require(is_transport_tls_error(httplib_response.error_code),
     "httplib HTTPS self-signed certificate failure should map to TLS error: " +
       httplib_response.error_code.message());
+#endif
 }
 
 void test_tls_verification_can_be_disabled() {
@@ -493,6 +511,7 @@ void test_tls_verification_can_be_disabled() {
       cpr_response.error_code.message());
   require(cpr_response.body == "secure", "cpr HTTPS should return secure body");
 
+#ifdef WUWE_NET_TESTS_HAS_HTTPLIB_HTTPS
   httplib_http_client httplib;
   const auto httplib_response = httplib.send({
     .method = "GET",
@@ -507,6 +526,7 @@ void test_tls_verification_can_be_disabled() {
     "httplib HTTPS self-signed certificate should succeed when verification is disabled: " +
       httplib_response.error_code.message());
   require(httplib_response.body == "secure", "httplib HTTPS should return secure body");
+#endif
 }
 #endif
 
@@ -541,6 +561,7 @@ void test_live_https_when_configured() {
   require(!cpr_response.error_code,
     "cpr live HTTPS request should succeed: " + cpr_response.error_code.message());
 
+#ifdef WUWE_NET_TESTS_HAS_HTTPLIB_HTTPS
   httplib_http_client httplib;
   const auto httplib_response = httplib.send({
     .method = "GET",
@@ -549,6 +570,7 @@ void test_live_https_when_configured() {
   });
   require(!httplib_response.error_code,
     "httplib live HTTPS request should succeed: " + httplib_response.error_code.message());
+#endif
 }
 
 void run(const char* name, void (*test)()) {
@@ -564,6 +586,7 @@ int main() {
     run("httplib HTTP client", test_httplib_http_client);
     run("default HTTP client reports backend", test_default_http_client_reports_backend);
     run("default HTTP client uses selected backend", test_default_http_client_uses_selected_backend);
+    run("httplib HTTPS capability is explicit", test_httplib_https_capability_is_explicit);
 #ifdef WUWE_NET_TESTS_HAS_OPENSSL
     run("TLS verification errors are classified", test_tls_verification_errors_are_classified);
     run("TLS verification can be disabled", test_tls_verification_can_be_disabled);

@@ -3,6 +3,8 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -12,6 +14,37 @@
 #endif
 
 namespace wuwe::agent::knowledge {
+
+inline std::filesystem::path path_from_utf8(std::string_view value) {
+#if defined(_WIN32)
+  if (value.empty()) {
+    return {};
+  }
+
+  const auto size = MultiByteToWideChar(
+    CP_UTF8,
+    MB_ERR_INVALID_CHARS,
+    value.data(),
+    static_cast<int>(value.size()),
+    nullptr,
+    0);
+  if (size <= 0) {
+    return std::filesystem::path(std::string(value));
+  }
+
+  std::wstring wide(static_cast<std::size_t>(size), L'\0');
+  MultiByteToWideChar(
+    CP_UTF8,
+    MB_ERR_INVALID_CHARS,
+    value.data(),
+    static_cast<int>(value.size()),
+    wide.data(),
+    size);
+  return std::filesystem::path(std::move(wide));
+#else
+  return std::filesystem::path(std::string(value));
+#endif
+}
 
 inline std::string path_to_utf8(const std::filesystem::path& path) {
 #if defined(_WIN32)

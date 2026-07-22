@@ -44,13 +44,14 @@ add_executable(net_tests
 )
 
 target_link_libraries(net_tests PRIVATE wuwe)
-if(NOT TARGET OpenSSL::SSL)
-    find_package(OpenSSL QUIET)
-endif()
-if(TARGET OpenSSL::SSL)
+if(WUWE_BUILT_WITH_HTTPLIB_HTTPS)
+    if(NOT TARGET OpenSSL::SSL)
+        find_package(OpenSSL REQUIRED)
+    endif()
     target_compile_definitions(net_tests PRIVATE
         CPPHTTPLIB_OPENSSL_SUPPORT=1
         WUWE_NET_TESTS_HAS_OPENSSL=1
+        WUWE_NET_TESTS_HAS_HTTPLIB_HTTPS=1
     )
     target_link_libraries(net_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()

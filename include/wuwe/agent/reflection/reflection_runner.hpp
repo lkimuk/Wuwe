@@ -28,7 +28,7 @@ struct reflection_event {
 using reflection_observer = std::function<void(const reflection_event&)>;
 
 struct reflection_runner_options {
-  std::shared_ptr<reflector> reflector;
+  std::shared_ptr<::wuwe::agent::reflection::reflector> reflector;
   reflection_policy policy;
   reflection_store* store {};
   reflection_observer observer;

@@ -105,9 +105,9 @@ behavior.
 
 The `cpp-httplib` backend is excellent for local HTTP services such as Tika,
 Qdrant, MCP test servers, and backend comparison. HTTPS support is enabled when
-`WUWE_ENABLE_HTTPLIB_SSL=ON` and CMake can find OpenSSL. If OpenSSL is not
-available, the httplib backend remains HTTP-capable but cannot be used for HTTPS
-LLM providers.
+`WUWE_TLS_BACKEND=openssl`, `WUWE_ENABLE_HTTPLIB_SSL=ON`, and CMake can find
+OpenSSL. If the selected build does not link OpenSSL, the httplib backend
+remains HTTP-capable but cannot be used for HTTPS LLM providers.
 
 ### Backend Mapping
 
@@ -135,16 +135,27 @@ cpp-httplib exposes connect/read/write controls directly. Likewise,
 cpp-httplib maps `verify_peer=false` or `verify_host=false` to disabling server
 certificate verification for that request.
 
-When `openssl` is available on `PATH`, Wuwe's CMake configuration attempts to
-infer `OPENSSL_ROOT_DIR` from that executable before calling
-`find_package(OpenSSL)`. If OpenSSL is installed somewhere unusual, callers can
-still pass it explicitly:
+The official Windows release profile uses native Schannel TLS for cpr/libcurl
+and does not link OpenSSL. This keeps the package behavior independent of an
+OpenSSL installation that happens to be present on the build machine.
+
+The official Linux x64 profile selects pinned OpenSSL through vcpkg. That
+profile enables HTTPS for both cpr/libcurl and cpp-httplib and exports OpenSSL
+as a required dependency of the installed static SDK.
+
+For an explicit OpenSSL build, Wuwe attempts to infer `OPENSSL_ROOT_DIR` from an
+`openssl` executable on `PATH` before calling `find_package(OpenSSL)`. If
+OpenSSL is installed somewhere unusual, pass it explicitly:
 
 ```powershell
 cmake -S . -B build-http-httplib `
   -DWUWE_HTTP_BACKEND=httplib `
+  -DWUWE_TLS_BACKEND=openssl `
   -DOPENSSL_ROOT_DIR="D:\softwares\OpenSSL 3.5 LTS"
 ```
+
+See [Dependencies](dependencies.md) for the complete build and runtime
+dependency matrix.
 
 ## Verification
 

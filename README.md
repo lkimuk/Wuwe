@@ -1,284 +1,246 @@
 # Wuwe
 
-Wuwe is a C++20 framework for building agents.
+Wuwe is a C++20 framework for building tool-using, stateful, and auditable AI
+agents in native applications, services, and command-line programs.
 
-## Agent Runtime
+It provides a modular runtime for LLM access, typed tools, reasoning, planning,
+reflection, memory, retrieval-augmented generation (RAG), Model Context Protocol
+(MCP), controlled execution, and observability. Applications can use individual
+modules or compose them through the higher-level reasoning and planning APIs.
 
-Wuwe provides a host-application-neutral agent runner for embedding agents in
-desktop apps, services, CLIs, and other C++ programs. The runner supports
-synchronous and async execution, cooperative cancellation with `std::stop_token`,
-true OpenAI-compatible streaming, tool lifecycle callbacks, final-result
-callbacks, and stateful tool providers that keep application state outside the
-model-visible schema.
+Current version: **0.1.0**
 
-See [Agent Runtime](docs/agent-runtime.md), [LLM Streaming](docs/llm-streaming.md),
-and [LLM Tools](docs/llm-tools.md) for the runner, streaming, and reflected-tool
-APIs.
+## Release support
 
-## Reasoning
+Wuwe is designed as a cross-platform framework. The 0.1.0 release has the
+following support boundary:
 
-Wuwe includes a Reasoning facade for selecting and combining standard agentic
-reasoning patterns over the lower-level runtime modules. It supports simple
-single-pass calls, ReAct-style tool use, reflect-and-retry self-correction, and
-plan-and-execute workflows while emitting one unified event stream for host
-applications. Results also include a structured trace and budget usage counters
-for auditing model, tool, reflection, and plan-step work.
+| Platform | Source build | Official binary package | Release status |
+| --- | --- | --- | --- |
+| Windows x64 | Supported | `wuwe-0.1.0-windows-x64.zip` | Verified release platform |
+| Linux x64 (Ubuntu 24.04) | Supported | `wuwe-0.1.0-linux-x64.tar.gz` | Release CI profile |
+| macOS | Intended and kept portable | Not provided in 0.1.0 | Not yet CI-certified |
 
-See [Reasoning](docs/reasoning.md) for the strategy boundary and API examples.
+Platform-neutral modules are separated from operating-system-specific
+capabilities. In particular, the restricted-process backend is currently a
+Windows implementation; Linux and macOS sandbox backends remain future work.
 
-## Controlled Local Execution
+## Capabilities
 
-Wuwe is adding a controlled local execution runtime for host-approved agent
-tools such as bounded Python snippets. The design treats execution as a
-high-risk capability with explicit policy, approval, audit, and replaceable
-sandbox backends instead of a reasoning-mode feature or product-specific
-helper. The current default backend is a controlled process baseline; strong
-filesystem or network isolation requires a backend that explicitly advertises
-those features. The default backend registry keeps restricted-process,
-container, and WASM slots unavailable unless a host explicitly opts into an
-available implementation, such as the Windows restricted-process backend.
+| Module | Responsibility |
+| --- | --- |
+| Agent runtime | Synchronous and asynchronous runs, streaming, cancellation, tool lifecycle events, and host-owned state |
+| LLM providers | OpenAI-compatible APIs plus native Anthropic, Gemini, and Ollama clients |
+| Tools | Typed/reflected tool schemas, tool dispatch, result handling, and stateful providers |
+| Reasoning | Direct calls, ReAct tool loops, reflect-and-retry, and plan-and-execute strategies with unified traces and budgets |
+| Planning | Static and LLM-backed planning, dependencies, retries, replanning, checkpoints, approvals, policy hooks, and parallel ready-step execution |
+| Reflection | Deterministic and LLM-backed evaluation with retry, revise, replan, block, and escalation actions |
+| Memory | In-memory, file-backed, and optional SQLite persistence; embeddings, hybrid ranking, retention, and optional Qdrant indexing |
+| Knowledge | File and directory ingestion, Tika document parsing, chunking, persistent indexes, hybrid retrieval, reranking, grounding, and citations |
+| MCP | Server, client, external-process host, multi-server aggregation, stdio/HTTP adapters, lifecycle management, policy, and telemetry |
+| Controlled execution | Capability-aware execution, approvals, audit records, filesystem policy, and an opt-in Windows restricted-process backend |
+| Observability | Shared structured events, JSONL sinks, telemetry adapters, traces, and usage accounting |
 
-See [Controlled Local Execution Runtime](docs/execution-runtime.md) for the
-architecture, threat model, controlled-process scope, and ReArk integration
-plan. See [Controlled Local Execution Stage Record](docs/execution-platform-stage.md)
-for the completed P0/P1 work, enforcement contract, and remaining sandbox
-roadmap.
+## LLM providers
 
-## Packaging
+The default provider abstraction is `llm_client`. Wuwe includes presets for
+OpenAI, OpenRouter, DeepSeek, DashScope, and Qwen through the OpenAI-compatible
+protocol, together with native clients for Anthropic, Gemini, and Ollama.
 
-Wuwe ships as one complete package. The release archive includes the C++ SDK,
-examples, docs, and the runtime sidecars needed for turnkey PDF and Office RAG.
-The repository carries a pinned Tika Server jar and Windows x64 JRE archive so
-the package can be generated and used without extra release-time or client-side
-downloads.
+Provider metadata and defaults are available through the registry APIs, so host
+applications do not need to duplicate endpoints or capability declarations.
 
-See [Packaging](docs/packaging.md) for the release layout and package script.
+See [LLM Providers](docs/llm-providers.md),
+[LLM Streaming](docs/llm-streaming.md), and [LLM Tools](docs/llm-tools.md).
 
-## LLM Providers
+## Build
 
-Wuwe's LLM layer is built around the `llm_client` interface. The default
-implemented protocol client is `openai_compatible_llm_client`, which supports
-OpenAI-compatible chat completions, tool calls, SSE streaming, cancellation, and
-error classification. OpenAI, OpenRouter, DeepSeek, DashScope, and Qwen are
-provider presets over that protocol client.
+### Verified Windows x64 build
 
-Use the factory key `OpenAICompatible` for generic compatible endpoints and
-provider keys such as `OpenAI`, `OpenRouter`, `DeepSeek`, `DashScope`, and
-`Qwen` for vendor defaults. Native clients are available for `Anthropic`,
-`Gemini`, and `Ollama` where the provider protocol is materially different from
-OpenAI-compatible chat completions.
+Requirements:
 
-Host applications can query `list_llm_providers()`,
-`find_llm_provider()`, `make_default_llm_config()`, and
-`normalize_llm_client_config()` to populate provider settings UI without
-duplicating Wuwe's default endpoints or capability metadata.
-They can then call `make_llm_client()` from
-`<wuwe/agent/llm/llm_provider_factory.h>` to construct a provider without
-including the heavy `<wuwe/wuwe.h>` aggregation header in UI-facing translation
-units.
-
-See [LLM Providers](docs/llm-providers.md) for the provider architecture and
-future native-client extension path.
-
-## HTTP Backends
-
-Wuwe's network layer is built behind the `http_client` abstraction. The default
-backend remains cpr/libcurl for mature HTTPS behavior, and Wuwe also ships a
-`cpp-httplib` backend for local HTTP, comparison testing, and one-command
-backend switching.
-
-The shared contract exposes status codes, response headers, transport errors,
-streaming callbacks, cancellation, redirect controls, proxy options, TLS
-verification controls, custom CA paths, and trace id propagation.
-
-Use `-DWUWE_HTTP_BACKEND=httplib` to make `default_http_client` use
-`cpp-httplib`, or construct `cpr_http_client` / `httplib_http_client`
-explicitly for A/B testing.
-
-See [HTTP Backends](docs/http-backends.md) for backend selection and
-verification.
-
-## Memory Management
-
-Wuwe includes a memory management layer for short-term conversation memory,
-durable long-term memory, semantic recall, and auditable retention controls.
-
-Implemented components include:
-
-- In-memory, file-backed, and SQLite memory stores.
-- `memory_context` for remember/recall/augment/inspect/update/delete operations.
-- Runner integration for automatic request augmentation and message observation.
-- Built-in `save_memory` and `search_memory` tools.
-- OpenAI-compatible embeddings.
-- Optional Qdrant vector index with batch upsert and metadata filters.
-- Hybrid ranking across vector, lexical, priority, and recency scores.
-- Audit sink, privacy filter, retention TTL, expired-memory compaction, and pending reindex reconciliation.
-
-Basic use:
-
-```cpp
-#include <wuwe/agent/memory/memory_context.hpp>
-#include <wuwe/agent/memory/in_memory_store.hpp>
-
-int main() {
-  namespace memory = wuwe::agent::memory;
-
-  memory::memory_context context;
-  context.set_scope({
-    .user_id = "local-user",
-    .application_id = "my-agent",
-    .conversation_id = "session-1",
-    .agent_id = "assistant",
-  });
-
-  context.remember_long_term(
-    "The user prefers concise C++20 examples.",
-    context.scope(),
-    { { "topic", "preference" } });
-
-  memory::memory_query query;
-  query.scope = context.scope();
-  query.kinds = { memory::memory_kind::long_term };
-  query.text = "How should I answer C++ API questions?";
-
-  const auto records = context.recall(query);
-}
-```
-
-For semantic memory with Qdrant:
+- Visual Studio 2022 with the C++ desktop workload
+- CMake 3.25 or newer for the included presets
+- Git
+- vcpkg, referenced through `VCPKG_ROOT`
 
 ```powershell
-$env:WUWE_QDRANT_URL="http://localhost:6333"
-ctest --test-dir build-vcpkg -C Debug --output-on-failure -R memory_tests
-.\build-vcpkg\examples\Debug\memory_vector_example.exe
+$env:VCPKG_ROOT = "D:\tools\vcpkg"
+
+cmake --preset windows-vcpkg
+cmake --build --preset windows-vcpkg-release
+ctest --preset windows-vcpkg-release
 ```
 
-See [Memory Management](docs/memory-management.md) and
-[Memory Deployment](docs/memory-deployment.md) for production guidance.
+The preset uses the repository's pinned `vcpkg.json` baseline. It restores
+SQLite into the build directory without installing it system-wide. The official
+Windows profile uses cpr/libcurl with Schannel and does not link OpenSSL.
 
-## Knowledge Retrieval
-
-Wuwe also includes a standalone RAG layer for external documents. It supports
-file and directory ingestion, cited chunking, local and persistent indexes,
-Qdrant and remote-vector adapters, hybrid retrieval, reranking, caching,
-observability, grounding checks, benchmark utilities, and `search_knowledge`
-tool exposure.
-
-See [Knowledge Retrieval](docs/knowledge-retrieval.md) for current status,
-pipeline examples, deployment notes, and remaining production work.
-
-## Planning
-
-Wuwe includes a modular Planning layer for goal-driven task decomposition and
-execution control. It provides static and LLM-backed planners, tool-aware plan
-generation, plan validation, function and tool executors, retry policy,
-replanning hooks, observer events, JSON serialization for checkpoints,
-checkpoint resume, single-run step budgets, cancellation checks, approval gates,
-plan stores, trace events, parallel ready-step execution, timeout marking,
-typed JSON I/O, artifacts, agent handoff executors, policy hooks, optional
-memory recording, and an optional Reflection gate for retry/revise/replan/block
-closed loops. Planning lives independently from flow, runner, memory, MCP, and
-RAG modules, so existing behavior is unchanged unless an application explicitly
-creates a `plan_runner`. The Planning core is complete for embedded agent
-runtimes; deployment-platform work such as distributed workers, leases,
-database-backed stores, external approval systems, and telemetry exporters is
-tracked in the Planning roadmap.
-
-See [Planning](docs/planning.md) for API boundaries and extension points.
-
-## Observability
-
-Wuwe includes a small shared observability contract in
-`<wuwe/agent/core/observability.hpp>`. Modules can publish normalized
-`agent_event` records to in-memory, fanout, or JSONL sinks. Knowledge Retrieval
-and MCP host telemetry currently provide adapters into this shared sink while
-keeping their module-specific event types.
-
-## Reflection
-
-Wuwe includes a Reflection layer for evaluating existing outputs, tool results,
-plan step results, RAG answers, and final answers against structured rubrics.
-It provides deterministic rule checks, LLM-backed reflection, composite
-reflection, policy action mapping, runner events, JSON codecs, and in-memory or
-file-backed reflection history. Reflection is independent from Planning, but
-Planning can now consume its action recommendations through `plan_reflection_gate`
-for retry, revise, replan, block, or escalation flows.
-
-The real LLM example is `reflection_example`:
+An explicit OpenSSL variant is also available:
 
 ```powershell
-$env:OPENROUTER_API_KEY = "your_api_key"
-$env:OPENROUTER_CHAT_MODEL = "openai/gpt-oss-120b:free"
-cmake --build build-mcp --config Debug --target reflection_example
-.\build-mcp\examples\Debug\reflection_example.exe
+cmake --preset windows-vcpkg-openssl
+cmake --build --preset windows-vcpkg-openssl-release
+ctest --preset windows-vcpkg-openssl-release
 ```
 
-See [Reflection](docs/reflection.md) for API boundaries, current observability,
-and future adapters.
+### Linux x64 build
 
-## Model Context Protocol
+Requirements:
 
-Wuwe includes an MCP module for exposing existing Wuwe tool providers,
-resources, roots, and prompts through JSON-RPC, `initialize`, `tools/list`,
-`tools/call`, `resources/list`, `resources/read`, `roots/list`, `prompts/list`,
-`prompts/get`, Content-Length framed stdio transport, a small stdio client, an
-external process stdio client, a lightweight multi-server host runtime with
-stderr capture, async dispatch, health checks, bounded restart policy, and basic
-telemetry, structured runtime events, JSONL/Prometheus/OpenTelemetry-style
-telemetry export, MCP aggregation gateway, restart backoff and circuit breaker
-protection, an application-level HTTP adapter,
-project-local and user-level MCP config discovery, config-driven child process environment overrides,
-notifications, lifecycle tracking, async task
-helpers, sampling and elicitation request forwarding, pagination, and optional
-access/audit policy.
-
-See [MCP Module](docs/mcp.md) for API usage and
-[MCP Host Compatibility](docs/mcp-host-compatibility.md) for desktop host setup.
-
-## Install
+- Ubuntu 24.04 or a compatible x64 Linux distribution
+- GCC 13 or Clang with C++20 support
+- CMake 3.25 or newer, Make, and Git
+- vcpkg, referenced through `VCPKG_ROOT`
 
 ```bash
-cmake -S . -B build
+export VCPKG_ROOT="$HOME/vcpkg"
+
+cmake --preset linux-vcpkg
+cmake --build --preset linux-vcpkg-release
+ctest --preset linux-vcpkg-release
+```
+
+The Linux release profile restores pinned OpenSSL and SQLite packages through
+the same manifest used on Windows. It also installs a separate Linux x64
+Temurin runtime for Tika; no Windows runtime binaries are reused.
+
+### Generic CMake build
+
+For other toolchains and platforms:
+
+```bash
+cmake -S . -B build -DWUWE_TLS_BACKEND=auto -DWUWE_SQLITE_MODE=auto
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 cmake --install build --config Release --prefix <install-prefix>
 ```
 
-The install prefix includes Wuwe's bundled runtime sidecars under `runtime/`, so
-applications can consume the install directory directly without separately
-installing Java or starting a document parser.
+The generic path remains useful for custom Linux toolchains and macOS. macOS is
+not part of the 0.1.0 release certification matrix.
 
-## Use From Another Project
+See [Dependencies](docs/dependencies.md) for TLS, SQLite, runtime, and package
+consumer requirements.
 
-Add the install prefix to `CMAKE_PREFIX_PATH`, then use `find_package`:
+## Minimal example
+
+```cpp
+#include <iostream>
+
+#include <wuwe/wuwe.h>
+
+int main() {
+  wuwe::llm_config config {
+    .model = "gpt-4.1-mini",
+  };
+
+  wuwe::llm_client_factory factory;
+  auto client = factory.create_shared("OpenAI", config);
+  const auto response = client->complete("Explain RAII in one paragraph.");
+
+  if (!response) {
+    std::cerr << response.error_code.message() << '\n';
+    return 1;
+  }
+
+  std::cout << response.content << '\n';
+}
+```
+
+Set `OPENAI_API_KEY` before running the example. Other providers can be
+selected through the same factory.
+
+## Consume an installed SDK
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
-project(my_app LANGUAGES CXX)
+project(my_agent LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-list(APPEND CMAKE_PREFIX_PATH "<install-prefix>")
-
 find_package(wuwe CONFIG REQUIRED)
 
-add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE wuwe::wuwe)
+add_executable(my_agent main.cpp)
+target_link_libraries(my_agent PRIVATE wuwe::wuwe)
 ```
 
-Example:
+Add the Wuwe installation prefix to `CMAKE_PREFIX_PATH` when it is not installed
+in a standard CMake search location. The exported package requests only the
+public dependencies enabled in that specific Wuwe build.
 
-```cpp
-#include <wuwe/net/default_http_client.h>
+## Package
 
-int main() {
-    wuwe::agent::default_http_client client;
+Generate a release archive after completing the matching release build and
+tests.
 
-    wuwe::agent::http_request request;
-    request.method = "GET";
-    request.url = "https://api.openai.com";
+Windows x64:
 
-    const wuwe::agent::http_response response = client.send(request);
-    return response.error_code.value();
-}
+```powershell
+.\tools\package-wuwe.ps1 -BuildDir build-vcpkg -Configuration Release
 ```
+
+The archive is written to:
+
+```text
+dist/wuwe-0.1.0-windows-x64.zip
+```
+
+Linux x64:
+
+```bash
+bash ./tools/package-wuwe.sh \
+  --build-dir build-linux-vcpkg \
+  --configuration Release
+```
+
+```text
+dist/wuwe-0.1.0-linux-x64.tar.gz
+```
+
+It contains the static SDK, CMake package files, examples, documentation, the
+pinned Tika server, and a platform-matched Java runtime. `manifest.json` records
+the actual HTTP, TLS, SQLite, and runtime capabilities, while
+`checksums.sha256` protects packaged files.
+
+Windows x64 and Linux x64 package builds select separate, pinned Temurin 21 JRE
+archives. The Tika JAR is shared, but a JRE binary is never reused across
+operating systems.
+
+SQLite and OpenSSL remain public link dependencies when enabled; they are not
+silently copied into the SDK archive. See [Packaging](docs/packaging.md) for the
+complete package contract.
+
+## Production boundaries
+
+Wuwe reports capabilities explicitly and does not treat optional integrations
+as guaranteed:
+
+- The default controlled-process backend is not a strong sandbox. Strong
+  isolation requires a backend that advertises and enforces the requested
+  filesystem, network, identity, and resource restrictions.
+- SQLite persistence in 0.1.0 is intended for local, primarily single-process
+  workloads. Its knowledge-vector search is a deterministic linear scan, not an
+  approximate-nearest-neighbor index.
+- Qdrant is an optional external service for larger semantic indexes.
+- Platform-matched Temurin 21 archives are used for Windows x64 and Linux x64;
+  both release profiles verify the installed runtime and package layout.
+- macOS has not yet received release CI or binary-package certification.
+
+## Documentation
+
+- [Agent Runtime](docs/agent-runtime.md)
+- [Reasoning](docs/reasoning.md)
+- [Planning](docs/planning.md)
+- [Reflection](docs/reflection.md)
+- [Memory Management](docs/memory-management.md)
+- [Knowledge Retrieval](docs/knowledge-retrieval.md)
+- [Model Context Protocol](docs/mcp.md)
+- [Controlled Local Execution](docs/execution-runtime.md)
+- [HTTP Backends](docs/http-backends.md)
+- [Dependencies](docs/dependencies.md)
+- [Packaging](docs/packaging.md)
+
+## License
+
+Wuwe is distributed under the terms in [LICENSE](LICENSE).

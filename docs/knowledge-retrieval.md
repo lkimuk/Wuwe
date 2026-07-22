@@ -568,8 +568,9 @@ retriever->ingest(std::move(document));
 
 `knowledge_document_loader::make_default()` looks for the package-layout
 `runtime/tika` directory next to the current working directory or executable,
-then starts the bundled parser with `runtime/jre/bin/java.exe` when available.
-Users do not need to know or configure the parser service.
+then starts the bundled parser with `runtime/jre/bin/java.exe` on Windows or
+`runtime/jre/bin/java` on Unix-like systems when available. Users do not need
+to know or configure the parser service.
 
 The loader sends raw file bytes to `PUT /tika` with `Accept: text/plain`, then
 stores the returned text in `knowledge_document::content`. Metadata records the
@@ -688,7 +689,7 @@ Supported backend values are `local`, `file`, `sqlite`, `qdrant`, `pgvector`,
 - `file_knowledge_store`
 - `in_memory_knowledge_index`
 - `file_knowledge_index`
-- `sqlite_knowledge_index` when `WUWE_ENABLE_SQLITE` is available
+- `sqlite_knowledge_index` when `WUWE_SQLITE_MODE` enables SQLite
 - `qdrant_knowledge_index`
 - `pgvector_knowledge_index`, `opensearch_knowledge_index`, and
   `milvus_knowledge_index` through the remote vector adapter protocol
@@ -696,6 +697,11 @@ Supported backend values are `local`, `file`, `sqlite`, `qdrant`, `pgvector`,
 The file store persists documents and chunks. File and SQLite indexes persist
 chunk embeddings, so they can retrieve immediately after process restart without
 rebuild.
+
+The 0.1.0 SQLite index stores embeddings durably and evaluates similarity with
+a linear scan in C++. It is a local persistence backend, not a SQLite vector
+extension or an approximate-nearest-neighbor index. See
+[Dependencies](dependencies.md) for sizing and deployment boundaries.
 
 `qdrant_knowledge_index` provides a remote vector index backend:
 

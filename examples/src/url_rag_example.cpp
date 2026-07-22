@@ -11,9 +11,7 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include "console_utf8.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -160,7 +158,7 @@ struct guideline_demo_spec {
   }
 
 private:
-  static constexpr auto required_context_terms() {
+  static constexpr std::array<std::string_view, 3> required_context_terms() {
     return std::array {
       std::string_view { "r.11: avoid calling new and delete explicitly" },
       std::string_view { "r.12: immediately give the result of an explicit resource allocation" },
@@ -168,7 +166,7 @@ private:
     };
   }
 
-  static constexpr auto answer_resource_terms() {
+  static constexpr std::array<std::string_view, 4> answer_resource_terms() {
     return std::array {
       std::string_view { "resource" },
       std::string_view { "raii" },
@@ -606,18 +604,11 @@ private:
   knowledge::knowledge_rag_service service_;
 };
 
-void configure_console() {
-#ifdef _WIN32
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
-#endif
-}
-
 } // namespace
 
 int main() {
   try {
-    configure_console();
+    wuwe_example::configure_utf8_console();
     return url_rag_demo(demo_environment::load()).run();
   }
   catch (const std::exception& ex) {

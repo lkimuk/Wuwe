@@ -265,7 +265,7 @@ private:
 };
 
 struct plan_runner_options {
-  std::shared_ptr<planner> planner;
+  std::shared_ptr<::wuwe::agent::planning::planner> planner;
   std::shared_ptr<plan_executor> executor;
   plan_store* store {};
   agent::memory::memory_context* memory {};

@@ -1,4 +1,4 @@
-name: HTTP Backends
+name: Build and Test
 
 on:
   pull_request:
@@ -9,9 +9,11 @@ on:
       - memory
 
 jobs:
-  test:
+  windows:
     name: ${{ matrix.backend }} on Windows
     runs-on: windows-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
     strategy:
       fail-fast: false
       matrix:
@@ -23,11 +25,85 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout pinned vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: eb35a05cc21c69ec1399f7532b7dd61d271ac0d1
+          path: vcpkg
+
+      - name: Bootstrap vcpkg
+        run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
       - name: Configure
-        run: cmake -S . -B build-${{ matrix.backend }} -DWUWE_HTTP_BACKEND=${{ matrix.backend }}
+        run: cmake --preset windows-vcpkg -DWUWE_HTTP_BACKEND=${{ matrix.backend }}
 
       - name: Build
-        run: cmake --build build-${{ matrix.backend }} --config Debug -- /m:1
+        run: cmake --build --preset windows-vcpkg-debug -- /m:1
 
       - name: Test
-        run: ctest --test-dir build-${{ matrix.backend }} -C Debug --output-on-failure
+        run: ctest --preset windows-vcpkg-debug
+
+  linux:
+    name: Release profile on Ubuntu 24.04
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: eb35a05cc21c69ec1399f7532b7dd61d271ac0d1
+          path: vcpkg
+
+      - name: Bootstrap vcpkg
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Configure OpenSSL and SQLite release profile
+        run: cmake --preset linux-vcpkg
+
+      - name: Build
+        run: cmake --build --preset linux-vcpkg-release
+
+      - name: Test
+        run: ctest --preset linux-vcpkg-release
+
+      - name: Install SDK
+        run: cmake --install build-linux-vcpkg --prefix install-linux
+
+      - name: Verify bundled Linux runtime
+        run: |
+          test -x install-linux/runtime/jre/bin/java
+          test -f install-linux/runtime/tika/tika-server-standard.jar
+          install-linux/runtime/jre/bin/java -version
+
+      - name: Configure installed-package consumer
+        run: >-
+          cmake -S tests/package_smoke -B build-package-smoke
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install-linux
+          -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=x64-linux
+          -DVCPKG_INSTALLED_DIR=${{ github.workspace }}/build-linux-vcpkg/vcpkg_installed
+
+      - name: Build and run installed-package consumer
+        run: |
+          cmake --build build-package-smoke --parallel 2
+          ./build-package-smoke/wuwe_package_smoke
+
+      - name: Build Linux package
+        run: >-
+          bash ./tools/package-wuwe.sh
+          --build-dir build-linux-vcpkg
+          --configuration Release
+          --skip-build
+
+      - name: Inspect Linux package
+        run: |
+          test -f dist/wuwe-0.1.0-linux-x64.tar.gz
+          tar -tzf dist/wuwe-0.1.0-linux-x64.tar.gz >/dev/null
