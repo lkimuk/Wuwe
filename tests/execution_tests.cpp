@@ -693,6 +693,26 @@ std::filesystem::path make_probe_run_directory(std::string_view name) {
   return path;
 }
 
+std::string unexpected_python_stderr(
+  std::string text,
+  const std::filesystem::path& python_executable) {
+  // CPython may emit this non-fatal realpath diagnostic when an AppContainer
+  // runs from its package storage on a GitHub-hosted Windows runner.
+  const auto expected =
+    std::string("Failed to find real location of ") +
+    python_executable.string();
+  if (text == expected) {
+    return {};
+  }
+  if (text.starts_with(expected + "\r\n")) {
+    text.erase(0, expected.size() + 2);
+  }
+  else if (text.starts_with(expected + "\n")) {
+    text.erase(0, expected.size() + 1);
+  }
+  return text;
+}
+
 class probe_directory_cleanup {
 public:
   explicit probe_directory_cleanup(std::filesystem::path path)
@@ -2701,14 +2721,16 @@ void test_restricted_process_execution_plan_runs_python() {
     std::string("restricted execution plan launch failed: ") +
       execution_detail::to_string(launch.status) + " " + launch.detail);
   const auto& capture = launch.capture;
+  const auto unexpected_stderr =
+    unexpected_python_stderr(capture.stderr_text, plan.python_executable);
 
   require_condition(
     capture.exit_code == 0,
     "restricted execution plan Python launch should exit successfully");
   require_condition(
-    capture.stderr_text.empty(),
+    unexpected_stderr.empty(),
     std::string("restricted execution plan Python launch wrote stderr: ") +
-      capture.stderr_text);
+      unexpected_stderr);
   require_condition(
     capture.stdout_text.find("plan_python_ok") != std::string::npos,
     "restricted execution plan Python launch did not run script");
@@ -3237,11 +3259,14 @@ void test_restricted_process_backend_candidate_enforces_configured_roots() {
       "')))\n";
 
   const auto result = backend->run(request, {});
-  if (result.exit_code.value_or(1) != 0 || !result.stderr_text.empty()) {
+  const auto unexpected_stderr = unexpected_python_stderr(
+    result.stderr_text,
+    result.metadata.at("python_executable"));
+  if (result.exit_code.value_or(1) != 0 || !unexpected_stderr.empty()) {
     std::cerr << "restricted configured-roots stdout:\n"
               << result.stdout_text << "\n";
     std::cerr << "restricted configured-roots stderr:\n"
-              << result.stderr_text << "\n";
+              << unexpected_stderr << "\n";
   }
   require_condition(
     result.termination_reason == execution::execution_termination_reason::exited,
@@ -3250,7 +3275,7 @@ void test_restricted_process_backend_candidate_enforces_configured_roots() {
     result.exit_code.has_value() && *result.exit_code == 0,
     "restricted candidate configured-roots test should return exit code zero");
   require_condition(
-    result.stderr_text.empty(),
+    unexpected_stderr.empty(),
     "restricted candidate configured-roots test should not write stderr");
   require_condition(
     result.stdout_text.find("readable_read=True") != std::string::npos,
@@ -3486,18 +3511,20 @@ void test_windows_appcontainer_runs_minimal_python_runtime() {
     std::map<std::wstring, std::wstring> {
       { L"WUWE_ALLOWED_ENV", L"visible" },
     });
+  const auto unexpected_stderr =
+    unexpected_python_stderr(capture.stderr_text, python_exe);
 
-  if (capture.exit_code != 0 || !capture.stderr_text.empty()) {
+  if (capture.exit_code != 0 || !unexpected_stderr.empty()) {
     std::cerr << "AppContainer Python runtime probe exit_code="
               << capture.exit_code << "\n";
     std::cerr << "stdout:\n" << capture.stdout_text << "\n";
-    std::cerr << "stderr:\n" << capture.stderr_text << "\n";
+    std::cerr << "stderr:\n" << unexpected_stderr << "\n";
   }
   require_condition(
     capture.exit_code == 0,
     "AppContainer Python runtime probe failed");
   require_condition(
-    capture.stderr_text.empty(),
+    unexpected_stderr.empty(),
     "AppContainer Python runtime probe wrote stderr");
   require_condition(
     capture.stdout_text.find("appcontainer_python_ok") != std::string::npos,
@@ -3573,7 +3600,10 @@ void test_windows_appcontainer_runs_minimal_python_runtime() {
     output_limit_capture.stdout_text == std::string(16, 'O'),
     "AppContainer Python output-limit probe kept wrong stdout prefix");
   require_condition(
-    output_limit_capture.stderr_text == std::string(12, 'E'),
+    output_limit_capture.stderr_text == std::string(12, 'E') ||
+      output_limit_capture.stderr_text ==
+        // The startup diagnostic is part of stderr and may consume the limit.
+        std::string("Failed to find real location").substr(0, 12),
     "AppContainer Python output-limit probe kept wrong stderr prefix");
 
   const auto process_limit_script_path = run_dir / "process-limit.py";
@@ -3605,18 +3635,21 @@ void test_windows_appcontainer_runs_minimal_python_runtime() {
       process_limit_script_path.wstring(),
     },
     run_dir);
+  const auto process_limit_unexpected_stderr = unexpected_python_stderr(
+    process_limit_capture.stderr_text,
+    python_exe);
   if (process_limit_capture.exit_code != 0 ||
-      !process_limit_capture.stderr_text.empty()) {
+      !process_limit_unexpected_stderr.empty()) {
     std::cerr << "AppContainer Python process-limit probe exit_code="
               << process_limit_capture.exit_code << "\n";
     std::cerr << "stdout:\n" << process_limit_capture.stdout_text << "\n";
-    std::cerr << "stderr:\n" << process_limit_capture.stderr_text << "\n";
+    std::cerr << "stderr:\n" << process_limit_unexpected_stderr << "\n";
   }
   require_condition(
     process_limit_capture.exit_code == 0,
     "AppContainer Python process-limit probe failed");
   require_condition(
-    process_limit_capture.stderr_text.empty(),
+    process_limit_unexpected_stderr.empty(),
     "AppContainer Python process-limit probe wrote stderr");
   require_condition(
     process_limit_capture.stdout_text.find("process_count_denied=1") !=
