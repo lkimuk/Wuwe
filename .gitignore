@@ -47,3 +47,13 @@ build-vcpkg/
 install/
 artifacts/
 dist/
+
+# Documentation website
+website/node_modules/
+website/.docusaurus/
+website/build/
+website/.npm-cache/
+
+# Local agent tooling state
+.codex/
+.policy/
