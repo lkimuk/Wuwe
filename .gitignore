@@ -57,3 +57,4 @@ website/.npm-cache/
 # Local agent tooling state
 .codex/
 .policy/
+.vscode/
