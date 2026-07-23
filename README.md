@@ -1,5 +1,18 @@
 ![Wuwe banner](docs/assets/brand/banner.png)
 
+<p align="center">
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/github/license/lkimuk/Wuwe.svg" alt="License">
+  </a>
+  <img src="https://img.shields.io/github/languages/top/lkimuk/Wuwe.svg" alt="Language">
+  <img src="https://img.shields.io/github/last-commit/lkimuk/Wuwe.svg" alt="Last commit">
+</p>
+
+<p align="center">
+  <strong>Documentation:</strong>
+  <a href="https://lkimuk.github.io/Wuwe/">https://lkimuk.github.io/Wuwe/</a>
+</p>
+
 # Wuwe
 
 Wuwe is a C++20 framework for building tool-using, stateful, and auditable AI agents in native applications, services, and command-line programs.
@@ -29,7 +42,7 @@ The codebase is kept portable, but macOS is not part of the 0.1.0 certification 
 | Controlled execution | Policy-bound Python subprocesses, approvals, resource limits, backend contracts, and audit events |
 | Networking | Common HTTP API with cpr/libcurl and cpp-httplib backends |
 
-The complete module map and release boundaries are in the [documentation overview](docs/intro.md).
+The complete module map and release boundaries are in the [documentation overview](https://lkimuk.github.io/Wuwe/docs/).
 
 ## Build
 
@@ -62,7 +75,7 @@ ctest --preset linux-vcpkg-release
 
 The official Windows profile uses Schannel and SQLite. The Linux profile uses OpenSSL and SQLite. Dependencies are restored from the pinned vcpkg manifest into the build tree.
 
-See [Getting started](docs/getting-started.md) and [Dependencies](docs/dependencies.md).
+See [Getting started](https://lkimuk.github.io/Wuwe/docs/getting-started/) and [Dependencies](https://lkimuk.github.io/Wuwe/docs/dependencies/).
 
 ## Minimal client
 
@@ -120,7 +133,7 @@ bash ./tools/package-wuwe.sh --build-dir build-linux-vcpkg --configuration Relea
 
 Each archive contains the static SDK, CMake package files, examples, docs, `manifest.json`, checksums, Apache Tika, and a platform-matched Temurin 21 JRE. SQLite and OpenSSL remain public link dependencies when enabled.
 
-See [Packaging](docs/packaging.md).
+See [Packaging](https://lkimuk.github.io/Wuwe/docs/packaging/).
 
 ## Production boundaries
 
@@ -129,29 +142,6 @@ See [Packaging](docs/packaging.md).
 - Qdrant and other remote indexes are external services managed by the host.
 - The host owns identity, secrets, user consent, approvals, retention, and deployment policy.
 - Inspect package metadata and backend enforcement contracts instead of inferring capabilities.
-
-## Documentation
-
-- [Documentation website](https://lkimuk.github.io/Wuwe/)
-- [Overview](docs/intro.md)
-- [LLM providers](docs/llm-providers.md)
-- [Orchestration](docs/orchestration.md)
-- [Reasoning](docs/reasoning.md)
-- [Planning](docs/planning.md)
-- [Memory](docs/memory-management.md)
-- [Knowledge and RAG](docs/knowledge-retrieval.md)
-- [Model Context Protocol](docs/mcp.md)
-- [Security and governance](docs/security-governance.md)
-- [Observability](docs/observability.md)
-- [Controlled execution](docs/execution-runtime.md)
-
-Build the website with Node.js 20 or newer:
-
-```bash
-cd website
-npm ci
-npm run build
-```
 
 ## License
 
