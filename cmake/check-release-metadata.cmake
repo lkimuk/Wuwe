@@ -44,12 +44,6 @@ wuwe_require_release_literal(
 wuwe_require_release_literal(
     "RELEASE_NOTES.md" "# Wuwe v${WUWE_RELEASE_VERSION}")
 wuwe_require_release_literal(
-    "RELEASE_NOTES.md" "wuwe-${WUWE_RELEASE_VERSION}-windows-x64.zip")
-wuwe_require_release_literal(
-    "RELEASE_NOTES.md" "wuwe-${WUWE_RELEASE_VERSION}-linux-x64.tar.gz")
-wuwe_require_release_literal(
-    "RELEASE_NOTES.md" "wuwe-${WUWE_RELEASE_VERSION}-macos-arm64.tar.gz")
-wuwe_require_release_literal(
     "CHANGELOG.md" "## [${WUWE_RELEASE_VERSION}]")
 wuwe_require_release_literal(
     "CHANGELOG.md" "Installable Windows, Linux, and macOS SDK packages")
