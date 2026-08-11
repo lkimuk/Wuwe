@@ -252,7 +252,8 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install-macos
           -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
-          -DVCPKG_TARGET_TRIPLET=arm64-osx
+          -DVCPKG_TARGET_TRIPLET=arm64-osx-wuwe
+          -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/vcpkg-triplets
           -DVCPKG_INSTALLED_DIR=${{ github.workspace }}/build-macos-arm64-vcpkg/vcpkg_installed
 
       - name: Build and run installed-package consumer

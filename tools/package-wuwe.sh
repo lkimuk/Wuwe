@@ -123,6 +123,7 @@ artifacts_path="$(resolve_repo_path "$artifacts_dir")"
 dist_path="$(resolve_repo_path "$dist_dir")"
 package_root="$artifacts_path/wuwe"
 archive_path="$dist_path/wuwe-$version-$platform.tar.gz"
+archive_checksum_path="$archive_path.sha256"
 cache_path="$build_path/CMakeCache.txt"
 
 case "$package_root" in
@@ -188,6 +189,23 @@ if [[ "$keep_artifacts" != true && -e "$package_root" ]]; then
 fi
 
 cmake --install "$build_path" --config "$configuration" --prefix "$package_root"
+
+# Static curl records the vcpkg library search directory in libcurl.pc. That
+# build-tree path must not escape into a relocatable SDK; OpenSSL remains an
+# explicitly declared consumer dependency and is resolved by name.
+libcurl_pc="$package_root/lib/pkgconfig/libcurl.pc"
+if [[ -f "$libcurl_pc" ]]; then
+  perl -pi -e 's{[ ]*-L/[^ \n]*/vcpkg_installed/[^ \n]*/lib}{}g' "$libcurl_pc"
+fi
+
+leaked_package_metadata="$(find "$package_root/lib" -type f \( -name '*.cmake' -o -name '*.pc' \) \
+  -exec grep -lF "$repo_root" {} + || true)"
+if [[ -n "$leaked_package_metadata" ]]; then
+  echo "Installed package metadata contains build-tree paths:" >&2
+  printf '%s\n' "$leaked_package_metadata" >&2
+  exit 1
+fi
+
 cp -a "$repo_root/README.md" "$repo_root/CHANGELOG.md" "$repo_root/LICENSE" "$repo_root/VERSION" "$package_root/"
 cp -a "$repo_root/vcpkg.json" "$package_root/"
 cp -a "$repo_root/docs" "$package_root/docs"
@@ -302,6 +320,8 @@ cat > "$package_root/manifest.json" <<EOF
     "sqlite_knowledge_search": "$sqlite_search"
   },
   "build_dependencies": {
+    "target_triplet": "$(cache_value VCPKG_TARGET_TRIPLET unknown)",
+    "macos_deployment_target": "$(cache_value CMAKE_OSX_DEPLOYMENT_TARGET '')",
     "vcpkg_baseline": "$vcpkg_baseline",
     "openssl": {
       "linked": $with_openssl,
@@ -345,4 +365,7 @@ done < <(cd "$package_root" && find . -type f ! -path './checksums.sha256' -prin
 
 rm -f -- "$archive_path"
 tar -czf "$archive_path" -C "$package_root" .
+printf '%s  %s\n' "$(file_sha256 "$archive_path")" "$(basename "$archive_path")" \
+  > "$archive_checksum_path"
 echo "Created $archive_path"
+echo "Created $archive_checksum_path"
