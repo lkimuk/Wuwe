@@ -5,7 +5,7 @@ All notable changes to Wuwe are documented in this file. Wuwe follows
 API. Cross-release C++ ABI compatibility is not promised; rebuild consumers
 when upgrading the SDK.
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-08-11
 
 Wuwe 1.0.0 is the first stable public release. It replaces the unreleased
 0.2.0 development identity and establishes the 1.x compatibility contract.
