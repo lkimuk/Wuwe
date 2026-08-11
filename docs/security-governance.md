@@ -109,7 +109,7 @@ field-level enforcement return typed failures and structured blockers before lau
 network access is reported independently from complete network denial, so a deny-only backend
 cannot overstate its capability.
 
-Treat this contract as capability reporting, not as a guarantee inferred from a backend name. The default `controlled_process` backend bounds subprocess operation but is not a strong sandbox. The Windows-only restricted backend provides stronger controls when explicitly enabled and available.
+Treat this contract as capability reporting, not as a guarantee inferred from a backend name. The default `controlled_process` backend bounds subprocess operation but is not a strong sandbox. The Windows and macOS restricted backends provide stronger controls when explicitly enabled and available. Linux reports that backend as unavailable instead of silently weakening the requested policy.
 
 The Windows restricted backend now executes only a private, versioned native plan produced by its
 compiler. Its filesystem implementation rejects reparse-point traversal and files with external hard
@@ -120,6 +120,13 @@ discarding pending recovery state. Native plans explicitly disclose intrinsic Wi
 filesystem defaults and reject policies that forbid them. Policy resource limits are
 enforced as upper bounds rather than reported as unsupported metadata. Unsupported network modes
 are rejected before launch instead of being approximated.
+
+The macOS restricted backend accepts only private native plans compiled for its
+Seatbelt launcher. It binds the selected Python interpreter and framework runtime,
+uses a deny-default filesystem and network profile, closes unrelated descriptors,
+and applies process-group lifecycle and per-process CPU safeguards. Policies that
+require filtered networking, local binding, a complete virtual-memory ceiling, or
+a per-tree process-count limit are rejected rather than overstated.
 
 Container and WebAssembly appear as isolation categories in the public contract but are not implemented backends in version 1.0.0.
 

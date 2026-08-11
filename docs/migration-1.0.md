@@ -48,12 +48,13 @@ compatibility after recompilation, not cross-release C++ ABI compatibility.
 `controlled_process` is the portable default backend. It applies policy,
 timeouts, cancellation, output bounds, and process cleanup, but it is not a
 strong security sandbox. The opt-in `restricted_process` backend is certified
-only on Windows. Container and WebAssembly backends are not implemented in
-1.0.0.
+on Windows and macOS, using AppContainer and Seatbelt respectively. Linux
+reports the stronger backend as unavailable instead of weakening the requested
+policy. Container and WebAssembly backends are not implemented in 1.0.0.
 
 ## Packaging changes
 
-Official Windows and Linux packages contain a manifest, checksums, public
+Official Windows, Linux, and macOS packages contain a manifest, checksums, public
 headers, the static SDK, CMake metadata, documentation, examples, and optional
 Tika/Temurin sidecars. SQLite and OpenSSL remain public link dependencies when
 enabled. Use the package manifest as the source of truth for a particular

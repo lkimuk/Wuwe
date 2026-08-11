@@ -40,7 +40,19 @@ wuwe_require_release_literal(
 wuwe_require_release_literal(
     "README.md" "wuwe-${WUWE_RELEASE_VERSION}-linux-x64.tar.gz")
 wuwe_require_release_literal(
+    "README.md" "wuwe-${WUWE_RELEASE_VERSION}-macos-arm64.tar.gz")
+wuwe_require_release_literal(
     "CHANGELOG.md" "## [${WUWE_RELEASE_VERSION}]")
+wuwe_require_release_literal(
+    "CHANGELOG.md" "Installable Windows, Linux, and macOS SDK packages")
+wuwe_require_release_literal(
+    "CHANGELOG.md" "macOS 14+ on Apple Silicon is part of the ${WUWE_RELEASE_VERSION} certification matrix")
+wuwe_require_release_literal(
+    "docs/migration-1.0.md" "on Windows and macOS, using AppContainer")
+wuwe_require_release_literal(
+    "docs/migration-1.0.md" "Official Windows, Linux, and macOS packages")
+wuwe_require_release_literal(
+    "docs/security-governance.md" "The Windows and macOS restricted backends")
 wuwe_require_release_literal(
     "tests/package_smoke/main.cpp" "framework_version != \"${WUWE_RELEASE_VERSION}\"")
 wuwe_require_release_literal(

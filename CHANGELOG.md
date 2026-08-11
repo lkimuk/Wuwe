@@ -38,14 +38,16 @@ Wuwe 1.0.0 is the first stable public release. It replaces the unreleased
 - Offline learning/adaptation and controlled exploration workflows with
   explicit review, activation, rollback, and evidence boundaries.
 - Root-scoped filesystem tools, allowlisted process tools, controlled Python
-  execution, an opt-in Windows restricted-process backend, and a versioned
+  execution, opt-in native restricted-process backends on Windows and macOS, and a versioned
   platform-neutral sandbox policy/plan compilation API with fail-closed
   enforcement reporting. The Windows backend consumes private versioned plans,
   enforces policy resource caps and filesystem precedence, validates runtime and
   filesystem capabilities, rejects reparse/hard-link escapes, and restores
-  temporary AppContainer ACL leases after execution. The compatibility factory
-  uses the same native compiler and launch path.
-- Installable Windows and Linux SDK packages, generated version headers,
+  temporary AppContainer ACL leases after execution. The macOS backend compiles
+  private Seatbelt plans, binds its Python framework runtime, denies network access,
+  and applies process-group lifecycle and CPU safeguards. The compatibility factory
+  uses the same native compiler and launch path on each supported host.
+- Installable Windows, Linux, and macOS SDK packages, generated version headers,
   package manifests, bundled Tika/Temurin runtime options, and CMake consumer
   smoke tests.
 
@@ -66,7 +68,8 @@ Wuwe 1.0.0 is the first stable public release. It replaces the unreleased
 - Do not combine v0.1.0 libraries with 1.0.0 headers, or the reverse.
 - Container and WebAssembly execution backends are contract placeholders and
   are not implemented in 1.0.0.
-- macOS is not part of the 1.0.0 certification matrix.
+- macOS 14+ on Apple Silicon is part of the 1.0.0 certification matrix. Intel
+  macOS is outside the certified release profile.
 
 See [docs/migration-1.0.md](docs/migration-1.0.md) for the upgrade procedure and
 [docs/versioning.md](docs/versioning.md) for the compatibility contract.
