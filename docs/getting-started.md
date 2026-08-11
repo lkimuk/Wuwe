@@ -53,7 +53,8 @@ cmake --build --preset macos-arm64-vcpkg-release
 ctest --preset macos-arm64-vcpkg-release
 ```
 
-The profile targets `arm64-osx`. The package includes Tika and a pinned Temurin 21 ARM64 runtime,
+The profile targets the repository's `arm64-osx-wuwe` triplet, which fixes the deployment target
+at macOS 14. The package includes Tika and a pinned Temurin 21 ARM64 runtime,
 so document parsing does not depend on a host Java installation.
 
 ## Minimal client
