@@ -5,11 +5,41 @@
 
 #include <wuwe/wuwe.h>
 
+namespace {
+
+class package_factory_llm_client final : public wuwe::llm_client {
+public:
+  explicit package_factory_llm_client(const wuwe::llm_config& config) : model_(config.model) {
+  }
+
+  wuwe::llm_response complete(const wuwe::llm_request&) override {
+    return { .content = model_ };
+  }
+
+private:
+  std::string model_;
+};
+
+} // namespace
+
 int main() {
   static_assert(wuwe::framework_version_major == 1);
   static_assert(wuwe::framework_version_minor == 0);
   static_assert(wuwe::framework_version_patch == 0);
   if (wuwe::framework_version != "1.0.0") {
+    return 1;
+  }
+
+  constexpr auto factory_provider_id = "PackageFactoryExtension";
+  wuwe::llm_client_factory factory;
+  factory.unregister_type(factory_provider_id);
+  wuwe::llm_client_factory::register_type<package_factory_llm_client> factory_registration(
+    factory_provider_id);
+  auto package_client = factory.create_unique(factory_provider_id,
+    wuwe::llm_config {
+      .model = "package-extension-model",
+    });
+  if (package_client->complete(wuwe::llm_request {}).content != "package-extension-model") {
     return 1;
   }
 

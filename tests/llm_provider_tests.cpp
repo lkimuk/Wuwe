@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -98,6 +99,19 @@ private:
   std::string body_;
 };
 
+class factory_extension_llm_client final : public wuwe::llm_client {
+public:
+  explicit factory_extension_llm_client(const wuwe::llm_config& config) : model_(config.model) {
+  }
+
+  wuwe::llm_response complete(const wuwe::llm_request&) override {
+    return { .content = model_ };
+  }
+
+private:
+  std::string model_;
+};
+
 bool has_request_header(const wuwe::http_request& request, std::string_view name) {
   for (const auto& [key, value] : request.headers) {
     if (wuwe::http_header_name_equals(key, name) && !value.empty()) {
@@ -171,6 +185,41 @@ void test_factory_registers_protocol_and_provider_clients() {
     require(static_cast<bool>(client), std::string("factory should create ") + key);
     require(client->supports_streaming(), std::string(key) + " should support streaming");
   }
+}
+
+void test_factory_preserves_gmp_registration_extension() {
+  static_assert(std::is_base_of_v<wuwe::llm_client_factory_base, wuwe::llm_client_factory>);
+  constexpr auto provider_id = "FactoryExtension";
+  wuwe::llm_client_factory factory;
+  factory.unregister_type(provider_id);
+
+  {
+    wuwe::llm_client_factory::register_type<factory_extension_llm_client> registration(provider_id);
+    auto client = factory.create_unique(provider_id,
+      wuwe::llm_config {
+        .model = "extension-model",
+      });
+    require(client->complete(wuwe::llm_request {}).content == "extension-model",
+      "LLM factory should preserve GMP register_type and create_unique extensions");
+  }
+
+  factory.unregister_type(provider_id);
+  bool rejected = false;
+  try {
+    (void)factory.create(provider_id, {});
+  }
+  catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  require(rejected, "LLM factory should preserve GMP unregister_type behavior");
+
+  const wuwe::llm_client_factory const_factory;
+  auto builtin = const_factory.create_shared("Ollama",
+    wuwe::llm_config {
+      .model = "const-factory-model",
+    });
+  require(static_cast<bool>(builtin),
+    "LLM factory should preserve const creation supported by the public facade");
 }
 
 void test_provider_registry_exposes_default_metadata_and_config() {
@@ -1235,6 +1284,7 @@ void test_native_provider_retries_before_output() {
 int main() {
   try {
     test_factory_registers_protocol_and_provider_clients();
+    test_factory_preserves_gmp_registration_extension();
     test_provider_registry_exposes_default_metadata_and_config();
     test_aggregate_header_preserves_tool_reflection();
     test_openai_compatible_provider_presets();

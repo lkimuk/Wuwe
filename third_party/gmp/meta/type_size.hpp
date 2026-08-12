@@ -3,7 +3,7 @@
 // | (_ | |\/| |  _/ version 0.3.0
 //  \___|_|  |_|_|   https://github.com/lkimuk/gmp
 //
-// SPDX-FileCopyrightText: 2026 Gaoxing Li <https://www.cppmore.com/>
+// SPDX-FileCopyrightText: 2026 Miles Li <https://www.cppmore.com/>
 // SPDX-License-Identifier: MIT
 //
 // This file is part of the GMP (Generative Metaprogramming) library.
@@ -52,7 +52,7 @@ consteval std::size_t type_size_impl() {
 
 } // namespace detail
 
-/** @addtogroup type_utilities
+/** @addtogroup reflection_metaprogramming
  * @{
  */
 
@@ -67,7 +67,6 @@ consteval std::size_t type_size_impl() {
  * @tparam T The type to calculate.
  * @return The payload size of T, excluding aggregate padding.
  *
- * @example
  * @code
  * struct Packet {
  *     char tag;
