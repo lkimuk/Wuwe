@@ -3,7 +3,7 @@
 // | (_ | |\/| |  _/ version 0.3.0
 //  \___|_|  |_|_|   https://github.com/lkimuk/gmp
 //
-// SPDX-FileCopyrightText: 2020-2026 Gaoxing Li <https://www.cppmore.com/>
+// SPDX-FileCopyrightText: 2020-2026 Miles Li <https://www.cppmore.com/>
 // SPDX-License-Identifier: MIT
 //
 // This file is part of the GMP (Generative Metaprogramming) library.
@@ -112,7 +112,7 @@ public:
    * memory leaks. Prefer `create_shared()` or `create_unique()` when ownership
    * should be explicit.
    */
-  AbstractProduct* create(const std::string& key, const ConstructorArgs&... args) {
+  AbstractProduct* create(const std::string& key, const ConstructorArgs&... args) const {
     if (this_type::instance().map_.find(key) == this_type::instance().map_.end())
       throw std::invalid_argument("Unknown object type passed to factory!");
     return this_type::instance().map_[key](args...);
@@ -128,7 +128,7 @@ public:
    * @throws std::invalid_argument If `key` is not registered.
    */
   std::shared_ptr<AbstractProduct> create_shared(
-    const std::string& key, const ConstructorArgs&... args) {
+    const std::string& key, const ConstructorArgs&... args) const {
     return std::shared_ptr<AbstractProduct>(create(key, args...));
   }
 
@@ -142,7 +142,7 @@ public:
    * @throws std::invalid_argument If `key` is not registered.
    */
   std::unique_ptr<AbstractProduct> create_unique(
-    const std::string& key, const ConstructorArgs&... args) {
+    const std::string& key, const ConstructorArgs&... args) const {
     return std::unique_ptr<AbstractProduct>(create(key, args...));
   }
 
@@ -150,14 +150,14 @@ private:
   std::map<std::string, std::function<AbstractProduct*(const ConstructorArgs&... args)>> map_;
 };
 
-#define _GMP_GET_CONCRETE_PRODUCT_CLASS(ConcreteProduct) GMP_IF_THEN_ELSE(GMP_IS_TUPLE(ConcreteProduct), GMP_GET_TUPLE, ConcreteProduct)GMP_IF(GMP_IS_TUPLE(ConcreteProduct), (1, ConcreteProduct))
+#define _GMP_GET_CONCRETE_PRODUCT_CLASS(ConcreteProduct) GMP_IF_THEN_ELSE(GMP_IS_TUPLE(ConcreteProduct), GMP_TUPLE_GET, ConcreteProduct)GMP_IF(GMP_IS_TUPLE(ConcreteProduct), (1, ConcreteProduct))
 #define _GMP_GET_CONSTRUCTOR_TYPES(ConstructorArgs) GMP_IF_THEN_ELSE(GMP_IS_TUPLE(ConstructorArgs), GMP_REMOVE_PARENS, ConstructorArgs)GMP_IF(GMP_IS_TUPLE(ConstructorArgs), (ConstructorArgs))
 #define GMP_FACTORY_REGISTER_WITH_ARGS(AbstractProduct, ConstructorArgs, ConcreteProduct) \
   static gmp::object_factory<AbstractProduct, _GMP_GET_CONSTRUCTOR_TYPES(ConstructorArgs)>::register_type<_GMP_GET_CONCRETE_PRODUCT_CLASS(ConcreteProduct)> \
-        GMP_CONCATS(gmp_reg_, AbstractProduct, _, _GMP_GET_CONCRETE_PRODUCT_CLASS(ConcreteProduct))(GMP_IF_THEN_ELSE(GMP_IS_TUPLE(ConcreteProduct), GMP_STRINGIFY(GMP_GET_TUPLE(0, ConcreteProduct)), GMP_STRINGIFY(ConcreteProduct)));
+        GMP_CONCAT(gmp_reg_, __COUNTER__)(GMP_IF_THEN_ELSE(GMP_IS_TUPLE(ConcreteProduct), GMP_TUPLE_GET(0, ConcreteProduct), GMP_STRINGIFY(ConcreteProduct)));
 #define GMP_FACTORY_REGISTER_NO_ARGS(AbstractProduct, ConcreteProduct) \
     static gmp::object_factory<AbstractProduct>::register_type<_GMP_GET_CONCRETE_PRODUCT_CLASS(ConcreteProduct)> \
-        GMP_CONCATS(gmp_reg_, AbstractProduct, _, _GMP_GET_CONCRETE_PRODUCT_CLASS(ConcreteProduct))(GMP_IF_THEN_ELSE(GMP_IS_TUPLE(ConcreteProduct), GMP_STRINGIFY(GMP_GET_TUPLE(0, ConcreteProduct)), GMP_STRINGIFY(ConcreteProduct)));
+        GMP_CONCAT(gmp_reg_, __COUNTER__)(GMP_IF_THEN_ELSE(GMP_IS_TUPLE(ConcreteProduct), GMP_TUPLE_GET(0, ConcreteProduct), GMP_STRINGIFY(ConcreteProduct)));
 
 /**
  * @def GMP_FACTORY_REGISTER(AbstractProduct, ConstructorArgs, ...)
@@ -172,7 +172,7 @@ private:
  * @param ConstructorArgs Either a single constructor argument type or a tuple of types.
  * @param ... Concrete product registrations. Each item can be:
  *   - a concrete type name, using that type name as the registration key
- *   - a tuple `(key, ConcreteType)` for an explicit string key
+ *   - a tuple `("key", ConcreteType)` for an explicit string key
  *
  * @par Example
  * @code
@@ -182,11 +182,16 @@ private:
  * @endcode
  */
 #define GMP_FACTORY_REGISTER(AbstractProduct, ConstructorArgs, ...) \
-  _GMP_FACTORY_REGISTER_IMPL(AbstractProduct, ConstructorArgs, __VA_ARGS__)
+  GMP_EVAL( _GMP_FACTORY_REGISTER_IMPL(AbstractProduct, ConstructorArgs, __VA_ARGS__) )
 #define _GMP_FACTORY_REGISTER_IMPL(AbstractProduct, ConstructorArgs, ...) \
   _GMP_FACTORY_REGISTER_IMPL_COMPAT_MSVC(AbstractProduct, ConstructorArgs, GMP_IS_EMPTY(__VA_ARGS__), GMP_TUPLE_EMPTY(ConstructorArgs), __VA_ARGS__)
+#if GMP_STANDARD_PREPROCESSOR
+#define _GMP_FACTORY_REGISTER_IMPL_COMPAT_MSVC(AbstractProduct, ConstructorArgs, _0, _1, ...) \
+  GMP_OVERLOAD_INVOKE(_GMP_FACTORY_REGISTER_WHEN, _0, _1)(AbstractProduct, ConstructorArgs, __VA_ARGS__)
+#else
 #define _GMP_FACTORY_REGISTER_IMPL_COMPAT_MSVC(AbstractProduct, ConstructorArgs, _0, _1, ...) \
   GMP_EXPAND( GMP_OVERLOAD_INVOKE(_GMP_FACTORY_REGISTER_WHEN, _0, _1)(AbstractProduct, ConstructorArgs, __VA_ARGS__) )
+#endif
 #define _GMP_FACTORY_REGISTER_WHEN_1(...)
 #define _GMP_FACTORY_REGISTER_WHEN_0_1(AbstractProduct, ConstructorArgs, ConcreteProduct, ...) \
   GMP_FACTORY_REGISTER_NO_ARGS(AbstractProduct, ConcreteProduct) \

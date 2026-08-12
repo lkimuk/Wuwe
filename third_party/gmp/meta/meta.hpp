@@ -3,7 +3,7 @@
 // | (_ | |\/| |  _/ version 0.3.0
 //  \___|_|  |_|_|   https://github.com/lkimuk/gmp
 //
-// SPDX-FileCopyrightText: 2026 Gaoxing Li <https://www.cppmore.com/>
+// SPDX-FileCopyrightText: 2026 Miles Li <https://www.cppmore.com/>
 // SPDX-License-Identifier: MIT
 //
 // This file is part of the GMP (Generative Metaprogramming) library.
@@ -26,13 +26,13 @@ namespace gmp {
 
 /**
  * @brief Customize the reflection range or explicit values for an enumeration.
- * 
+ *
  * `enum_traits<E>` provides customization points used by the compile-time enum
  * reflection utilities. By default, enumerator scanning uses the range
  * `[-128, 127]`. Users can specialize this trait directly or use
  * `GMP_ENUM_RANGE` / `GMP_ENUM_VALUES` to define a narrower scan range or an
  * explicit enumerator list.
- * 
+ *
  * @tparam E The enumeration type being customized.
  */
 template<typename E>
@@ -46,10 +46,10 @@ struct enum_traits {
 /**
  * @def GMP_ENUM_RANGE(Enum, Min, Max)
  * @brief Specialize `gmp::enum_traits` with an explicit scan range.
- * 
+ *
  * This macro defines `enum_traits<Enum>::min` and `enum_traits<Enum>::max`,
  * allowing enum reflection to scan a narrower or wider range than the default.
- * 
+ *
  * @param Enum The enumeration type to customize.
  * @param Min The minimum integer value to scan.
  * @param Max The maximum integer value to scan.
@@ -64,10 +64,10 @@ struct enum_traits {
 /**
  * @def GMP_ENUM_VALUES(Enum, ...)
  * @brief Specialize `gmp::enum_traits` with an explicit enumerator list.
- * 
+ *
  * This macro bypasses range scanning by providing the exact set of enumerator
  * values to use for reflection.
- * 
+ *
  * @param Enum The enumeration type to customize.
  * @param ... The explicit enumerator values of `Enum`.
  */
@@ -79,7 +79,7 @@ struct enum_traits {
 
 /**
  * @brief The minimum reflection scan value for enumeration type `E`.
- * 
+ *
  * @tparam E The enumeration type.
  */
 template<typename E>
@@ -87,7 +87,7 @@ inline constexpr int enum_min_v = enum_traits<E>::min;
 
 /**
  * @brief The maximum reflection scan value for enumeration type `E`.
- * 
+ *
  * @tparam E The enumeration type.
  */
 template<typename E>
@@ -139,16 +139,16 @@ consteval auto enum_values_scan(std::index_sequence<I...>) {
 
 /**
  * @brief Get all enumerator values of an enumeration type at compile-time.
- * 
+ *
  * This function returns the full reflected enumerator set for `E`. If
  * `enum_traits<E>::values` is provided, that explicit list is used. Otherwise,
  * the function scans the integer range defined by `enum_traits<E>::min` and
  * `enum_traits<E>::max`.
- * 
+ *
  * @tparam E The enumeration type to inspect.
  * @tparam P The expected enumerator-name prefix used during range scanning.
  * @return A `std::array` containing all reflected enumerator values.
- * 
+ *
  * @note This function is consteval and evaluated entirely at compile-time.
  */
 template<typename E, fixed_string P = type_name<E>() + fixed_string("::")>
@@ -170,15 +170,15 @@ consteval auto enum_values() {
 }
 
 /**
+ * @fn consteval auto gmp::enum_count()
  * @brief Count the number of enumerators in an enumeration type at compile-time.
- * 
+ *
  * @tparam E The enumeration type to count enumerators for.
  * @tparam P The prefix string used to identify enumerator names (defaults to type name + "::").
  * @return The number of valid enumerators in the enumeration.
  * 
  * @note This function is consteval and evaluated entirely at compile-time.
  * 
- * @example
  * @code
  * enum class Color { Red, Green, Blue, Yellow };
  * enum class Empty {};
@@ -205,13 +205,13 @@ consteval auto enum_count() {
 }
 
 /**
+ * @fn consteval auto gmp::enum_name()
  * @brief Get the name of an enumerator at compile-time.
- * 
+ *
  * @tparam E The enumerator value to get the name for.
  * @tparam P The prefix string to remove from the full name (defaults to type name + "::").
  * @return A fixed_string containing the enumerator name, or "<unnamed>" if not found.
  * 
- * @example
  * @code
  * enum class Status { Ok = 200, NotFound = 404, Error = 500 };
  * enum { A, B, C };  // Unscoped enumeration
@@ -248,8 +248,9 @@ consteval auto enum_name() {
 }
 
 /**
+ * @fn consteval auto gmp::enum_names()
  * @brief Get all enumerator names of an enumeration type at compile-time.
- * 
+ *
  * This function returns an array containing the names of all enumerators
  * in the enumeration type E.
  * 
@@ -257,7 +258,6 @@ consteval auto enum_name() {
  * @return A std::array of std::string_view containing all enumerator names.
  *         Returns an empty array if the enumeration has no enumerators.
  * 
- * @example
  * @code
  * enum class Permission { Read, Write, Execute };
  * 
@@ -305,10 +305,10 @@ consteval auto enum_names() {
 
 /**
  * @brief Get all enumerator entries (value, name) of an enumeration type at compile-time.
- * 
+ *
  * This function returns a compile-time array of `(value, name)` pairs for all
  * reflected enumerators of `E`.
- * 
+ *
  * @tparam E The enumeration type to inspect.
  * @return A `std::array<std::pair<E, std::string_view>, N>` containing all
  *         reflected enumerators in declaration order.
@@ -369,8 +369,9 @@ constexpr auto enum_cast(std::string_view name) -> std::optional<E> {
 }
 
 /**
+ * @fn consteval int gmp::member_count()
  * @brief Count the number of members in an aggregate type at compile-time.
- * 
+ *
  * @tparam T The aggregate type to count members for.
  * @tparam Args The accumulated parameter types for construction testing.
  * @return The number of members in the aggregate type.
@@ -378,7 +379,6 @@ constexpr auto enum_cast(std::string_view name) -> std::optional<E> {
  * @note This function is consteval and only works with aggregate types.
  * @note Requires std::is_aggregate_v<T> to be true.
  * 
- * @example
  * @code
  * struct Point { int x; int y; };
  * struct Empty {};
@@ -409,8 +409,9 @@ consteval int member_count() {
 }
 
 /**
+ * @fn consteval auto gmp::member_name() noexcept
  * @brief Get the name of a specific member of an aggregate type at compile-time.
- * 
+ *
  * @tparam I The zero-based index of the member to get the name for.
  * @tparam T The aggregate type containing the member.
  * @return A fixed_string containing the member name.
@@ -422,7 +423,6 @@ consteval int member_count() {
  * 
  * @throws Compile-time error if any of the above requirements are not met.
  * 
- * @example
  * @code
  * struct Person {
  *     std::string name;
@@ -463,22 +463,25 @@ consteval int member_count() {
 template<std::size_t I, typename T>
     requires std::is_aggregate_v<T> &&
         (I < member_count<T>()) &&
-        (member_count<T>() <= GMP_MAX_SUPPORTED_FIELDS)     
+        (member_count<T>() <= GMP_MAX_SUPPORTED_FIELDS)
 consteval auto member_name() noexcept {
     constexpr auto name = detail::member_name_of<detail::field_getter<I, T>(constant_arg<member_count<T>()>)>();
     return name;
 }
 
+/** @cond INTERNAL */
 template<std::size_t I, typename T>
 consteval auto member_name() noexcept {
     static_assert(std::is_aggregate_v<T>, "member_name() can only be used with aggregate types.");
     static_assert(I < member_count<T>(), "Index out of bounds in member_name().");
     static_assert(member_count<T>() <= GMP_MAX_SUPPORTED_FIELDS, "member_name() only supports up to " GMP_STRINGIFY(GMP_MAX_SUPPORTED_FIELDS) " fields.");
 }
+/** @endcond */
 
 /**
+ * @fn consteval auto gmp::member_names()
  * @brief Get all member names of an aggregate type at compile-time.
- * 
+ *
  * This function returns an array containing the names of all members
  * of the aggregate type T.
  * 
@@ -486,7 +489,6 @@ consteval auto member_name() noexcept {
  * @return A std::array of std::string_view containing all member names.
  *         Returns an empty array if the aggregate has no members.
  * 
- * @example
  * @code
  * struct Vector3 { float x; float y; float z; };
  * struct Empty {};
@@ -548,20 +550,19 @@ consteval auto member_names() {
 }
 
 /**
- * @brief Extract the type of the I-th member (field) from a struct/class T
- * 
- * @tparam I - Index of the member to extract (0-based)
- * @tparam T - The struct/class type to introspect
- * 
- * @returns The type of the I-th member, stripped of const, volatile, and reference qualifiers
- * 
- * @note Requires that T is an aggregate type (struct/class with public members)
- * @note The member count must be known at compile time
- * 
- * @example
+ * @typedef gmp::member_type_t
+ * @brief Alias for the type of the I-th member of an aggregate type.
+ *
+ * @tparam I Zero-based member index.
+ * @tparam T The aggregate type to introspect.
+ *
+ * @note The resulting type is stripped of const, volatile, and reference qualifiers.
+ *
+ * @code
  * struct Point { int x; float y; };
  * using XType = member_type_t<0, Point>;  // int
  * using YType = member_type_t<1, Point>;  // float
+ * @endcode
  */
 template<std::size_t I, typename T>
 using member_type_t = std::remove_cvref_t<
@@ -593,10 +594,11 @@ struct member_type_names_holder {
  */
 
 /**
+ * @fn constexpr auto gmp::member_type_names()
  * @brief Returns an array of string_view containing the type names of all members of aggregate type T
- * 
+ *
  * @tparam T - The aggregate type to introspect (struct/class with public members)
- * 
+ *
  * @return std::array<std::string_view, N> where N is the member count of T,
  *         containing the demangled/pretty type names of each member in declaration order
  * 
@@ -604,7 +606,7 @@ struct member_type_names_holder {
  * @note The returned string_views remain valid for the entire program lifetime
  * @note Requires T to be an aggregate type with known member count at compile time
  * 
- * @example
+ * @code
  * struct Person {
  *     int age;
  *     std::string name;
@@ -615,6 +617,7 @@ struct member_type_names_holder {
  * // names[0] == "int"
  * // names[1] == "std::string" (or "std::basic_string<char>")
  * // names[2] == "double"
+ * @endcode
  * 
  * @see member_type_t, member_count
  */
@@ -643,12 +646,14 @@ decltype(auto) member_ref(T&& value) noexcept {
     return detail::member_ref<I, T>(value, constant_arg<member_count<UnqualifiedT>()>);
 }
 
+/** @cond INTERNAL */
 template<std::size_t I, typename T, typename UnqualifiedT = std::remove_cvref_t<T>>
 decltype(auto) member_ref(T&&) noexcept {
     static_assert(std::is_aggregate_v<UnqualifiedT>, "member_ref() can only be used with aggregate types.");
     static_assert(I < member_count<UnqualifiedT>(), "Index out of bounds in member_ref().");
     static_assert(member_count<UnqualifiedT>() <= GMP_MAX_SUPPORTED_FIELDS, "member_ref() only supports up to " GMP_STRINGIFY(GMP_MAX_SUPPORTED_FIELDS) " fields.");
 }
+/** @endcond */
 
 namespace detail {
 
@@ -697,11 +702,13 @@ void for_each_member(T&& value, F&& func) noexcept {
     );
 }
 
+/** @cond INTERNAL */
 template<typename T, typename F>
-void for_each_member(T&& value, F&& func) noexcept {
+void for_each_member(T&&, F&&) noexcept {
     static_assert(std::is_aggregate_v<std::remove_cvref_t<T>>,
         "for_each_member() can only be used with aggregate types.");
 }
+/** @endcond */
 
 /** @} */
 

@@ -3,7 +3,7 @@
 // | (_ | |\/| |  _/ version 0.3.0
 //  \___|_|  |_|_|   https://github.com/lkimuk/gmp
 //
-// SPDX-FileCopyrightText: 2026 Gaoxing Li <https://www.cppmore.com/>
+// SPDX-FileCopyrightText: 2026 Miles Li <https://www.cppmore.com/>
 // SPDX-License-Identifier: MIT
 //
 // This file is part of the GMP (Generative Metaprogramming) library.
@@ -106,13 +106,13 @@ constexpr decltype(auto) invoke_named_operator(value_holder<Lhs, Func>&& holder,
 #define GMP_DEFINE_NAMED_OPERATOR_PAIR(pair)                                       \
     template<typename Lhs, typename Func>                                           \
         requires std::movable<Func>                                                 \
-    constexpr auto operator GMP_GET_TUPLE(0, pair) (Lhs&& lhs, ::gmp::detail::value_holder<Func> holder) { \
+    constexpr auto operator GMP_TUPLE_GET(0, pair) (Lhs&& lhs, ::gmp::detail::value_holder<Func> holder) { \
         return ::gmp::detail::bind_named_operator(std::forward<Lhs>(lhs), std::move(holder)); \
     }                                                                               \
                                                                                     \
     template<typename Lhs, typename Func, typename Rhs>                             \
         requires std::invocable<Func&&, Lhs, Rhs&&>                                 \
-    constexpr decltype(auto) operator GMP_GET_TUPLE(1, pair) (                                         \
+    constexpr decltype(auto) operator GMP_TUPLE_GET(1, pair) (                                         \
         ::gmp::detail::value_holder<Lhs, Func>&& holder, Rhs&& rhs) {               \
         return ::gmp::detail::invoke_named_operator(std::move(holder), std::forward<Rhs>(rhs)); \
     }
@@ -161,7 +161,6 @@ GMP_GENERATE_NAMED_OPERATOR_IDENTICAL_PAIRS(+, ^, *, -, /, %, &, |)
  * @param f The callable object used by the named operator.
  * @return An internal token object that participates in named-operator syntax.
  *
- * @example
  * @code
  * auto plus = gmp::make_named_operator([](int x, int y) {
  *     return x + y;

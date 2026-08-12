@@ -5,6 +5,8 @@
 #include <string>
 #include <string_view>
 
+#include <gmp/dp/object_factory.hpp>
+
 #include <wuwe/agent/llm/llm_client.h>
 #include <wuwe/agent/llm/llm_config.h>
 #include <wuwe/common/wuwe_fwd.h>
@@ -13,11 +15,16 @@ WUWE_NAMESPACE_BEGIN
 
 void register_builtin_llm_clients();
 
-class llm_client_factory {
+using llm_client_factory_base = gmp::object_factory<llm_client, llm_config>;
+
+class llm_client_factory : public llm_client_factory_base {
 public:
   llm_client_factory();
 
   static llm_client_factory& instance();
+
+  using llm_client_factory_base::register_type;
+  using llm_client_factory_base::unregister_type;
 
   llm_client* create(std::string_view provider_id, const llm_config& config) const;
 

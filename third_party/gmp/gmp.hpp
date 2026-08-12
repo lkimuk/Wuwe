@@ -3,7 +3,7 @@
 // | (_ | |\/| |  _/ version 0.1.0
 //  \___|_|  |_|_|   https://github.com/lkimuk/gmp
 //
-// SPDX-FileCopyrightText: 2023-2026 Gaoxing Li <https://www.cppmore.com/>
+// SPDX-FileCopyrightText: 2023-2026 Miles Li <https://www.cppmore.com/>
 // SPDX-License-Identifier: MIT
 //
 // This file is part of the GMP (Generative Metaprogramming) library.
@@ -19,7 +19,7 @@
 
 /**
  * @defgroup reflection_metaprogramming Reflection Metaprogramming
- * @brief Compile-time enum and aggregate reflection utilities.
+ * @brief Compile-time enum, aggregate, type-name, and payload-size reflection utilities.
  */
 
 /**
@@ -29,7 +29,7 @@
 
 /**
  * @defgroup type_utilities Type Utilities
- * @brief Type-level containers, naming helpers, and compile-time utility primitives.
+ * @brief Type-level containers and compile-time utility primitives.
  */
 
 /**
