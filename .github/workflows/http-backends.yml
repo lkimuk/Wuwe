@@ -1,18 +1,16 @@
-name: Build and Test
+name: Platform Build and Test
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
-      - dev
-      - memory
-      - "release/**"
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      platform:
+        description: Platform release profile to run
+        required: true
+        type: string
 
 jobs:
   windows:
+    if: inputs.platform == 'windows'
     name: ${{ matrix.backend }} Release on Windows
     runs-on: windows-2022
     env:
@@ -121,6 +119,7 @@ jobs:
           }
 
   linux:
+    if: inputs.platform == 'linux'
     name: Release profile on Ubuntu 24.04
     runs-on: ubuntu-24.04
     env:
@@ -188,6 +187,7 @@ jobs:
           tar -tzf "dist/wuwe-${WUWE_VERSION}-linux-x64.tar.gz" >/dev/null
 
   macos:
+    if: inputs.platform == 'macos'
     name: Release profile on ${{ matrix.os }} Apple Silicon
     runs-on: ${{ matrix.os }}
     strategy:

@@ -9,6 +9,18 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/lkimuk/Wuwe/actions/workflows/ci-windows.yml">
+    <img src="https://github.com/lkimuk/Wuwe/actions/workflows/ci-windows.yml/badge.svg?branch=main" alt="Windows CI">
+  </a>
+  <a href="https://github.com/lkimuk/Wuwe/actions/workflows/ci-linux.yml">
+    <img src="https://github.com/lkimuk/Wuwe/actions/workflows/ci-linux.yml/badge.svg?branch=main" alt="Linux CI">
+  </a>
+  <a href="https://github.com/lkimuk/Wuwe/actions/workflows/ci-macos.yml">
+    <img src="https://github.com/lkimuk/Wuwe/actions/workflows/ci-macos.yml/badge.svg?branch=main" alt="macOS CI">
+  </a>
+</p>
+
+<p align="center">
   <strong>Documentation:</strong>
   <a href="https://lkimuk.github.io/Wuwe/">https://lkimuk.github.io/Wuwe/</a>
 </p>
