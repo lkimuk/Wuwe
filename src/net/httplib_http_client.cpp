@@ -3,9 +3,12 @@
 #include <wuwe/net/transport_error.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -15,6 +18,49 @@
 WUWE_NAMESPACE_BEGIN
 
 namespace {
+
+#ifdef _WIN32
+class duplicated_winsock_socket {
+public:
+  duplicated_winsock_socket() = default;
+  duplicated_winsock_socket(const duplicated_winsock_socket&) = delete;
+  duplicated_winsock_socket& operator=(const duplicated_winsock_socket&) = delete;
+
+  ~duplicated_winsock_socket() {
+    reset();
+  }
+
+  void duplicate(socket_t socket) {
+    reset();
+    WSAPROTOCOL_INFOW protocol_info {};
+    if (::WSADuplicateSocketW(socket, ::GetCurrentProcessId(), &protocol_info) != 0)
+      return;
+    socket_ = ::WSASocketW(FROM_PROTOCOL_INFO,
+      FROM_PROTOCOL_INFO,
+      FROM_PROTOCOL_INFO,
+      &protocol_info,
+      0,
+      WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+  }
+
+  void shutdown() const noexcept {
+    if (socket_ != INVALID_SOCKET) {
+      (void)::CancelIoEx(reinterpret_cast<HANDLE>(socket_), nullptr);
+      (void)::shutdown(socket_, SD_BOTH);
+    }
+  }
+
+private:
+  void reset() noexcept {
+    if (socket_ != INVALID_SOCKET) {
+      (void)::closesocket(socket_);
+      socket_ = INVALID_SOCKET;
+    }
+  }
+
+  socket_t socket_ { INVALID_SOCKET };
+};
+#endif
 
 struct parsed_url {
   std::string scheme_host_port;
@@ -314,7 +360,55 @@ http_response httplib_http_client::send_stream(const http_request& request,
   }
 
   std::string body;
-  bool aborted = false;
+  std::atomic_bool aborted {};
+  std::atomic_bool transport_cancelled {};
+  std::atomic_bool response_complete {};
+  std::optional<std::uint64_t> expected_body_bytes;
+  std::mutex cancellation_mutex;
+  std::condition_variable cancellation_ready;
+  bool send_started {};
+  bool send_finished {};
+  bool socket_ready {};
+#ifdef _WIN32
+  duplicated_winsock_socket cancellation_socket;
+  bool cancellation_active {};
+#endif
+  client.set_socket_options([&](socket_t socket) {
+    {
+      std::scoped_lock lock(cancellation_mutex);
+#ifdef _WIN32
+      cancellation_socket.duplicate(socket);
+      if (cancellation_active)
+        cancellation_socket.shutdown();
+#endif
+      socket_ready = true;
+    }
+    cancellation_ready.notify_all();
+  });
+  std::stop_callback cancellation(stop_token, [&] {
+    aborted.store(true, std::memory_order_relaxed);
+    {
+      std::unique_lock lock(cancellation_mutex);
+      if (!send_started)
+        return;
+#ifdef _WIN32
+      cancellation_active = true;
+#endif
+      cancellation_ready.wait(lock, [&] { return socket_ready || send_finished; });
+      if (send_finished)
+        return;
+      if (response_complete.load(std::memory_order_relaxed))
+        return;
+      transport_cancelled.store(true, std::memory_order_relaxed);
+#ifdef _WIN32
+      cancellation_socket.shutdown();
+#endif
+    }
+    client.stop();
+  });
+  if (aborted.load(std::memory_order_relaxed)) {
+    return { .error_code = std::make_error_code(std::errc::operation_canceled) };
+  }
 
   httplib::Request req;
   req.method = normalize_http_method(request.method);
@@ -330,32 +424,66 @@ http_response httplib_http_client::send_stream(const http_request& request,
   else if (!request.follow_redirects) {
     req.redirect_count_ = 0;
   }
+  req.response_handler = [&](const httplib::Response& response) {
+    if (response.has_header("Content-Length")) {
+      expected_body_bytes = response.get_header_value_u64("Content-Length");
+      if (*expected_body_bytes == 0)
+        response_complete.store(true, std::memory_order_relaxed);
+    }
+    return true;
+  };
   req.content_receiver =
-    [&](const char* data, std::size_t data_length, std::uint64_t, std::uint64_t) {
-      if (stop_token.stop_requested()) {
-        aborted = true;
+    [&](const char* data, std::size_t data_length, std::uint64_t offset, std::uint64_t) {
+      if (stop_token.stop_requested() && !response_complete.load(std::memory_order_relaxed)) {
+        aborted.store(true, std::memory_order_relaxed);
+        transport_cancelled.store(true, std::memory_order_relaxed);
         return false;
       }
 
+      if (expected_body_bytes && offset <= *expected_body_bytes &&
+          data_length >= *expected_body_bytes - offset) {
+        response_complete.store(true, std::memory_order_relaxed);
+      }
+
       std::string_view chunk(data, data_length);
-      body.append(chunk);
       if (on_chunk && !on_chunk(chunk)) {
-        aborted = true;
+        aborted.store(true, std::memory_order_relaxed);
         return false;
       }
+      body.append(chunk);
       return true;
     };
   req.download_progress = [&](std::size_t, std::size_t) {
     if (stop_token.stop_requested()) {
-      aborted = true;
+      aborted.store(true, std::memory_order_relaxed);
+      if (response_complete.load(std::memory_order_relaxed))
+        return true;
+      transport_cancelled.store(true, std::memory_order_relaxed);
       return false;
     }
     return true;
   };
 
+  {
+    std::scoped_lock lock(cancellation_mutex);
+    if (aborted.load(std::memory_order_relaxed)) {
+      return { .error_code = std::make_error_code(std::errc::operation_canceled) };
+    }
+    send_started = true;
+  }
   const auto result = client.send(req);
+  {
+    std::scoped_lock lock(cancellation_mutex);
+    send_finished = true;
+  }
+  cancellation_ready.notify_all();
   auto response = make_http_response(result, std::move(body));
-  if (aborted && !response.error_code) {
+  if (transport_cancelled.load(std::memory_order_relaxed) && response.transport_error) {
+    response.transport_error = std::make_error_code(std::errc::operation_canceled);
+    response.error_code = response.transport_error;
+  }
+  else if (aborted.load(std::memory_order_relaxed) && !stop_token.stop_requested() &&
+           !response.error_code) {
     response.transport_error = make_error_code(transport_error::aborted_by_callback);
     response.error_code = response.transport_error;
   }

@@ -45,6 +45,14 @@ public:
       std::this_thread::sleep_for(std::chrono::milliseconds(300));
       response.set_content("late-body", "text/plain");
     });
+    server_.Get("/slow-headers", [](const httplib::Request&, httplib::Response& response) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+      response.set_content("late-headers", "text/plain");
+    });
+    server_.Get("/cancel-race-error", [](const httplib::Request&, httplib::Response& response) {
+      response.status = 400;
+      response.set_content("authoritative-error", "text/plain");
+    });
     server_.Get("/redirect", [](const httplib::Request&, httplib::Response& response) {
       response.status = 302;
       response.set_header("Location", "/redirect-target");
@@ -423,6 +431,52 @@ void test_httplib_http_client() {
   local_http_server server;
   httplib_http_client client;
   exercise_client(client, server);
+
+  std::stop_source stop_source;
+  std::thread stopper([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    stop_source.request_stop();
+  });
+  const auto started = std::chrono::steady_clock::now();
+  const auto cancelled = client.send_stream(
+    {
+      .method = "GET",
+      .url = server.url("/slow-headers"),
+      .timeout = 5000,
+    },
+    [](std::string_view) { return true; },
+    stop_source.get_token());
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  if (stopper.joinable())
+    stopper.join();
+  require(cancelled.error_code == std::errc::operation_canceled &&
+            elapsed < std::chrono::milliseconds(750),
+    "httplib stop tokens should interrupt response-header waits promptly: error=" +
+      cancelled.error_code.message() + ", elapsed_ms=" +
+      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
+
+  std::stop_source response_stop_source;
+  const auto authoritative_error = client.send_stream(
+    {
+      .method = "GET",
+      .url = server.url("/cancel-race-error"),
+      .timeout = 5000,
+    },
+    [&](std::string_view) {
+      response_stop_source.request_stop();
+      return true;
+    },
+    response_stop_source.get_token());
+  require(response_stop_source.stop_requested() &&
+            authoritative_error.error_code == http_status_code::bad_request &&
+            !authoritative_error.transport_error && authoritative_error.status_code == 400 &&
+            authoritative_error.body == "authoritative-error",
+    "a complete HTTP error response must remain authoritative when cancellation races its body: "
+    "status=" +
+      std::to_string(authoritative_error.status_code) +
+      ", error=" + authoritative_error.error_code.message() + ", transport=" +
+      authoritative_error.transport_error.message() + ", body=" + authoritative_error.body);
+
   exercise_connection_failure(client);
   exercise_http_proxy(client);
 }

@@ -158,11 +158,11 @@ http_response cpr_http_client::send_stream(const http_request& request,
       return false;
     }
 
-    body.append(data);
     if (on_chunk && !on_chunk(data)) {
       aborted = true;
       return false;
     }
+    body.append(data);
     return true;
   }));
 
