@@ -66,6 +66,7 @@ is not promised. See [Versioning and compatibility](docs/versioning.md), the
 | Operations and governance | Capability decisions, host approvals, audit events, common observability sinks, and module telemetry |
 | Guardrails and evaluation | Composable boundary checks, safe buffered output, weighted evaluators, suite metrics, and trajectory regression |
 | Learning and adaptation | Experience and reward ledgers, versioned artifacts, offline optimization, regression gates, approvals, activation, and rollback |
+| SFT and adapter training | Independent governed Training module, typed Agent datasets, full/LoRA/QLoRA variants, typed failures, checkpoints, strict HTTP providers, and model-candidate handoff |
 | Exploration and discovery | Bounded hypotheses, controlled experiments, evidence review, persistence, and an explicit Learning evidence adapter |
 | Controlled execution | Policy-bound Python subprocesses, approvals, resource limits, backend contracts, and audit events |
 | Networking | Common HTTP API with cpr/libcurl and cpp-httplib backends |

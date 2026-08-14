@@ -5,6 +5,17 @@ All notable changes to Wuwe are documented in this file. Wuwe follows
 API. Cross-release C++ ABI compatibility is not promised; rebuild consumers
 when upgrading the SDK.
 
+## Unreleased
+
+### Added
+
+- An independent, governed SFT and adapter-training control plane with typed
+  Agent trajectories, canonical dataset SHA-256, variant-based Full/LoRA/QLoRA
+  contracts, typed operational results, monotonic lifecycle validation,
+  capability/approval/audit integration, conservative local-store capability
+  declarations, strict versioned HTTP envelopes, and validated handoff into
+  Learning evaluation, activation, and rollback.
+
 ## [1.0.0] - 2026-08-11
 
 Wuwe 1.0.0 is the first stable public release. It replaces the unreleased

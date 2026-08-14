@@ -11,7 +11,7 @@ const sidebars = {
       type: 'category',
       label: 'Core runtime',
       collapsed: false,
-      items: ['agent-runtime', 'skills', 'agent-host-protocol', 'orchestration', 'reasoning', 'planning', 'multi-agent', 'reflection', 'learning-adaptation', 'exploration-discovery'],
+      items: ['agent-runtime', 'skills', 'agent-host-protocol', 'orchestration', 'reasoning', 'planning', 'multi-agent', 'reflection', 'learning-adaptation', 'training', 'exploration-discovery'],
     },
     {
       type: 'category',

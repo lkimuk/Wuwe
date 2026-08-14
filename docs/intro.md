@@ -35,6 +35,7 @@ Its modules are independently usable. A host can start with one provider client 
 | Guardrails | Ordered input/output and runtime-boundary checks with modification, denial, approval, audit, and telemetry |
 | Evaluation | Weighted output, structured-result, and trajectory regression suites |
 | Learning and adaptation | Experience and reward ledgers, versioned artifacts, offline optimization, regression gates, approval, activation, and rollback |
+| SFT and adapter training | Independent governed module, typed Agent datasets, Full/LoRA/QLoRA variants, typed errors, checkpoints, strict providers, and Learning handoff |
 | Exploration and discovery | Bounded hypotheses, approved experiments, evidence review, confidence thresholds, persistence, and explicit evidence export |
 | Orchestration | Typed flows with branching, bounded fan-out/fan-in, filtering, retry, cancellation, recovery, and routing primitives |
 | Memory | Scoped records, context injection, persistence, ranking, embeddings, and model-visible tools |
@@ -69,6 +70,6 @@ Optional capabilities stay explicit:
 
 1. [Build and run Wuwe](getting-started.md).
 2. Configure an [LLM provider](llm-providers.md) and [typed tools](llm-tools.md).
-3. Compose the [agent runtime](agent-runtime.md), reusable [Skills](skills.md), optional [Agent Host protocol](agent-host-protocol.md), [orchestration](orchestration.md), [reasoning](reasoning.md), [planning](planning.md), [multi-agent runtime](multi-agent.md), [reflection](reflection.md), [learning and adaptation](learning-adaptation.md), or [exploration and discovery](exploration-discovery.md) layer you need.
+3. Compose the [agent runtime](agent-runtime.md), reusable [Skills](skills.md), optional [Agent Host protocol](agent-host-protocol.md), [orchestration](orchestration.md), [reasoning](reasoning.md), [planning](planning.md), [multi-agent runtime](multi-agent.md), [reflection](reflection.md), [learning and adaptation](learning-adaptation.md), [SFT and adapter training](training.md), or [exploration and discovery](exploration-discovery.md) layer you need.
 4. Add [memory](memory-management.md), [knowledge retrieval](knowledge-retrieval.md), [MCP](mcp.md), or remote [A2A](a2a.md) interoperability.
 5. Review [security and governance](security-governance.md), [observability](observability.md), [storage contracts](storage-contracts.md), [dependencies](dependencies.md), [packaging](packaging.md), and [controlled execution](execution-runtime.md) before deployment.

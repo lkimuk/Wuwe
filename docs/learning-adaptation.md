@@ -6,7 +6,7 @@ description: Build an auditable offline feedback, reward, optimization, evaluati
 
 # Learning and adaptation
 
-The Learning module is a governed offline adaptation pipeline for Prompt templates, reasoning policies, routing profiles, tool configurations, workflows, and other versioned artifacts. It does not train model weights and does not permit hidden self-modification.
+The Learning module is a governed offline adaptation pipeline for Prompt templates, reasoning policies, routing profiles, tool configurations, workflows, model artifacts, and other versioned artifacts. It does not compute model gradients and does not permit hidden self-modification. The independent [SFT and adapter training](training.md) module governs external Full, LoRA, and QLoRA jobs and hands validated model artifacts into this promotion gate.
 
 ```text
 Experience / Feedback -> Reward Ledger -> Offline Optimizer
@@ -40,7 +40,7 @@ Implement `offline_optimizer::optimize()` or use `function_offline_optimizer`. T
 - a bounded candidate budget;
 - host metadata and cancellation/deadline context.
 
-`make_offline_optimizer_proposer()` adapts that contract to `learning_runner`, bounds the returned candidates, and fills missing target and parent-version lineage. The callback may run local heuristics, prompt search, an external training job, or a model-based optimizer; Wuwe does not prescribe the optimization algorithm.
+`make_offline_optimizer_proposer()` adapts that contract to `learning_runner`, bounds the returned candidates, and fills missing target and parent-version lineage. The callback may run local heuristics, prompt search, or a model-based optimizer; Wuwe does not prescribe the optimization algorithm. Do not block this synchronous callback on a long accelerator job. Use `training::training_coordinator` for governed external training and convert the completed job with `learning_candidate_from_training_job()`.
 
 ## Promotion gate
 
