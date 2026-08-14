@@ -169,6 +169,15 @@ wuwe_copy_runtime_dlls(learning_tests)
 
 add_test(NAME learning_tests COMMAND learning_tests)
 
+add_executable(training_tests
+    training_tests.cpp
+)
+
+target_link_libraries(training_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(training_tests)
+
+add_test(NAME training_tests COMMAND training_tests)
+
 add_executable(exploration_tests
     exploration_tests.cpp
 )
@@ -271,6 +280,17 @@ add_executable(header_independence_tests
     header_independence/sandbox_plan_header.cpp
     header_independence/sandbox_codec_header.cpp
     header_independence/llm_dispatch_header.cpp
+    header_independence/training_header.cpp
+    header_independence/training_core_header.cpp
+    header_independence/training_context_header.cpp
+    header_independence/training_error_header.cpp
+    header_independence/training_policy_header.cpp
+    header_independence/training_json_header.cpp
+    header_independence/training_codec_header.cpp
+    header_independence/training_dataset_header.cpp
+    header_independence/training_store_header.cpp
+    header_independence/training_provider_header.cpp
+    header_independence/http_training_provider_header.cpp
     header_independence/skills_header.cpp
     header_independence/version_header.cpp
     header_independence/umbrella_header.cpp
@@ -366,6 +386,7 @@ set_tests_properties(
     llm_dispatch_tests
     orchestration_tests
     learning_tests
+    training_tests
     exploration_tests
     best_of_n_tests
     multi_agent_tests

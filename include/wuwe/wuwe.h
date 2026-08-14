@@ -64,6 +64,7 @@
 #include <wuwe/agent/skills/skills.hpp>
 #include <wuwe/agent/tools/json_schema.hpp>
 #include <wuwe/agent/tools/tool.hpp>
+#include <wuwe/agent/training/training.hpp>
 #include <wuwe/common/print.h>
 #include <wuwe/net/cpr_http_client.h>
 #include <wuwe/net/default_http_client.h>

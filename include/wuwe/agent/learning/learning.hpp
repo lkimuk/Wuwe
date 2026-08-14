@@ -8,5 +8,6 @@
 #include <wuwe/agent/learning/learning_runner.hpp>
 #include <wuwe/agent/learning/learning_store.hpp>
 #include <wuwe/agent/learning/offline_optimizer.hpp>
+#include <wuwe/agent/learning/training_adapter.hpp>
 
 #endif // WUWE_AGENT_LEARNING_LEARNING_HPP

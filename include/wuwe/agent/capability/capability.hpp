@@ -59,6 +59,11 @@ inline constexpr const char* environment_read = "environment.read";
 inline constexpr const char* secret_read = "secret.read";
 inline constexpr const char* learning_activate = "learning.activate";
 inline constexpr const char* exploration_execute = "exploration.execute";
+inline constexpr const char* training_submit = "training.submit";
+inline constexpr const char* training_cancel = "training.cancel";
+inline constexpr const char* training_resume = "training.resume";
+inline constexpr const char* training_refresh = "training.refresh";
+inline constexpr const char* training_reconcile = "training.reconcile";
 
 } // namespace names
 

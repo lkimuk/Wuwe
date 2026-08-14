@@ -27,6 +27,7 @@ enum class learning_change_kind {
   tool_configuration,
   workflow,
   custom,
+  model,
 };
 
 enum class learning_candidate_status {
@@ -71,6 +72,8 @@ enum class learning_stop_reason {
       return "workflow";
     case learning_change_kind::custom:
       return "custom";
+    case learning_change_kind::model:
+      return "model";
   }
   return "unknown";
 }
