@@ -69,6 +69,7 @@ is not promised. See [Versioning and compatibility](docs/versioning.md), the
 | Exploration and discovery | Bounded hypotheses, controlled experiments, evidence review, persistence, and an explicit Learning evidence adapter |
 | Controlled execution | Policy-bound Python subprocesses, approvals, resource limits, backend contracts, and audit events |
 | Networking | Common HTTP API with cpr/libcurl and cpp-httplib backends |
+| Runtime Host | Optional headless `wuwe-runtime` process, strict config, durable runs, lifecycle, health, and Host Protocol serving |
 
 The complete module map and release boundaries are in the [documentation overview](https://lkimuk.github.io/Wuwe/docs/).
 
@@ -159,6 +160,11 @@ int main() {
 ```
 
 Set `OPENAI_API_KEY` before running the program. Other built-in providers use the same `llm_client` interface.
+
+For service and subprocess deployments, enable `WUWE_BUILD_RUNTIME` and see
+[Wuwe Runtime Host](docs/runtime-host.md). The installed component exports
+`wuwe::runtime_host` and provides the `wuwe-runtime` executable without changing the embedded
+Framework API.
 
 ## Consume an installed SDK
 
