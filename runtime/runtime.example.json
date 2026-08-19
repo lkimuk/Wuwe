@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "maxConcurrentRuns": 4,
+    "defaultRunTimeoutMs": 120000,
+    "submissionTimeoutMs": 5000,
+    "shutdownTimeoutMs": 10000
+  },
+  "llm": {
+    "provider": "OpenAI",
+    "model": "gpt-4.1-mini",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "timeoutMs": 30000,
+    "maxRetries": 2
+  },
+  "store": {
+    "kind": "sqlite",
+    "path": "data/wuwe-runtime.db"
+  },
+  "serve": {
+    "transport": "stdio"
+  }
+}

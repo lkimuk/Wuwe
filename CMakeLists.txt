@@ -21,6 +21,7 @@ endif()
 
 option(WUWE_BUILD_EXAMPLES "Build Wuwe examples" ${WUWE_IS_TOP_LEVEL})
 option(WUWE_BUILD_TESTS "Build Wuwe tests" ${WUWE_IS_TOP_LEVEL})
+option(WUWE_BUILD_RUNTIME "Build the Wuwe headless Runtime Host" ${WUWE_IS_TOP_LEVEL})
 option(WUWE_ENABLE_INSTALL "Enable Wuwe install and package rules" ${WUWE_IS_TOP_LEVEL})
 option(WUWE_ENABLE_STRICT_WARNINGS
     "Compile Wuwe sources with strict warnings treated as errors"
@@ -87,11 +88,18 @@ configure_file(
 
 add_subdirectory(src)
 
+if(WUWE_BUILD_TESTS)
+    enable_testing()
+endif()
+
+if(WUWE_BUILD_RUNTIME)
+    add_subdirectory(runtime)
+endif()
+
 if(WUWE_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
 if(WUWE_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()

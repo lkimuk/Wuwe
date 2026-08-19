@@ -1,0 +1,62 @@
+cmake_minimum_required(VERSION 3.20)
+
+foreach(required IN ITEMS WUWE_SOURCE_DIR WUWE_BINARY_DIR WUWE_SMOKE_ROOT)
+    if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
+        message(FATAL_ERROR "${required} is required")
+    endif()
+endforeach()
+
+set(prefix "${WUWE_SMOKE_ROOT}/prefix")
+set(build "${WUWE_SMOKE_ROOT}/build")
+file(REMOVE_RECURSE "${prefix}" "${build}")
+file(MAKE_DIRECTORY "${WUWE_SMOKE_ROOT}")
+
+set(install_command
+    "${CMAKE_COMMAND}" --install "${WUWE_BINARY_DIR}" --prefix "${prefix}")
+if(DEFINED WUWE_CONFIGURATION AND NOT WUWE_CONFIGURATION STREQUAL "")
+    list(APPEND install_command --config "${WUWE_CONFIGURATION}")
+endif()
+execute_process(COMMAND ${install_command} RESULT_VARIABLE result)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Wuwe Runtime installation failed with exit code ${result}")
+endif()
+
+set(configure_command
+    "${CMAKE_COMMAND}"
+    -S "${WUWE_SOURCE_DIR}"
+    -B "${build}"
+    "-DCMAKE_PREFIX_PATH=${prefix}")
+if(DEFINED WUWE_GENERATOR AND NOT WUWE_GENERATOR STREQUAL "")
+    list(APPEND configure_command -G "${WUWE_GENERATOR}")
+endif()
+if(DEFINED WUWE_GENERATOR_PLATFORM AND NOT WUWE_GENERATOR_PLATFORM STREQUAL "")
+    list(APPEND configure_command -A "${WUWE_GENERATOR_PLATFORM}")
+endif()
+if(DEFINED WUWE_GENERATOR_TOOLSET AND NOT WUWE_GENERATOR_TOOLSET STREQUAL "")
+    list(APPEND configure_command -T "${WUWE_GENERATOR_TOOLSET}")
+endif()
+if(DEFINED WUWE_TOOLCHAIN_FILE AND NOT WUWE_TOOLCHAIN_FILE STREQUAL "")
+    list(APPEND configure_command "-DCMAKE_TOOLCHAIN_FILE=${WUWE_TOOLCHAIN_FILE}")
+endif()
+execute_process(COMMAND ${configure_command} RESULT_VARIABLE result)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Wuwe Runtime package-smoke configuration failed with exit code ${result}")
+endif()
+
+set(build_command "${CMAKE_COMMAND}" --build "${build}")
+if(DEFINED WUWE_CONFIGURATION AND NOT WUWE_CONFIGURATION STREQUAL "")
+    list(APPEND build_command --config "${WUWE_CONFIGURATION}")
+endif()
+execute_process(COMMAND ${build_command} RESULT_VARIABLE result)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Wuwe Runtime package-smoke build failed with exit code ${result}")
+endif()
+
+set(test_command "${CMAKE_CTEST_COMMAND}" --test-dir "${build}" --output-on-failure)
+if(DEFINED WUWE_CONFIGURATION AND NOT WUWE_CONFIGURATION STREQUAL "")
+    list(APPEND test_command -C "${WUWE_CONFIGURATION}")
+endif()
+execute_process(COMMAND ${test_command} RESULT_VARIABLE result)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Wuwe Runtime package-smoke execution failed with exit code ${result}")
+endif()

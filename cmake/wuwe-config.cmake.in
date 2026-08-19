@@ -44,5 +44,10 @@ endif()
 
 set_and_check(WUWE_LIB_DIR "@PACKAGE_LIB_INSTALL_DIR@")
 include("${WUWE_LIB_DIR}/cmake/wuwe-targets.cmake")
+set(wuwe_runtime_host_FOUND FALSE)
+if(EXISTS "${WUWE_LIB_DIR}/cmake/wuwe-runtime-targets.cmake")
+    include("${WUWE_LIB_DIR}/cmake/wuwe-runtime-targets.cmake")
+    set(wuwe_runtime_host_FOUND TRUE)
+endif()
 
 check_required_components(wuwe)
