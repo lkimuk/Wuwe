@@ -40,6 +40,13 @@ set_tests_properties(wuwe_runtime_plugin_cli_smoke PROPERTIES
     PASS_REGULAR_EXPRESSION "com.example.fixture"
 )
 
+add_test(NAME wuwe_runtime_plugin_doctor_detects_base_assembly_failure
+    COMMAND ${CMAKE_COMMAND}
+        "-DWUWE_RUNTIME_EXECUTABLE=$<TARGET_FILE:wuwe-runtime>"
+        "-DWUWE_RUNTIME_CONFIG=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/runtime-plugin-doctor-multiple-failures.json"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_doctor_failure_smoke.cmake"
+)
+
 add_test(NAME wuwe_runtime_plugin_run_requires_explicit_approval
     COMMAND ${CMAKE_COMMAND}
         "-DWUWE_RUNTIME_EXECUTABLE=$<TARGET_FILE:wuwe-runtime>"

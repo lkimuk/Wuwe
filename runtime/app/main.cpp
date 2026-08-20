@@ -202,30 +202,33 @@ int main(int argc, char** argv) {
     }
     if (command.command == "doctor") {
       auto report = wuwe::runtime_host::diagnose_runtime_config(config);
-      if (report.ready) {
-        try {
-          wuwe::runtime_host::host probe;
-          probe.configure(config);
-          probe.start();
-          report.checks["assembly"] = {
-            .ok = probe.health().status == wuwe::runtime_host::health_status::healthy,
-            .message = "Runtime Host dependencies assembled successfully",
-          };
-          if (!probe.stop()) {
-            report.checks["assembly"] = {
-              .ok = false,
-              .message = "Runtime Host dependencies assembled but did not stop cleanly",
-            };
-          }
-        }
-        catch (const std::exception& ex) {
+      try {
+        auto assembly_config = config;
+        assembly_config.plugins.packages.clear();
+        wuwe::runtime_host::host probe;
+        probe.configure(std::move(assembly_config));
+        probe.start();
+        report.checks["assembly"] = {
+          .ok = probe.health().status == wuwe::runtime_host::health_status::healthy,
+          .message = config.plugins.packages.empty()
+                       ? "Runtime Host dependencies assembled successfully"
+                       : "ordinary Runtime Host dependencies assembled; plugin launch is "
+                         "deferred to startup",
+        };
+        if (!probe.stop()) {
           report.checks["assembly"] = {
             .ok = false,
-            .message = ex.what(),
+            .message = "Runtime Host dependencies assembled but did not stop cleanly",
           };
         }
-        report.ready = report.checks.at("assembly").ok;
       }
+      catch (const std::exception& ex) {
+        report.checks["assembly"] = {
+          .ok = false,
+          .message = ex.what(),
+        };
+      }
+      report.ready = report.ready && report.checks.at("assembly").ok;
       std::cout << wuwe::runtime_host::doctor_report_to_json(report).dump(2) << '\n';
       return report.ready ? static_cast<int>(exit_code::success)
                           : static_cast<int>(exit_code::startup);
