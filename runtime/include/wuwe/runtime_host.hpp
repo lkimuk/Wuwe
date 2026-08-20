@@ -8,6 +8,7 @@
 #include <wuwe/runtime_host/plugin_package.hpp>
 #include <wuwe/runtime_host/plugin_process.hpp>
 #include <wuwe/runtime_host/plugin_runtime.hpp>
+#include <wuwe/runtime_host/plugin_tools.hpp>
 #include <wuwe/runtime_host/runtime_host.hpp>
 #include <wuwe/runtime_host/validation.hpp>
 
