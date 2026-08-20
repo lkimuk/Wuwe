@@ -1,13 +1,16 @@
 #include <csignal>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
+#include <wuwe/agent/approval/approval_service.hpp>
 #include <wuwe/agent/host/host_codec.hpp>
 #include <wuwe/runtime_host.hpp>
 #include <wuwe/version.hpp>
@@ -33,6 +36,7 @@ struct command_line {
   std::optional<std::string> config_path;
   std::optional<std::string> package_path;
   std::optional<std::string> prompt;
+  bool approve_tools { false };
 };
 
 void print_usage(std::ostream& output) {
@@ -41,7 +45,7 @@ void print_usage(std::ostream& output) {
             "  wuwe-runtime validate --config <runtime.json>\n"
             "  wuwe-runtime doctor --config <runtime.json>\n"
             "  wuwe-runtime inspect-plugin --package <directory>\n"
-            "  wuwe-runtime run --config <runtime.json> [--prompt <text>]\n"
+            "  wuwe-runtime run --config <runtime.json> [--prompt <text>] [--approve-tools]\n"
             "  wuwe-runtime serve --config <runtime.json>\n";
 }
 
@@ -53,6 +57,12 @@ command_line parse_arguments(int argc, char** argv) {
     result.command = "help";
   for (int index = 2; index < argc; ++index) {
     const std::string_view argument(argv[index]);
+    if (argument == "--approve-tools") {
+      if (result.approve_tools)
+        throw std::invalid_argument("--approve-tools may only be specified once");
+      result.approve_tools = true;
+      continue;
+    }
     if (argument == "--config" || argument == "--package" || argument == "--prompt") {
       if (index + 1 >= argc)
         throw std::invalid_argument(std::string(argument) + " requires a value");
@@ -87,6 +97,8 @@ command_line parse_arguments(int argc, char** argv) {
     throw std::invalid_argument("inspect-plugin does not accept --config");
   if (result.command != "run" && result.prompt)
     throw std::invalid_argument("--prompt is only valid for the run command");
+  if (result.command != "run" && result.approve_tools)
+    throw std::invalid_argument("--approve-tools is only valid for the run command");
   return result;
 }
 
@@ -154,13 +166,13 @@ int main(int argc, char** argv) {
   try {
     const auto command = parse_arguments(argc, argv);
     if (command.command == "help") {
-      if (command.config_path || command.package_path || command.prompt)
+      if (command.config_path || command.package_path || command.prompt || command.approve_tools)
         throw std::invalid_argument("help does not accept options");
       print_usage(std::cout);
       return static_cast<int>(exit_code::success);
     }
     if (command.command == "version") {
-      if (command.config_path || command.package_path || command.prompt)
+      if (command.config_path || command.package_path || command.prompt || command.approve_tools)
         throw std::invalid_argument("version does not accept options");
       std::cout << "wuwe-runtime " << wuwe::framework_version << '\n';
       return static_cast<int>(exit_code::success);
@@ -219,7 +231,16 @@ int main(int argc, char** argv) {
                           : static_cast<int>(exit_code::startup);
     }
 
-    wuwe::runtime_host::host host;
+    if (command.command == "run" && !config.plugins.packages.empty() && !command.approve_tools) {
+      throw std::invalid_argument("run with configured plugin tools requires --approve-tools; use "
+                                  "serve for manual approvals");
+    }
+    wuwe::runtime_host::runtime_dependencies dependencies;
+    if (command.approve_tools) {
+      dependencies.approval_service =
+        std::make_shared<wuwe::agent::approval::allow_all_approval_service>();
+    }
+    wuwe::runtime_host::host host(std::move(dependencies));
     host.configure(config);
     host.start();
     if (command.command == "serve")

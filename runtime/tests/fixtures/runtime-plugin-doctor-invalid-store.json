@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "llm": {
+    "provider": "Ollama",
+    "model": "doctor-test"
+  },
+  "store": {
+    "kind": "sqlite",
+    "path": "."
+  },
+  "plugins": {
+    "isolation": "trusted_process",
+    "packages": [
+      {
+        "path": "plugin",
+        "expectedId": "com.example.fixture",
+        "expectedContentSha256": "1fbf7c4617ec8eb47bcfa200c49bc82116eb58a85b43c94fea7a2c0e90fcd484",
+        "environment": [],
+        "tools": [
+          {
+            "name": "echo_text",
+            "exposedName": "runtime_echo"
+          }
+        ]
+      }
+    ]
+  }
+}
