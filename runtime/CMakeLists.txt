@@ -14,6 +14,7 @@ endfunction()
 
 add_library(wuwe_runtime_host STATIC
     src/config.cpp
+    src/idempotency_repository.cpp
     src/lifecycle.cpp
     src/plugin_manifest.cpp
     src/runtime_host.cpp

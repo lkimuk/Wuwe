@@ -19,6 +19,8 @@
 #include <wuwe/agent/runtime/sqlite_agent_run_store.hpp>
 #include <wuwe/common/sha256.hpp>
 
+#include "idempotency_repository.hpp"
+
 namespace wuwe::runtime_host {
 namespace {
 
@@ -169,6 +171,32 @@ std::string idempotency_fingerprint(const std::map<std::string, std::string>& me
   return hash.hex_digest();
 }
 
+nlohmann::json submission_result_to_json(
+  const agent::host::host_result<agent::host::run_submission>& result) {
+  if (const auto* value = result.value_if()) {
+    return {
+      { "ok", true },
+      { "value", agent::host::run_submission_to_json(*value) },
+    };
+  }
+  return {
+    { "ok", false },
+    { "error", agent::host::host_error_to_json(*result.error_if()) },
+  };
+}
+
+agent::host::host_result<agent::host::run_submission> submission_result_from_json(
+  const nlohmann::json& document) {
+  if (!document.is_object() || !document.contains("ok") || !document.at("ok").is_boolean())
+    throw std::runtime_error("persisted idempotency result is malformed");
+  if (document.at("ok").get<bool>()) {
+    return agent::host::host_result<agent::host::run_submission>::success(
+      agent::host::run_submission_from_json(document.at("value")));
+  }
+  return agent::host::host_result<agent::host::run_submission>::failure(
+    agent::host::host_error_from_json(document.at("error")));
+}
+
 } // namespace
 
 std::string to_string(runtime_error_code code) {
@@ -262,7 +290,8 @@ doctor_report diagnose_runtime_config(
 class host::implementation final : public agent::host::agent_host_service {
 public:
   explicit implementation(runtime_dependencies dependencies)
-      : dependencies_(std::move(dependencies)) {
+      : uses_default_run_store_(!dependencies.make_run_store),
+        dependencies_(std::move(dependencies)) {
     if (!dependencies_.make_llm_client)
       dependencies_.make_llm_client = default_llm_client;
     if (!dependencies_.make_agent_runner)
@@ -301,6 +330,11 @@ public:
         throw runtime_error(
           runtime_error_code::dependency_unavailable, "run store factory returned no store");
       auto durable = std::make_shared<agent::runtime::agent_run_runtime>(store);
+      auto idempotency_repository =
+        uses_default_run_store_ && config_->store.kind == run_store_kind::sqlite
+          ? detail::make_sqlite_idempotency_repository(
+              config_->store.sqlite_path, max_idempotency_entries)
+          : detail::make_memory_idempotency_repository(max_idempotency_entries);
       auto client = dependencies_.make_llm_client(config_->llm);
       if (!client)
         throw runtime_error(
@@ -313,6 +347,7 @@ public:
         std::scoped_lock lock(resources_mutex_);
         store_ = std::move(store);
         durable_runtime_ = std::move(durable);
+        idempotency_repository_ = std::move(idempotency_repository);
         client_ = std::move(client);
         runner_ = std::move(runner);
       }
@@ -362,6 +397,7 @@ public:
         std::scoped_lock resources_lock(resources_mutex_);
         runner_.reset();
         client_.reset();
+        idempotency_repository_.reset();
         durable_runtime_.reset();
         store_.reset();
       }
@@ -390,10 +426,12 @@ public:
     const bool ready = result.lifecycle.state == lifecycle_state::ready;
     bool has_client = false;
     bool has_store = false;
+    bool has_idempotency = false;
     {
       std::scoped_lock lock(resources_mutex_);
       has_client = static_cast<bool>(client_);
       has_store = static_cast<bool>(store_);
+      has_idempotency = static_cast<bool>(idempotency_repository_);
     }
     result.checks["lifecycle"] = {
       .ok = ready,
@@ -408,7 +446,12 @@ public:
       .ok = has_store,
       .message = has_store ? "durable run store is configured" : "durable run store is unavailable",
     };
-    if (ready && has_client && has_store)
+    result.checks["idempotency"] = {
+      .ok = has_idempotency,
+      .message = has_idempotency ? "mutation replay repository is configured"
+                                 : "mutation replay repository is unavailable",
+    };
+    if (ready && has_client && has_store && has_idempotency)
       result.status = health_status::healthy;
     else if (result.lifecycle.state == lifecycle_state::starting ||
              result.lifecycle.state == lifecycle_state::draining)
@@ -735,6 +778,11 @@ private:
     const auto key =
       call.protocol_version + ":" + std::string(operation) + ":" + call.idempotency_key;
     const auto fingerprint = idempotency_fingerprint(call.metadata, request_fingerprint);
+    const auto repository = idempotency_repository();
+    if (!repository) {
+      return host_failure<agent::host::run_submission>(
+        host_error_code::unavailable, "runtime idempotency repository is unavailable", true);
+    }
     std::shared_ptr<idempotency_entry> entry;
     {
       std::unique_lock lock(idempotency_mutex_);
@@ -747,8 +795,39 @@ private:
         entry->completed.wait(lock, [&] { return entry->result.has_value(); });
         return *entry->result;
       }
+      try {
+        const auto claim = repository->claim(key, fingerprint);
+        switch (claim.status) {
+          case detail::idempotency_claim_status::replay:
+            return submission_result_from_json(claim.result);
+          case detail::idempotency_claim_status::conflict:
+            return host_failure<agent::host::run_submission>(host_error_code::conflict,
+              "idempotency key was already used for a different request");
+          case detail::idempotency_claim_status::pending:
+            return host_failure<agent::host::run_submission>(host_error_code::unavailable,
+              "a previous mutation with this idempotency key has an unresolved outcome",
+              true);
+          case detail::idempotency_claim_status::capacity_exceeded:
+            return host_failure<agent::host::run_submission>(host_error_code::unavailable,
+              "runtime idempotency repository is at capacity",
+              true);
+          case detail::idempotency_claim_status::acquired:
+            break;
+        }
+      }
+      catch (...) {
+        return host_failure<agent::host::run_submission>(
+          host_error_code::unavailable, "runtime idempotency repository could not be read", true);
+      }
       prune_idempotency_cache();
       if (idempotency_.size() >= max_idempotency_entries) {
+        try {
+          repository->erase(key, fingerprint);
+        }
+        catch (...) {
+          return host_failure<agent::host::run_submission>(host_error_code::internal,
+            "runtime idempotency claim could not be released");
+        }
         return host_failure<agent::host::run_submission>(
           host_error_code::unavailable, "runtime idempotency cache is at capacity", true);
       }
@@ -766,11 +845,26 @@ private:
           host_error_code::internal, "runtime mutation failed");
       }
     }();
+    bool erase_replay = false;
+    try {
+      if (const auto* error = result.error_if();
+          error && error->retryable && error->code == host_error_code::unavailable) {
+        repository->erase(key, fingerprint);
+        erase_replay = true;
+      }
+      else {
+        repository->complete(key, fingerprint, submission_result_to_json(result));
+      }
+    }
+    catch (...) {
+      result = host_failure<agent::host::run_submission>(host_error_code::internal,
+        "runtime mutation outcome could not be persisted");
+      erase_replay = false;
+    }
     {
       std::scoped_lock lock(idempotency_mutex_);
       entry->result = result;
-      if (const auto* error = result.error_if();
-          error && error->retryable && error->code == host_error_code::unavailable)
+      if (erase_replay)
         idempotency_.erase(key);
     }
     entry->completed.notify_all();
@@ -1086,6 +1180,7 @@ private:
         std::scoped_lock resources_lock(resources_mutex_);
         runner_.reset();
         client_.reset();
+        idempotency_repository_.reset();
         durable_runtime_.reset();
         store_.reset();
       }
@@ -1104,6 +1199,12 @@ private:
     return runner_;
   }
 
+  std::shared_ptr<detail::idempotency_repository> idempotency_repository() const {
+    std::scoped_lock lock(resources_mutex_);
+    return idempotency_repository_;
+  }
+
+  bool uses_default_run_store_ { true };
   runtime_dependencies dependencies_;
   std::optional<runtime_config> config_;
   std::mutex control_mutex_;
@@ -1111,6 +1212,7 @@ private:
   mutable std::mutex resources_mutex_;
   std::shared_ptr<agent::runtime::agent_run_store> store_;
   std::shared_ptr<agent::runtime::agent_run_runtime> durable_runtime_;
+  std::shared_ptr<detail::idempotency_repository> idempotency_repository_;
   std::shared_ptr<llm_client> client_;
   std::shared_ptr<llm_agent_runner> runner_;
   mutable std::mutex active_mutex_;
