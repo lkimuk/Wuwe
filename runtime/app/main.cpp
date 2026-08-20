@@ -31,6 +31,7 @@ extern "C" void handle_signal(int) {
 struct command_line {
   std::string command;
   std::optional<std::string> config_path;
+  std::optional<std::string> package_path;
   std::optional<std::string> prompt;
 };
 
@@ -39,6 +40,7 @@ void print_usage(std::ostream& output) {
             "  wuwe-runtime version\n"
             "  wuwe-runtime validate --config <runtime.json>\n"
             "  wuwe-runtime doctor --config <runtime.json>\n"
+            "  wuwe-runtime inspect-plugin --package <directory>\n"
             "  wuwe-runtime run --config <runtime.json> [--prompt <text>]\n"
             "  wuwe-runtime serve --config <runtime.json>\n";
 }
@@ -51,7 +53,7 @@ command_line parse_arguments(int argc, char** argv) {
     result.command = "help";
   for (int index = 2; index < argc; ++index) {
     const std::string_view argument(argv[index]);
-    if (argument == "--config" || argument == "--prompt") {
+    if (argument == "--config" || argument == "--package" || argument == "--prompt") {
       if (index + 1 >= argc)
         throw std::invalid_argument(std::string(argument) + " requires a value");
       const std::string value(argv[++index]);
@@ -59,6 +61,11 @@ command_line parse_arguments(int argc, char** argv) {
         if (result.config_path)
           throw std::invalid_argument("--config may only be specified once");
         result.config_path = value;
+      }
+      else if (argument == "--package") {
+        if (result.package_path)
+          throw std::invalid_argument("--package may only be specified once");
+        result.package_path = value;
       }
       else {
         if (result.prompt)
@@ -69,8 +76,15 @@ command_line parse_arguments(int argc, char** argv) {
     }
     throw std::invalid_argument("unknown argument: " + std::string(argument));
   }
-  if (result.command != "version" && result.command != "help" && !result.config_path)
+  if (result.command != "version" && result.command != "help" &&
+      result.command != "inspect-plugin" && !result.config_path)
     throw std::invalid_argument("--config is required for command '" + result.command + "'");
+  if (result.command == "inspect-plugin" && !result.package_path)
+    throw std::invalid_argument("--package is required for command 'inspect-plugin'");
+  if (result.command != "inspect-plugin" && result.package_path)
+    throw std::invalid_argument("--package is only valid for the inspect-plugin command");
+  if (result.command == "inspect-plugin" && result.config_path)
+    throw std::invalid_argument("inspect-plugin does not accept --config");
   if (result.command != "run" && result.prompt)
     throw std::invalid_argument("--prompt is only valid for the run command");
   return result;
@@ -140,20 +154,31 @@ int main(int argc, char** argv) {
   try {
     const auto command = parse_arguments(argc, argv);
     if (command.command == "help") {
-      if (command.config_path || command.prompt)
+      if (command.config_path || command.package_path || command.prompt)
         throw std::invalid_argument("help does not accept options");
       print_usage(std::cout);
       return static_cast<int>(exit_code::success);
     }
     if (command.command == "version") {
-      if (command.config_path || command.prompt)
+      if (command.config_path || command.package_path || command.prompt)
         throw std::invalid_argument("version does not accept options");
       std::cout << "wuwe-runtime " << wuwe::framework_version << '\n';
       return static_cast<int>(exit_code::success);
     }
-    if (command.command != "validate" && command.command != "doctor" && command.command != "run" &&
+    if (command.command != "validate" && command.command != "doctor" &&
+        command.command != "inspect-plugin" && command.command != "run" &&
         command.command != "serve") {
       throw std::invalid_argument("unknown command: " + command.command);
+    }
+
+    if (command.command == "inspect-plugin") {
+      const auto package = wuwe::runtime_host::load_plugin_package(*command.package_path);
+      std::cout << nlohmann::json {
+        { "valid", true },
+        { "contentSha256", package->content_sha256() },
+        { "manifest", wuwe::runtime_host::plugin_manifest_to_json(package->manifest()) },
+      }.dump(2) << '\n';
+      return static_cast<int>(exit_code::success);
     }
 
     const auto config = wuwe::runtime_host::load_runtime_config(*command.config_path);
@@ -213,6 +238,12 @@ int main(int argc, char** argv) {
       { "error", "invalid_config" },
       { "message", ex.what() },
       { "issues", issues_to_json(ex.report()) }
+    }.dump(2) << '\n';
+    return static_cast<int>(exit_code::config);
+  }
+  catch (const wuwe::runtime_host::plugin_package_error& ex) {
+    std::cerr << nlohmann::json {
+      { "error", wuwe::runtime_host::to_string(ex.code()) }, { "message", ex.what() }
     }.dump(2) << '\n';
     return static_cast<int>(exit_code::config);
   }

@@ -3,7 +3,9 @@
 
 #include <wuwe/runtime_host/config.hpp>
 #include <wuwe/runtime_host/lifecycle.hpp>
+#include <wuwe/runtime_host/plugin_catalog.hpp>
 #include <wuwe/runtime_host/plugin_manifest.hpp>
+#include <wuwe/runtime_host/plugin_package.hpp>
 #include <wuwe/runtime_host/runtime_host.hpp>
 #include <wuwe/runtime_host/validation.hpp>
 

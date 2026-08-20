@@ -16,7 +16,9 @@ add_library(wuwe_runtime_host STATIC
     src/config.cpp
     src/idempotency_repository.cpp
     src/lifecycle.cpp
+    src/plugin_catalog.cpp
     src/plugin_manifest.cpp
+    src/plugin_package.cpp
     src/runtime_host.cpp
     src/validation.cpp
 )

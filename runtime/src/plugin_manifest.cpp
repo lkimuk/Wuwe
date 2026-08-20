@@ -1,6 +1,7 @@
 #include <wuwe/runtime_host/plugin_manifest.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <regex>
 #include <set>
@@ -72,14 +73,35 @@ void validate_string_array(
 }
 
 bool safe_package_relative_path(std::string_view path) {
-  if (path.empty() || path.front() == '/' || path.front() == '\\' || path.find(':') != path.npos)
+  constexpr std::size_t maximum_path_bytes = 1024;
+  constexpr std::size_t maximum_component_bytes = 255;
+  constexpr std::size_t maximum_components = 32;
+  if (path.empty() || path.size() > maximum_path_bytes || path.front() == '/' ||
+      path.find('\\') != path.npos || path.find('\0') != path.npos)
     return false;
   std::size_t begin = 0;
+  std::size_t component_count = 0;
   while (begin <= path.size()) {
-    const auto end = path.find_first_of("/\\", begin);
+    const auto end = path.find('/', begin);
     const auto component = path.substr(begin, end == path.npos ? path.size() - begin : end - begin);
-    if (component.empty() || component == "." || component == "..")
+    if (component.empty() || component == "." || component == ".." ||
+        component.size() > maximum_component_bytes || ++component_count > maximum_components ||
+        component.back() == ' ' || component.back() == '.')
       return false;
+    auto stem = std::string(component.substr(0, component.find('.')));
+    std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char value) {
+      return static_cast<char>(std::tolower(value));
+    });
+    if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
+        (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) &&
+          stem.back() >= '1' && stem.back() <= '9'))
+      return false;
+    for (const auto raw_value : component) {
+      const auto value = static_cast<unsigned char>(raw_value);
+      if (value < 0x20U || value == 0x7fU || value == '<' || value == '>' || value == ':' ||
+          value == '"' || value == '|' || value == '?' || value == '*')
+        return false;
+    }
     if (end == path.npos)
       break;
     begin = end + 1;
@@ -141,6 +163,14 @@ bool valid_semantic_version(std::string_view version) {
     return false;
   }
   return valid_semantic_version_suffix(suffix, false);
+}
+
+bool reserved_runtime_environment_name(std::string name) {
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char value) {
+    return static_cast<char>(std::toupper(value));
+  });
+  return name == "WUWE_PLUGIN_ID" || name == "WUWE_PLUGIN_VERSION" ||
+         name == "WUWE_RUNTIME_API_VERSION";
 }
 
 std::vector<std::string> string_array(const json& value, const char* name) {
@@ -223,7 +253,7 @@ validation_report validate_plugin_manifest(const nlohmann::json& document) {
       issue(report,
         "/entrypoint/kind",
         "unsupported_value",
-        "runtime version 1 supports isolated process entrypoints only");
+        "Runtime API version 1 supports process entrypoints only");
     }
     const auto path = safe_string(*entrypoint, "path");
     if (!path.empty()) {
@@ -276,6 +306,13 @@ validation_report validate_plugin_manifest(const nlohmann::json& document) {
               "/permissions/environment/" + std::to_string(index),
               "invalid_format",
               "environment permission must be a variable name");
+          }
+          else if (value.is_string() &&
+                   reserved_runtime_environment_name(value.get<std::string>())) {
+            issue(report,
+              "/permissions/environment/" + std::to_string(index),
+              "reserved_name",
+              "environment permission is reserved for Runtime process metadata");
           }
         }
       }
