@@ -16,6 +16,7 @@
 #endif
 #include <windows.h>
 #else
+#include <cerrno>
 #include <csignal>
 #include <cstring>
 #include <sys/types.h>
@@ -69,6 +70,21 @@ std::size_t parse_content_length(std::string_view value) {
 }
 
 #ifdef _WIN32
+struct ascii_case_insensitive_less {
+  bool operator()(std::string_view left, std::string_view right) const noexcept {
+    const auto size = (std::min)(left.size(), right.size());
+    for (std::size_t index = 0; index < size; ++index) {
+      const auto left_value = static_cast<unsigned char>(left[index]);
+      const auto right_value = static_cast<unsigned char>(right[index]);
+      const auto left_lower = static_cast<unsigned char>(std::tolower(left_value));
+      const auto right_lower = static_cast<unsigned char>(std::tolower(right_value));
+      if (left_lower != right_lower)
+        return left_lower < right_lower;
+    }
+    return left.size() < right.size();
+  }
+};
+
 std::string quote_windows_arg(const std::string& arg) {
   if (arg.empty()) {
     return "\"\"";
@@ -114,28 +130,27 @@ std::string build_command_line(const mcp_process_command& command) {
   return output;
 }
 
-std::string build_windows_environment_block(const std::map<std::string, std::string>& overrides) {
-  if (overrides.empty()) {
-    return {};
-  }
-
-  std::map<std::string, std::string> variables;
-  LPCH current = GetEnvironmentStringsA();
-  if (!current) {
-    throw std::runtime_error("failed to read current process environment");
-  }
-  for (LPCH entry = current; *entry != '\0'; entry += std::strlen(entry) + 1) {
-    if (*entry == '=') {
-      continue;
+std::string build_windows_environment_block(
+  const std::map<std::string, std::string>& overrides, bool inherit_parent) {
+  std::map<std::string, std::string, ascii_case_insensitive_less> variables;
+  if (inherit_parent) {
+    LPCH current = GetEnvironmentStringsA();
+    if (!current) {
+      throw std::runtime_error("failed to read current process environment");
     }
-    const auto text = std::string(entry);
-    const auto separator = text.find('=');
-    if (separator == std::string::npos || separator == 0) {
-      continue;
+    for (LPCH entry = current; *entry != '\0'; entry += std::strlen(entry) + 1) {
+      if (*entry == '=') {
+        continue;
+      }
+      const auto text = std::string(entry);
+      const auto separator = text.find('=');
+      if (separator == std::string::npos || separator == 0) {
+        continue;
+      }
+      variables[text.substr(0, separator)] = text.substr(separator + 1);
     }
-    variables[text.substr(0, separator)] = text.substr(separator + 1);
+    FreeEnvironmentStringsA(current);
   }
-  FreeEnvironmentStringsA(current);
 
   for (const auto& [key, value] : overrides) {
     if (!key.empty()) {
@@ -151,6 +166,9 @@ std::string build_windows_environment_block(const std::map<std::string, std::str
     block.push_back('\0');
   }
   block.push_back('\0');
+  if (variables.empty()) {
+    block.push_back('\0');
+  }
   return block;
 }
 #endif
@@ -164,6 +182,7 @@ struct mcp_process_client::impl {
   HANDLE child_stdin { nullptr };
   HANDLE child_stdout { nullptr };
   HANDLE child_stderr { nullptr };
+  HANDLE job { nullptr };
   std::thread stderr_reader;
   std::mutex io_mutex;
   mutable std::mutex stderr_mutex;
@@ -177,6 +196,7 @@ struct mcp_process_client::impl {
     if (running()) {
       throw std::runtime_error("MCP process client is already running");
     }
+    stop();
 
     SECURITY_ATTRIBUTES security {
       .nLength = sizeof(SECURITY_ATTRIBUTES),
@@ -234,9 +254,37 @@ struct mcp_process_client::impl {
     startup.hStdOutput = stdout_write;
     startup.hStdError = stderr_write;
 
+    HANDLE configured_job = nullptr;
+    if (command.terminate_process_tree) {
+      configured_job = CreateJobObjectA(nullptr, nullptr);
+      if (!configured_job) {
+        CloseHandle(stdout_read);
+        CloseHandle(stdout_write);
+        CloseHandle(stdin_read);
+        CloseHandle(stdin_write);
+        CloseHandle(stderr_read);
+        CloseHandle(stderr_write);
+        throw std::runtime_error("failed to create MCP process job object");
+      }
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits {};
+      limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      if (!SetInformationJobObject(configured_job, JobObjectExtendedLimitInformation, &limits,
+            sizeof(limits))) {
+        CloseHandle(configured_job);
+        CloseHandle(stdout_read);
+        CloseHandle(stdout_write);
+        CloseHandle(stdin_read);
+        CloseHandle(stdin_write);
+        CloseHandle(stderr_read);
+        CloseHandle(stderr_write);
+        throw std::runtime_error("failed to configure MCP process job object");
+      }
+    }
+
     PROCESS_INFORMATION info {};
     auto command_line = build_command_line(command);
-    auto environment_block = build_windows_environment_block(command.environment);
+    auto environment_block =
+      build_windows_environment_block(command.environment, command.inherit_parent_environment);
     const char* working_directory =
       command.working_directory.empty() ? nullptr : command.working_directory.c_str();
     const BOOL created = CreateProcessA(nullptr,
@@ -244,8 +292,9 @@ struct mcp_process_client::impl {
       nullptr,
       nullptr,
       TRUE,
-      0,
-      environment_block.empty() ? nullptr : environment_block.data(),
+      command.terminate_process_tree ? CREATE_SUSPENDED : 0,
+      command.inherit_parent_environment && command.environment.empty() ? nullptr
+                                                                        : environment_block.data(),
       working_directory,
       &startup,
       &info);
@@ -255,10 +304,36 @@ struct mcp_process_client::impl {
     CloseHandle(stderr_write);
 
     if (!created) {
+      if (configured_job) {
+        CloseHandle(configured_job);
+      }
       CloseHandle(stdout_read);
       CloseHandle(stdin_write);
       CloseHandle(stderr_read);
       throw std::runtime_error("failed to start MCP process");
+    }
+
+    if (configured_job && !AssignProcessToJobObject(configured_job, info.hProcess)) {
+      TerminateProcess(info.hProcess, 1);
+      WaitForSingleObject(info.hProcess, 2000);
+      CloseHandle(configured_job);
+      CloseHandle(info.hProcess);
+      CloseHandle(info.hThread);
+      CloseHandle(stdout_read);
+      CloseHandle(stdin_write);
+      CloseHandle(stderr_read);
+      throw std::runtime_error("failed to assign MCP process to its job object");
+    }
+    if (command.terminate_process_tree && ResumeThread(info.hThread) == static_cast<DWORD>(-1)) {
+      TerminateJobObject(configured_job, 1);
+      WaitForSingleObject(info.hProcess, 2000);
+      CloseHandle(configured_job);
+      CloseHandle(info.hProcess);
+      CloseHandle(info.hThread);
+      CloseHandle(stdout_read);
+      CloseHandle(stdin_write);
+      CloseHandle(stderr_read);
+      throw std::runtime_error("failed to resume MCP process");
     }
 
     process = info.hProcess;
@@ -266,6 +341,7 @@ struct mcp_process_client::impl {
     child_stdin = stdin_write;
     child_stdout = stdout_read;
     child_stderr = stderr_read;
+    job = configured_job;
     clear_stderr_output();
     start_stderr_reader();
   }
@@ -278,9 +354,18 @@ struct mcp_process_client::impl {
     if (process) {
       const auto wait_result = WaitForSingleObject(process, 2000);
       if (wait_result == WAIT_TIMEOUT) {
-        TerminateProcess(process, 1);
+        if (job) {
+          TerminateJobObject(job, 1);
+        }
+        else {
+          TerminateProcess(process, 1);
+        }
         WaitForSingleObject(process, 2000);
       }
+    }
+    if (job) {
+      CloseHandle(job);
+      job = nullptr;
     }
     join_stderr_reader();
     if (child_stdout) {
@@ -381,6 +466,7 @@ struct mcp_process_client::impl {
   }
 #else
   pid_t pid { -1 };
+  pid_t process_group { -1 };
   int child_stdin { -1 };
   int child_stdout { -1 };
   int child_stderr { -1 };
@@ -397,6 +483,7 @@ struct mcp_process_client::impl {
     if (running()) {
       throw std::runtime_error("MCP process client is already running");
     }
+    stop();
     if (command.command.empty()) {
       throw std::runtime_error("MCP process command must not be empty");
     }
@@ -420,8 +507,16 @@ struct mcp_process_client::impl {
     }
 
     if (child == 0) {
+      if (command.terminate_process_tree && setpgid(0, 0) != 0) {
+        _exit(127);
+      }
       if (!command.working_directory.empty() && chdir(command.working_directory.c_str()) != 0) {
         _exit(127);
+      }
+      if (!command.inherit_parent_environment) {
+#if defined(__APPLE__) || defined(__linux__)
+        (void)clearenv();
+#endif
       }
       for (const auto& [key, value] : command.environment) {
         if (!key.empty()) {
@@ -454,6 +549,10 @@ struct mcp_process_client::impl {
       _exit(127);
     }
 
+    if (command.terminate_process_tree) {
+      (void)setpgid(child, child);
+      process_group = child;
+    }
     close(stdin_pipe[0]);
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
@@ -480,11 +579,31 @@ struct mcp_process_client::impl {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
-      if (pid > 0) {
-        kill(pid, SIGTERM);
-        (void)waitpid(pid, nullptr, 0);
-        pid = -1;
+    }
+    if (process_group > 0) {
+      (void)kill(-process_group, SIGTERM);
+      for (int i = 0; pid > 0 && i < 20; ++i) {
+        int status = 0;
+        const auto result = waitpid(pid, &status, WNOHANG);
+        if (result == pid || (result < 0 && errno == ECHILD)) {
+          pid = -1;
+          break;
+        }
+        if (result < 0 && errno != EINTR) {
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
+      (void)kill(-process_group, SIGKILL);
+      process_group = -1;
+    }
+    else if (pid > 0) {
+      (void)kill(pid, SIGTERM);
+    }
+    if (pid > 0) {
+      while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {
+      }
+      pid = -1;
     }
     join_stderr_reader();
     if (child_stdout >= 0) {

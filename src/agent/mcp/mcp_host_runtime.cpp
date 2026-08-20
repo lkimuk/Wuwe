@@ -831,6 +831,10 @@ std::vector<mcp_host_server_config> mcp_host_server_configs_from_json(const json
         config.command.environment[env_it.key()] = env_it.value().get<std::string>();
       }
     }
+    config.command.inherit_parent_environment =
+      value.value("inheritParentEnvironment", config.command.inherit_parent_environment);
+    config.command.terminate_process_tree =
+      value.value("terminateProcessTree", config.command.terminate_process_tree);
     if (value.contains("clientInfo")) {
       if (!value["clientInfo"].is_object()) {
         throw std::runtime_error("MCP host server clientInfo must be an object: " + it.key());
@@ -1004,6 +1008,8 @@ std::vector<mcp_host_config_diagnostic> mcp_host_config_diagnostics_from_json(
     }
     validate_optional_bool(diagnostics, value, "autoInitialize", server_path);
     validate_optional_bool(diagnostics, value, "sendInitializedNotification", server_path);
+    validate_optional_bool(diagnostics, value, "inheritParentEnvironment", server_path);
+    validate_optional_bool(diagnostics, value, "terminateProcessTree", server_path);
     validate_optional_bool(diagnostics, value, "restartOnFailure", server_path);
     validate_optional_non_negative_integer(diagnostics, value, "maxRestarts", server_path);
     validate_optional_non_negative_integer(diagnostics, value, "restartBackoffMillis", server_path);

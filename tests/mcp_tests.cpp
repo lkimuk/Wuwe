@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -7,6 +8,20 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <csignal>
+#include <unistd.h>
+#endif
 
 #include <httplib/httplib.h>
 #include <nlohmann/json.hpp>
@@ -1717,6 +1732,112 @@ void test_process_client_passes_environment_to_child() {
     "process client should pass environment overrides to child process");
 }
 
+void test_process_client_can_disable_parent_environment_inheritance() {
+  constexpr const char* sentinel_name = "WUWE_MCP_PARENT_ONLY_TEST";
+#ifdef _WIN32
+  const auto* command_path = std::getenv("COMSPEC");
+  require(command_path != nullptr, "test requires COMSPEC to locate the command interpreter");
+  const auto command = std::filesystem::path(command_path).string();
+  require(_putenv_s(sentinel_name, "must-not-leak") == 0,
+    "test should set the parent-only environment sentinel");
+#else
+  const auto command = std::string("/bin/sh");
+  require(setenv(sentinel_name, "must-not-leak", 1) == 0,
+    "test should set the parent-only environment sentinel");
+#endif
+
+  wuwe::agent::mcp::mcp_process_client client;
+#ifdef _WIN32
+  client.start({
+    .command = command,
+    .args = { "/C",
+      "if defined WUWE_MCP_PARENT_ONLY_TEST (echo must-not-leak 1>&2) else (echo ^<^>^|^<%WUWE_MCP_GRANTED_TEST%^> 1>&2)" },
+    .environment = { { "WUWE_MCP_GRANTED_TEST", "granted" } },
+    .inherit_parent_environment = false,
+  });
+#else
+  client.start({
+    .command = command,
+    .args = { "-c", "printf '<%s>|<%s>' \"$WUWE_MCP_PARENT_ONLY_TEST\" \"$WUWE_MCP_GRANTED_TEST\" >&2" },
+    .environment = { { "WUWE_MCP_GRANTED_TEST", "granted" } },
+    .inherit_parent_environment = false,
+  });
+#endif
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  client.stop();
+
+#ifdef _WIN32
+  (void)_putenv_s(sentinel_name, "");
+#else
+  (void)unsetenv(sentinel_name);
+#endif
+  const auto output = client.stderr_output();
+  require(output.find("<>|<granted>") != std::string::npos,
+    "process client should pass explicit grants without inheriting parent variables: " + output);
+  require(output.find("must-not-leak") == std::string::npos,
+    "process client should not leak parent environment when inheritance is disabled");
+}
+
+void test_process_client_can_terminate_the_process_tree() {
+  const auto pid_file = std::filesystem::temp_directory_path() /
+                        ("wuwe-mcp-process-tree-" +
+                          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                          ".pid");
+  std::error_code ignored;
+  std::filesystem::remove(pid_file, ignored);
+
+  wuwe::agent::mcp::mcp_process_client client;
+#ifdef _WIN32
+  const auto* system_root = std::getenv("SystemRoot");
+  require(system_root != nullptr, "test requires SystemRoot");
+  const auto powershell = std::filesystem::path(system_root) / "System32" /
+                          "WindowsPowerShell" / "v1.0" / "powershell.exe";
+  client.start({
+    .command = powershell.string(),
+    .args = { "-NoProfile", "-NonInteractive", "-Command",
+      "$child = Start-Process -FilePath $env:COMSPEC -ArgumentList '/C','ping -n 60 127.0.0.1 >NUL' -PassThru; Set-Content -LiteralPath $env:WUWE_MCP_TREE_PID_FILE -Value $child.Id; Wait-Process -Id $child.Id" },
+    .environment = { { "WUWE_MCP_TREE_PID_FILE", pid_file.string() } },
+    .terminate_process_tree = true,
+  });
+#else
+  client.start({
+    .command = "/bin/sh",
+    .args = { "-c", "sleep 60 & echo $! > \"$WUWE_MCP_TREE_PID_FILE\"; wait" },
+    .environment = { { "WUWE_MCP_TREE_PID_FILE", pid_file.string() } },
+    .terminate_process_tree = true,
+  });
+#endif
+
+  for (int attempt = 0; attempt < 100 && !std::filesystem::exists(pid_file); ++attempt)
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  require(std::filesystem::exists(pid_file),
+    "process-tree fixture should publish its descendant process id");
+  std::ifstream input(pid_file);
+  long long descendant_pid = 0;
+  input >> descendant_pid;
+  require(descendant_pid > 0, "process-tree fixture should publish a valid process id");
+
+  client.stop();
+#ifdef _WIN32
+  if (const auto process = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(descendant_pid))) {
+    const auto stopped = WaitForSingleObject(process, 2000) == WAIT_OBJECT_0;
+    CloseHandle(process);
+    require(stopped, "process client should terminate descendant processes in its job object");
+  }
+#else
+  bool stopped = false;
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    if (kill(static_cast<pid_t>(descendant_pid), 0) != 0 && errno == ESRCH) {
+      stopped = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  require(stopped, "process client should terminate descendant processes in its process group");
+#endif
+  std::filesystem::remove(pid_file, ignored);
+}
+
 void test_host_runtime_manages_multiple_process_servers() {
 #ifdef WUWE_MCP_STDIO_EXAMPLE_PATH
   wuwe::agent::mcp::mcp_host_runtime runtime;
@@ -1987,6 +2108,8 @@ void test_host_runtime_loads_common_json_config_shapes() {
             { "args", json::array({ "--mode", "test" }) },
             { "cwd", "D:\\workspace" },
             { "env", { { "WUWE_ENV", "enabled" } } },
+            { "inheritParentEnvironment", false },
+            { "terminateProcessTree", true },
             { "clientInfo", { { "name", "config-host" }, { "version", "2.0" } } },
             { "capabilities", { { "roots", { { "listChanged", true } } } } },
           } },
@@ -2000,6 +2123,9 @@ void test_host_runtime_loads_common_json_config_shapes() {
     "host runtime should parse cwd");
   require(vscode_configs[0].command.environment.at("WUWE_ENV") == "enabled",
     "host runtime should parse env");
+  require(!vscode_configs[0].command.inherit_parent_environment &&
+            vscode_configs[0].command.terminate_process_tree,
+    "host runtime should parse process environment and tree-lifetime policy");
   require(
     vscode_configs[0].client_info.name == "config-host", "host runtime should parse clientInfo");
   require(vscode_configs[0].capabilities["roots"]["listChanged"].get<bool>(),
@@ -2064,12 +2190,14 @@ void test_host_runtime_reports_config_diagnostics() {
             { "clientInfo", { { "name", 12 } } },
             { "capabilities", json::array() },
             { "autoInitialize", "yes" },
+            { "inheritParentEnvironment", "yes" },
+            { "terminateProcessTree", 1 },
             { "maxRestarts", -1 },
           } },
       } },
   });
 
-  require(diagnostics.size() >= 8,
+  require(diagnostics.size() >= 10,
     "host runtime should report multiple config diagnostics without throwing");
   require(std::any_of(diagnostics.begin(),
             diagnostics.end(),
@@ -2450,6 +2578,8 @@ int main() {
     test_process_client_launches_stdio_server();
     test_process_client_captures_stderr();
     test_process_client_passes_environment_to_child();
+    test_process_client_can_disable_parent_environment_inheritance();
+    test_process_client_can_terminate_the_process_tree();
     test_host_runtime_manages_multiple_process_servers();
     test_host_runtime_dispatches_async_requests();
     test_host_runtime_records_telemetry_events();

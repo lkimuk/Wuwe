@@ -17,6 +17,8 @@ struct mcp_process_command {
   std::vector<std::string> args;
   std::string working_directory;
   std::map<std::string, std::string> environment;
+  bool inherit_parent_environment { true };
+  bool terminate_process_tree { false };
 };
 
 class mcp_process_client {
