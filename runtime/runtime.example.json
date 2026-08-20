@@ -19,5 +19,9 @@
   },
   "serve": {
     "transport": "stdio"
+  },
+  "plugins": {
+    "isolation": "sandboxed_process",
+    "packages": []
   }
 }

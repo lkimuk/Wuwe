@@ -27,7 +27,8 @@ Runtime Host owns these process-level concerns:
 - Host Protocol dispatch and idempotent mutations;
 - health and configuration diagnostics;
 - verified plugin package admission and snapshot-based catalog lookup;
-- explicit process-plugin supervision over MCP stdio.
+- explicit process-plugin supervision over MCP stdio;
+- configuration-driven plugin activation and explicitly selected Agent tool composition.
 
 Agent algorithms, tools, memory, orchestration, and model provider implementations remain Framework
 modules. This keeps embedded users from depending on the executable host.
@@ -38,8 +39,12 @@ Start from [`runtime/runtime.example.json`](../runtime/runtime.example.json). Sc
 unknown fields and invalid types. `validate` parses and validates only; it does not create a database,
 instantiate a model client, or perform network I/O.
 
-`doctor` additionally resolves the credential reference and assembles the configured provider and
-store. It does not call the model, but a SQLite configuration may open or create its database file.
+`doctor` additionally resolves credential and plugin environment references, checks built-in
+provider and store availability, and reads and hashes configured plugin packages. It never launches
+configured plugin processes or calls the model. The CLI assembles and stops a copy of the ordinary
+host dependencies with plugin activation removed, so provider construction and SQLite path errors
+are still detected and a SQLite database may be opened or created. `start()` remains the
+authoritative plugin process and configured-tool assembly check.
 
 Credentials cannot be embedded in the JSON document. `apiKeyEnv` names the environment variable that
 Runtime Host resolves during startup, and `baseUrl` rejects URL user-info credentials. Diagnostic and
@@ -65,6 +70,47 @@ credential. Providers without a default endpoint, such as `OpenAICompatible`, mu
 `store.kind` may be `memory` or `sqlite`. SQLite requires a Wuwe build with `WUWE_HAS_SQLITE=1` and a
 non-empty `store.path`.
 
+### Configured plugins
+
+Plugin activation is opt-in and identity-pinned. Every configured package requires its expected
+manifest ID, admitted content SHA-256, and a non-empty list of tool bindings. Runtime never imports
+all advertised tools. `exposedName` is required, globally unique, and limited to the portable model
+tool-name character set. Use `wuwe-runtime inspect-plugin --package <path>` to obtain the admitted
+manifest and `contentSha256` value for configuration.
+
+```json
+{
+  "plugins": {
+    "isolation": "trusted_process",
+    "packages": [
+      {
+        "path": "plugins/com.example.tools",
+        "expectedId": "com.example.tools",
+        "expectedContentSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "environment": ["PLUGIN_API_TOKEN"],
+        "tools": [
+          {
+            "name": "search",
+            "exposedName": "search_knowledge"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Package paths loaded through `load_runtime_config()` are resolved relative to the configuration
+file. Each package's environment entries are names, never inline values. Runtime resolves them at
+startup and passes a value only to that package, and only when its manifest also declares the
+environment permission. A missing reference fails startup. The three `WUWE_*` process metadata
+names are reserved.
+
+The default `sandboxed_process` setting remains valid for forward compatibility but fails closed
+when packages are present because the built-in launcher does not yet enforce filesystem and network
+permissions. Configuration-driven execution therefore requires an explicit `trusted_process`
+choice for packages the operator already trusts.
+
 ## CLI
 
 ```text
@@ -72,12 +118,18 @@ wuwe-runtime version
 wuwe-runtime validate --config runtime.json
 wuwe-runtime doctor --config runtime.json
 wuwe-runtime inspect-plugin --package plugins/com.example.tools
-wuwe-runtime run --config runtime.json --prompt "Summarize this release."
+wuwe-runtime run --config runtime.json --prompt "Summarize this release." [--approve-tools]
 wuwe-runtime serve --config runtime.json
 ```
 
 When `--prompt` is omitted, `run` reads the prompt from standard input. Results, diagnostics, and
 errors are emitted as JSON, except for the compact `version` output. Exit codes are stable:
+
+Configured plugin tools use normal Wuwe approval policy. `serve` suspends a durable run and accepts
+the approval through Agent Host Protocol. The one-shot `run` command cannot host an external manual
+approval exchange, so plugin-enabled configurations require the explicit `--approve-tools` flag;
+the flag installs an allow-all approval service whose decisions apply to individual tool calls in
+that process. It is never implied by `trusted_process`.
 
 | Code | Meaning |
 | ---: | --- |
@@ -127,10 +179,18 @@ host.stop();
 ```
 
 `runtime_dependencies` provides explicit model-client and run-store factories for products that need
-dependency injection. It also exposes an agent-runner factory so products can configure the real
-Wuwe runner without replacing Runtime Host orchestration. Custom model-client factories are not
-coupled to the built-in provider registry. The default factories use Wuwe's registered providers and
-in-memory/SQLite stores. The public lifecycle is:
+dependency injection. The context-aware `make_configured_agent_runner` factory receives a
+`runtime_runner_context` containing host-authorized tools, allowing products to combine them with
+product-owned providers. The legacy `make_agent_runner` factory remains supported when no
+host-managed tools are configured. Supplying both factories is ambiguous and rejected; configuring
+plugins with only the legacy factory also fails explicitly instead of silently discarding tools.
+Custom model-client factories are not coupled to the built-in provider registry. The default
+factories use Wuwe's registered providers, configured tools, and in-memory/SQLite stores. The public
+lifecycle is:
+
+Products can provide `runtime_dependencies::approval_service` to apply their own approval policy.
+Without one, policy-governed tools suspend durable runs for explicit Host Protocol resolution; they
+are never silently allowed.
 
 ```text
 created -> configured -> starting -> ready -> draining -> stopped
@@ -207,12 +267,13 @@ making cross-module transitions explicit:
 wuwe::runtime_host::plugin_runtime plugins({
   .process_options = {
     .isolation = wuwe::runtime_host::plugin_process_isolation::trusted_process,
-    .environment = { { "PLUGIN_API_TOKEN", token } },
   },
 });
 
 plugins.register_package("plugins/com.example.tools");
-plugins.activate("com.example.tools");
+plugins.activate("com.example.tools", {
+  .environment = { { "PLUGIN_API_TOKEN", token } },
+});
 auto result = plugins.call_tool(
   "com.example.tools", "search", { { "query", "Wuwe" } });
 plugins.deactivate("com.example.tools");
@@ -256,15 +317,21 @@ deactivated, invocation returns an `unavailable` Tool outcome; it is not silentl
 Reactivating the same package preserves the binding, while replacing that plugin ID with different
 content requires constructing a new provider before calls are accepted. Cancellation is honored
 before the synchronous MCP dispatch boundary. The current protocol path does not claim cooperative
-in-flight cancellation, heartbeat propagation, or exactly-once tool execution. `host` still does
-not inject plugin tools into agent runs automatically; the owning product chooses the bindings and
-runner composition explicitly.
+in-flight cancellation, heartbeat propagation, or exactly-once tool execution. Embedded products
+may still assemble providers directly. The standalone host activates and injects plugin tools only
+when the operator explicitly pins the package and names every binding in Runtime configuration.
+
+Configured startup admits and verifies every package, activates the processes, discovers only the
+selected schemas, and assembles the runner before publishing any host resource. A failure rolls back
+all processes started by that attempt. Shutdown stops new runs, drains active work, destroys the
+runner and tool providers, and then unloads plugin process trees.
 
 Trusted launch does not inherit the parent environment. Runtime supplies only its three reserved
 metadata variables plus environment names both declared by the manifest and explicitly granted in
-`plugin_process_options`. Missing grants fail before process creation. Child processes are grouped
-with the plugin and terminated on unload or supervisor destruction (Windows Job Objects; POSIX
-process groups).
+the supervisor defaults or that package's `plugin_activation_options`. Missing grants fail before
+process creation, and per-activation grants are not merged across plugin packages. Child processes
+are grouped with the plugin and terminated on unload or supervisor destruction (Windows Job
+Objects; POSIX process groups).
 
 Manifest `readPaths`, `writePaths`, and `networkHosts` remain policy declarations in trusted mode;
 the built-in trusted launcher does not enforce them and snapshots report

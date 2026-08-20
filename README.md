@@ -69,7 +69,7 @@ is not promised. See [Versioning and compatibility](docs/versioning.md), the
 | Exploration and discovery | Bounded hypotheses, controlled experiments, evidence review, persistence, and an explicit Learning evidence adapter |
 | Controlled execution | Policy-bound Python subprocesses, approvals, resource limits, backend contracts, and audit events |
 | Networking | Common HTTP API with cpr/libcurl and cpp-httplib backends |
-| Runtime Host | Optional headless `wuwe-runtime` process, strict config, durable runs, lifecycle, health, Host Protocol serving, verified plugin packages, coordinated plugin lifecycle, trusted process supervision over MCP, and explicit plugin-tool composition |
+| Runtime Host | Optional headless `wuwe-runtime` process, strict config, durable runs, lifecycle, health, Host Protocol serving, verified plugin packages, configuration-driven trusted activation, and explicit plugin-tool composition over MCP |
 
 The complete module map and release boundaries are in the [documentation overview](https://lkimuk.github.io/Wuwe/docs/).
 
