@@ -69,7 +69,7 @@ is not promised. See [Versioning and compatibility](docs/versioning.md), the
 | Exploration and discovery | Bounded hypotheses, controlled experiments, evidence review, persistence, and an explicit Learning evidence adapter |
 | Controlled execution | Policy-bound Python subprocesses, approvals, resource limits, backend contracts, and audit events |
 | Networking | Common HTTP API with cpr/libcurl and cpp-httplib backends |
-| Runtime Host | Optional headless `wuwe-runtime` process, strict config, durable runs, lifecycle, health, and Host Protocol serving |
+| Runtime Host | Optional headless `wuwe-runtime` process, strict config, durable runs, lifecycle, health, Host Protocol serving, verified plugin packages, coordinated plugin lifecycle, trusted process supervision over MCP, and explicit plugin-tool composition |
 
 The complete module map and release boundaries are in the [documentation overview](https://lkimuk.github.io/Wuwe/docs/).
 
@@ -202,6 +202,9 @@ See [Packaging](https://lkimuk.github.io/Wuwe/docs/packaging/).
 ## Production boundaries
 
 - `controlled_process` is a bounded subprocess backend, not a strong sandbox.
+- Runtime process plugins fail closed in the default sandboxed mode. Explicit trusted mode provides
+  environment allowlisting, capability gating, and process-tree cleanup, but does not enforce the
+  manifest's filesystem or network declarations.
 - SQLite is intended for local persistence. The SQLite knowledge index uses a C++ linear scan, not ANN search.
 - Qdrant and other remote indexes are external services managed by the host.
 - The host owns identity, secrets, user consent, approvals, retention, and deployment policy.
