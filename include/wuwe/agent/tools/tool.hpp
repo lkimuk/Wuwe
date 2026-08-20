@@ -780,6 +780,8 @@ public:
             return provider->compensate(invocation, outcome);
           }
           else {
+            (void)invocation;
+            (void)outcome;
             return llm_tool_result {
               .content = "tool provider does not support compensation",
               .error_code = std::make_error_code(std::errc::function_not_supported),
