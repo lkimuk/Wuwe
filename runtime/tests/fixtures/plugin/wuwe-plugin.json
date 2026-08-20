@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "com.example.fixture",
+  "version": "1.0.0",
+  "runtimeApiVersion": "1.0",
+  "entrypoint": {
+    "kind": "process",
+    "path": "bin/tools"
+  },
+  "capabilities": [
+    "tools"
+  ],
+  "permissions": {}
+}
