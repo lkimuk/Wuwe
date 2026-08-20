@@ -19,6 +19,7 @@ add_library(wuwe_runtime_host STATIC
     src/plugin_catalog.cpp
     src/plugin_manifest.cpp
     src/plugin_package.cpp
+    src/plugin_process.cpp
     src/runtime_host.cpp
     src/validation.cpp
 )
