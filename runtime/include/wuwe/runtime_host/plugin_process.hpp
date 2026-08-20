@@ -25,6 +25,12 @@ struct plugin_process_options {
   std::map<std::string, std::string> environment;
 };
 
+struct plugin_process_launch_options {
+  // Explicit per-process grants. Only names also declared by the package manifest are passed to
+  // the child. This does not inherit or merge the supervisor's default environment grants.
+  std::map<std::string, std::string> environment;
+};
+
 enum class plugin_process_state {
   stopped,
   starting,
@@ -82,6 +88,8 @@ public:
   plugin_process_supervisor& operator=(plugin_process_supervisor&&) noexcept;
 
   [[nodiscard]] plugin_process_snapshot start(plugin_package_ptr package);
+  [[nodiscard]] plugin_process_snapshot start(
+    plugin_package_ptr package, plugin_process_launch_options options);
   [[nodiscard]] bool stop(const std::string& id);
   [[nodiscard]] bool unload(const std::string& id);
 

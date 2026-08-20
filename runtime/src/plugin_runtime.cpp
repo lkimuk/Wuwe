@@ -31,6 +31,29 @@ struct plugin_runtime::implementation {
   mutable std::shared_mutex lifecycle_mutex;
   plugin_catalog catalog;
   plugin_process_supervisor processes;
+
+  plugin_process_snapshot activate(
+    const std::string& id, const plugin_activation_options* options) {
+    std::scoped_lock lock(lifecycle_mutex);
+    const auto package = catalog.snapshot().find(id);
+    if (!package)
+      fail(plugin_runtime_error_code::not_registered, "plugin is not registered: " + id);
+
+    const auto snapshots = processes.snapshots();
+    const auto found = std::find_if(
+      snapshots.begin(), snapshots.end(), [&](const auto& snapshot) { return snapshot.id == id; });
+    if (found != snapshots.end()) {
+      if (found->state == plugin_process_state::running)
+        return *found;
+      (void)processes.unload(id);
+    }
+    if (!options)
+      return processes.start(std::move(package));
+    return processes.start(std::move(package),
+      plugin_process_launch_options {
+        .environment = options->environment,
+      });
+  }
 };
 
 const char* to_string(plugin_runtime_error_code code) noexcept {
@@ -87,21 +110,12 @@ bool plugin_runtime::remove_package(const std::string& id) {
 }
 
 plugin_process_snapshot plugin_runtime::activate(const std::string& id) {
-  std::scoped_lock lock(impl_->lifecycle_mutex);
-  const auto package = impl_->catalog.snapshot().find(id);
-  if (!package)
-    fail(plugin_runtime_error_code::not_registered, "plugin is not registered: " + id);
+  return impl_->activate(id, nullptr);
+}
 
-  const auto snapshots = impl_->processes.snapshots();
-  const auto found = std::find_if(snapshots.begin(), snapshots.end(), [&](const auto& snapshot) {
-    return snapshot.id == id;
-  });
-  if (found != snapshots.end()) {
-    if (found->state == plugin_process_state::running)
-      return *found;
-    (void)impl_->processes.unload(id);
-  }
-  return impl_->processes.start(std::move(package));
+plugin_process_snapshot plugin_runtime::activate(
+  const std::string& id, plugin_activation_options options) {
+  return impl_->activate(id, &options);
 }
 
 bool plugin_runtime::deactivate(const std::string& id) {

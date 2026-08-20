@@ -2,6 +2,7 @@
 #define WUWE_RUNTIME_HOST_PLUGIN_RUNTIME_HPP
 
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -40,6 +41,10 @@ struct plugin_runtime_options {
   plugin_process_options process_options;
 };
 
+struct plugin_activation_options {
+  std::map<std::string, std::string> environment;
+};
+
 class plugin_runtime final {
 public:
   explicit plugin_runtime(plugin_runtime_options options = {});
@@ -62,6 +67,10 @@ public:
   // Activation is idempotent while a plugin is running. A stopped or failed process is unloaded
   // and started again from the package currently published in the catalog.
   [[nodiscard]] plugin_process_snapshot activate(const std::string& id);
+  // Per-activation grants allow a host to keep secrets scoped to one plugin package. When the
+  // plugin is already running, activation remains idempotent and does not mutate its environment.
+  [[nodiscard]] plugin_process_snapshot activate(
+    const std::string& id, plugin_activation_options options);
   [[nodiscard]] bool deactivate(const std::string& id);
 
   [[nodiscard]] nlohmann::json list_tools(const std::string& id);

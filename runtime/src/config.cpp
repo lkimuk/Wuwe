@@ -1,5 +1,7 @@
 #include <wuwe/runtime_host/config.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <regex>
 #include <set>
@@ -74,6 +76,15 @@ void validate_optional_string(
   }
 }
 
+void require_non_empty_string(
+  const json& object, const char* name, std::string_view path, validation_report& report) {
+  const auto found = object.find(name);
+  if (found == object.end() || !found->is_string() ||
+      found->get_ref<const std::string&>().empty()) {
+    issue(report, std::string(path) + "/" + name, "required", "value must be a non-empty string");
+  }
+}
+
 std::string safe_string(const json& object, const char* name, std::string fallback = {}) {
   const auto found = object.find(name);
   return found != object.end() && found->is_string() ? found->get<std::string>()
@@ -121,6 +132,163 @@ void validate_base_url(std::string_view value, validation_report& report) {
   }
 }
 
+bool reserved_runtime_environment_name(std::string name) {
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char value) {
+    return static_cast<char>(std::toupper(value));
+  });
+  return name == "WUWE_PLUGIN_ID" || name == "WUWE_PLUGIN_VERSION" ||
+         name == "WUWE_RUNTIME_API_VERSION";
+}
+
+void validate_plugin_environment(
+  const json& package, std::string_view package_path, validation_report& report) {
+  const auto environment = package.find("environment");
+  if (environment == package.end())
+    return;
+  if (!environment->is_array()) {
+    issue(report,
+      std::string(package_path) + "/environment",
+      "invalid_type",
+      "environment must be an array of environment variable names");
+    return;
+  }
+  static const std::regex environment_pattern("^[A-Za-z_][A-Za-z0-9_]*$");
+  std::set<std::string> names;
+  for (std::size_t index = 0; index < environment->size(); ++index) {
+    const auto& value = environment->at(index);
+    const auto path = std::string(package_path) + "/environment/" + std::to_string(index);
+    if (!value.is_string() || value.get_ref<const std::string&>().empty()) {
+      issue(report, path, "invalid_value", "entry must be a non-empty string");
+      continue;
+    }
+    const auto name = value.get<std::string>();
+    if (!std::regex_match(name, environment_pattern)) {
+      issue(report, path, "invalid_format", "entry must be a valid environment variable name");
+    }
+    else if (reserved_runtime_environment_name(name)) {
+      issue(report, path, "reserved_name", "environment name is reserved for Runtime metadata");
+    }
+    if (!names.insert(name).second)
+      issue(report, path, "duplicate", "duplicate environment grants are not allowed");
+  }
+}
+
+void validate_plugin_packages(const json& plugins, validation_report& report) {
+  const auto packages = plugins.find("packages");
+  if (packages == plugins.end())
+    return;
+  if (!packages->is_array()) {
+    issue(report, "/plugins/packages", "invalid_type", "packages must be an array");
+    return;
+  }
+
+  static const std::regex sha256_pattern("^[0-9a-f]{64}$");
+  static const std::regex exposed_name_pattern("^[A-Za-z0-9_-]{1,64}$");
+  std::set<std::string> package_ids;
+  std::set<std::string> package_paths;
+  std::set<std::string> exposed_names;
+  for (std::size_t package_index = 0; package_index < packages->size(); ++package_index) {
+    const auto& package = packages->at(package_index);
+    const auto path = "/plugins/packages/" + std::to_string(package_index);
+    if (!package.is_object()) {
+      issue(report, path, "invalid_type", "package entry must be an object");
+      continue;
+    }
+    reject_unknown_fields(package,
+      { "path", "expectedId", "expectedContentSha256", "environment", "tools" },
+      path,
+      report);
+    require_non_empty_string(package, "path", path, report);
+    require_non_empty_string(package, "expectedId", path, report);
+    require_non_empty_string(package, "expectedContentSha256", path, report);
+
+    const auto configured_path = safe_string(package, "path");
+    if (!configured_path.empty()) {
+      if (configured_path.find('\0') != configured_path.npos) {
+        issue(report, path + "/path", "invalid_format", "package path must not contain NUL bytes");
+      }
+      const auto normalized =
+        std::filesystem::path(configured_path).lexically_normal().generic_string();
+      if (!package_paths.insert(normalized).second)
+        issue(report, path + "/path", "duplicate", "duplicate package paths are not allowed");
+    }
+
+    const auto expected_id = safe_string(package, "expectedId");
+    if (!expected_id.empty()) {
+      if (!detail::valid_dns_name(expected_id, true)) {
+        issue(report,
+          path + "/expectedId",
+          "invalid_format",
+          "expectedId must use lowercase DNS-style characters");
+      }
+      if (!package_ids.insert(expected_id).second)
+        issue(report, path + "/expectedId", "duplicate", "duplicate plugin IDs are not allowed");
+    }
+
+    const auto expected_hash = safe_string(package, "expectedContentSha256");
+    if (!expected_hash.empty() && !std::regex_match(expected_hash, sha256_pattern)) {
+      issue(report,
+        path + "/expectedContentSha256",
+        "invalid_format",
+        "expectedContentSha256 must be 64 lowercase hexadecimal characters");
+    }
+
+    validate_plugin_environment(package, path, report);
+
+    const auto tools = package.find("tools");
+    if (tools == package.end() || !tools->is_array() || tools->empty()) {
+      issue(report,
+        path + "/tools",
+        tools == package.end() ? "required" : "invalid_value",
+        "tools must be a non-empty array of explicit bindings");
+      continue;
+    }
+    std::set<std::string> source_names;
+    for (std::size_t tool_index = 0; tool_index < tools->size(); ++tool_index) {
+      const auto& tool = tools->at(tool_index);
+      const auto tool_path = path + "/tools/" + std::to_string(tool_index);
+      if (!tool.is_object()) {
+        issue(report, tool_path, "invalid_type", "tool binding must be an object");
+        continue;
+      }
+      reject_unknown_fields(tool, { "name", "exposedName" }, tool_path, report);
+      require_non_empty_string(tool, "name", tool_path, report);
+      require_non_empty_string(tool, "exposedName", tool_path, report);
+      const auto source_name = safe_string(tool, "name");
+      if (!source_name.empty()) {
+        if (source_name.size() > 128 ||
+            std::any_of(source_name.begin(), source_name.end(), [](unsigned char value) {
+              return value < 0x20U || value == 0x7fU;
+            })) {
+          issue(report,
+            tool_path + "/name",
+            "invalid_format",
+            "plugin tool name must be at most 128 characters and contain no control characters");
+        }
+        if (!source_names.insert(source_name).second)
+          issue(report,
+            tool_path + "/name",
+            "duplicate",
+            "duplicate source tool bindings are not allowed");
+      }
+      const auto exposed_name = safe_string(tool, "exposedName");
+      if (!exposed_name.empty()) {
+        if (!std::regex_match(exposed_name, exposed_name_pattern)) {
+          issue(report,
+            tool_path + "/exposedName",
+            "invalid_format",
+            "exposedName must contain 1-64 letters, digits, '_' or '-'");
+        }
+        if (!exposed_names.insert(exposed_name).second)
+          issue(report,
+            tool_path + "/exposedName",
+            "duplicate",
+            "exposed tool names must be unique across all plugins");
+      }
+    }
+  }
+}
+
 } // namespace
 
 std::string to_string(run_store_kind kind) {
@@ -141,6 +309,16 @@ std::string to_string(serve_transport transport) {
   return "unknown";
 }
 
+std::string to_string(plugin_isolation_mode isolation) {
+  switch (isolation) {
+    case plugin_isolation_mode::sandboxed_process:
+      return "sandboxed_process";
+    case plugin_isolation_mode::trusted_process:
+      return "trusted_process";
+  }
+  return "unknown";
+}
+
 validation_report validate_runtime_config(const nlohmann::json& document) {
   validation_report report;
   if (!document.is_object()) {
@@ -149,7 +327,7 @@ validation_report validate_runtime_config(const nlohmann::json& document) {
   }
 
   reject_unknown_fields(
-    document, { "schemaVersion", "runtime", "llm", "store", "serve" }, "", report);
+    document, { "schemaVersion", "runtime", "llm", "store", "serve", "plugins" }, "", report);
 
   const auto schema = document.find("schemaVersion");
   if (schema == document.end()) {
@@ -256,6 +434,24 @@ validation_report validate_runtime_config(const nlohmann::json& document) {
     }
   }
 
+  if (const auto* plugins = object_field(document, "plugins", "", false, report)) {
+    reject_unknown_fields(*plugins, { "isolation", "packages" }, "/plugins", report);
+    const auto isolation = plugins->find("isolation");
+    if (isolation != plugins->end() && !isolation->is_string()) {
+      issue(report, "/plugins/isolation", "invalid_type", "isolation must be a string");
+    }
+    else {
+      const auto isolation_value = safe_string(*plugins, "isolation", "sandboxed_process");
+      if (isolation_value != "sandboxed_process" && isolation_value != "trusted_process") {
+        issue(report,
+          "/plugins/isolation",
+          "unsupported_value",
+          "isolation must be 'sandboxed_process' or 'trusted_process'");
+      }
+    }
+    validate_plugin_packages(*plugins, report);
+  }
+
   const auto runtime_document = document.find("runtime");
   const auto llm_document = document.find("llm");
   if (llm_document != document.end() && llm_document->is_object()) {
@@ -311,6 +507,30 @@ runtime_config runtime_config_from_json(const nlohmann::json& document) {
                           : run_store_kind::memory;
     config.store.sqlite_path = found->value("path", std::string {});
   }
+  if (const auto found = document.find("plugins"); found != document.end()) {
+    config.plugins.isolation =
+      found->value("isolation", std::string("sandboxed_process")) == "trusted_process"
+        ? plugin_isolation_mode::trusted_process
+        : plugin_isolation_mode::sandboxed_process;
+    if (const auto packages = found->find("packages"); packages != found->end()) {
+      config.plugins.packages.reserve(packages->size());
+      for (const auto& package : *packages) {
+        plugin_package_options configured {
+          .path = package.at("path").get<std::string>(),
+          .expected_id = package.at("expectedId").get<std::string>(),
+          .expected_content_sha256 = package.at("expectedContentSha256").get<std::string>(),
+          .environment = package.value("environment", std::vector<std::string> {}),
+        };
+        for (const auto& tool : package.at("tools")) {
+          configured.tools.push_back({
+            .name = tool.at("name").get<std::string>(),
+            .exposed_name = tool.at("exposedName").get<std::string>(),
+          });
+        }
+        config.plugins.packages.push_back(std::move(configured));
+      }
+    }
+  }
   return config;
 }
 
@@ -321,7 +541,13 @@ runtime_config load_runtime_config(const std::filesystem::path& path) {
   try {
     nlohmann::json document;
     input >> document;
-    return runtime_config_from_json(document);
+    auto config = runtime_config_from_json(document);
+    const auto base = std::filesystem::absolute(path).parent_path();
+    for (auto& package : config.plugins.packages) {
+      if (package.path.is_relative())
+        package.path = (base / package.path).lexically_normal();
+    }
+    return config;
   }
   catch (const nlohmann::json::exception& ex) {
     throw std::runtime_error(
@@ -335,6 +561,20 @@ nlohmann::json runtime_config_to_json(const runtime_config& config) {
   };
   if (!config.store.sqlite_path.empty())
     store["path"] = config.store.sqlite_path.generic_string();
+  nlohmann::json packages = nlohmann::json::array();
+  for (const auto& package : config.plugins.packages) {
+    nlohmann::json tools = nlohmann::json::array();
+    for (const auto& tool : package.tools) {
+      tools.push_back({ { "name", tool.name }, { "exposedName", tool.exposed_name } });
+    }
+    packages.push_back({
+      { "path", package.path.generic_string() },
+      { "expectedId", package.expected_id },
+      { "expectedContentSha256", package.expected_content_sha256 },
+      { "environment", package.environment },
+      { "tools", std::move(tools) },
+    });
+  }
   return {
     { "schemaVersion", config.schema_version },
     { "runtime",
@@ -356,6 +596,11 @@ nlohmann::json runtime_config_to_json(const runtime_config& config) {
       } },
     { "store", std::move(store) },
     { "serve", { { "transport", to_string(config.serve.transport) } } },
+    { "plugins",
+      {
+        { "isolation", to_string(config.plugins.isolation) },
+        { "packages", std::move(packages) },
+      } },
   };
 }
 

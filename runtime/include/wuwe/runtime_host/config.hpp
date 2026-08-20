@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -21,6 +22,11 @@ enum class run_store_kind {
 
 enum class serve_transport {
   stdio,
+};
+
+enum class plugin_isolation_mode {
+  sandboxed_process,
+  trusted_process,
 };
 
 struct runtime_options {
@@ -49,16 +55,38 @@ struct serve_options {
   serve_transport transport { serve_transport::stdio };
 };
 
+struct plugin_tool_options {
+  std::string name;
+  std::string exposed_name;
+};
+
+struct plugin_package_options {
+  std::filesystem::path path;
+  std::string expected_id;
+  std::string expected_content_sha256;
+  // Values are resolved from the host environment during startup. Secrets are never stored in
+  // configuration, and grants apply only to this package.
+  std::vector<std::string> environment;
+  std::vector<plugin_tool_options> tools;
+};
+
+struct plugin_host_options {
+  plugin_isolation_mode isolation { plugin_isolation_mode::sandboxed_process };
+  std::vector<plugin_package_options> packages;
+};
+
 struct runtime_config {
   int schema_version { runtime_config_schema_version };
   runtime_options runtime;
   llm_options llm;
   run_store_options store;
   serve_options serve;
+  plugin_host_options plugins;
 };
 
 [[nodiscard]] std::string to_string(run_store_kind kind);
 [[nodiscard]] std::string to_string(serve_transport transport);
+[[nodiscard]] std::string to_string(plugin_isolation_mode isolation);
 
 [[nodiscard]] validation_report validate_runtime_config(const nlohmann::json& document);
 [[nodiscard]] runtime_config runtime_config_from_json(const nlohmann::json& document);

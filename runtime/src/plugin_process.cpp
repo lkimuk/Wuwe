@@ -101,15 +101,16 @@ struct plugin_process_supervisor::implementation {
     };
   }
 
-  std::map<std::string, std::string> environment_for(const plugin_package& package) const {
+  std::map<std::string, std::string> environment_for(const plugin_package& package,
+    const std::map<std::string, std::string>& granted_environment) const {
     std::map<std::string, std::string> result {
       { "WUWE_PLUGIN_ID", package.manifest().id },
       { "WUWE_PLUGIN_VERSION", package.manifest().version },
       { "WUWE_RUNTIME_API_VERSION", package.manifest().runtime_api_version },
     };
     for (const auto& name : package.manifest().permissions.environment) {
-      const auto found = options.environment.find(name);
-      if (found == options.environment.end())
+      const auto found = granted_environment.find(name);
+      if (found == granted_environment.end())
         fail(plugin_process_error_code::environment_unavailable,
           "required environment variable is not granted: " + name);
       result.emplace(name, found->second);
@@ -134,6 +135,67 @@ struct plugin_process_supervisor::implementation {
   void require_running(const std::string& id) const {
     if (runtime.snapshot(id).state != agent::mcp::mcp_host_server_state::running)
       fail(plugin_process_error_code::not_running, "plugin is not running: " + id);
+  }
+
+  plugin_process_snapshot start(
+    plugin_package_ptr package, const std::map<std::string, std::string>& granted_environment) {
+    if (!package)
+      fail(plugin_process_error_code::invalid_options, "package must not be null");
+    std::unique_lock lock(mutex);
+    if (options.isolation != plugin_process_isolation::trusted_process) {
+      fail(plugin_process_error_code::isolation_unavailable,
+        "the built-in launcher does not yet provide filesystem and network sandbox enforcement");
+    }
+    plugin_package_ptr current;
+    try {
+      current = load_plugin_package(package->root());
+    }
+    catch (const plugin_package_error&) {
+      fail(plugin_process_error_code::package_changed,
+        "package is no longer admissible: " + package->manifest().id);
+    }
+    if (current->content_sha256() != package->content_sha256())
+      fail(plugin_process_error_code::package_changed,
+        "package content changed after admission: " + package->manifest().id);
+    const auto id = package->manifest().id;
+    if (records.contains(id))
+      fail(plugin_process_error_code::already_loaded, "plugin is already loaded: " + id);
+
+    auto environment = environment_for(*package, granted_environment);
+    records.emplace(id,
+      record {
+        .package = package,
+      });
+    try {
+      runtime.add_server({
+        .id = id,
+        .command = {
+          .command = package->entrypoint_path().string(),
+          .working_directory = package->root().string(),
+          .environment = std::move(environment),
+          .inherit_parent_environment = false,
+          .terminate_process_tree = true,
+        },
+        .client_info = {
+          .name = "wuwe-runtime",
+          .version = std::string(framework_version),
+        },
+      });
+      runtime.start_server(id);
+      (void)response_result(runtime.ping(id), "ping");
+      return snapshot_for(id, records.at(id));
+    }
+    catch (const plugin_process_error&) {
+      (void)runtime.remove_server(id);
+      records.erase(id);
+      throw;
+    }
+    catch (const std::exception& exception) {
+      (void)runtime.remove_server(id);
+      records.erase(id);
+      fail(plugin_process_error_code::launch_failed,
+        "failed to start plugin " + id + ": " + bounded_detail(exception.what()));
+    }
   }
 
   plugin_process_options options;
@@ -202,69 +264,19 @@ plugin_process_supervisor::plugin_process_supervisor(plugin_process_options opti
 
 plugin_process_supervisor::~plugin_process_supervisor() = default;
 
-plugin_process_supervisor::plugin_process_supervisor(plugin_process_supervisor&&) noexcept = default;
+plugin_process_supervisor::plugin_process_supervisor(
+  plugin_process_supervisor&&) noexcept = default;
 
 plugin_process_supervisor& plugin_process_supervisor::operator=(
   plugin_process_supervisor&&) noexcept = default;
 
 plugin_process_snapshot plugin_process_supervisor::start(plugin_package_ptr package) {
-  if (!package)
-    fail(plugin_process_error_code::invalid_options, "package must not be null");
-  std::unique_lock lock(impl_->mutex);
-  if (impl_->options.isolation != plugin_process_isolation::trusted_process) {
-    fail(plugin_process_error_code::isolation_unavailable,
-      "the built-in launcher does not yet provide filesystem and network sandbox enforcement");
-  }
-  plugin_package_ptr current;
-  try {
-    current = load_plugin_package(package->root());
-  }
-  catch (const plugin_package_error&) {
-    fail(plugin_process_error_code::package_changed,
-      "package is no longer admissible: " + package->manifest().id);
-  }
-  if (current->content_sha256() != package->content_sha256())
-    fail(plugin_process_error_code::package_changed,
-      "package content changed after admission: " + package->manifest().id);
-  const auto id = package->manifest().id;
-  if (impl_->records.contains(id))
-    fail(plugin_process_error_code::already_loaded, "plugin is already loaded: " + id);
+  return impl_->start(std::move(package), impl_->options.environment);
+}
 
-  auto environment = impl_->environment_for(*package);
-  impl_->records.emplace(id,
-    implementation::record {
-      .package = package,
-    });
-  try {
-    impl_->runtime.add_server({
-      .id = id,
-      .command = {
-        .command = package->entrypoint_path().string(),
-        .working_directory = package->root().string(),
-        .environment = std::move(environment),
-        .inherit_parent_environment = false,
-        .terminate_process_tree = true,
-      },
-      .client_info = {
-        .name = "wuwe-runtime",
-        .version = std::string(framework_version),
-      },
-    });
-    impl_->runtime.start_server(id);
-    (void)response_result(impl_->runtime.ping(id), "ping");
-    return impl_->snapshot_for(id, impl_->records.at(id));
-  }
-  catch (const plugin_process_error&) {
-    (void)impl_->runtime.remove_server(id);
-    impl_->records.erase(id);
-    throw;
-  }
-  catch (const std::exception& exception) {
-    (void)impl_->runtime.remove_server(id);
-    impl_->records.erase(id);
-    fail(plugin_process_error_code::launch_failed,
-      "failed to start plugin " + id + ": " + bounded_detail(exception.what()));
-  }
+plugin_process_snapshot plugin_process_supervisor::start(
+  plugin_package_ptr package, plugin_process_launch_options options) {
+  return impl_->start(std::move(package), options.environment);
 }
 
 bool plugin_process_supervisor::stop(const std::string& id) {

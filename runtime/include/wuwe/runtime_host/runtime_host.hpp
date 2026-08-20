@@ -21,12 +21,19 @@ namespace wuwe {
 
 class llm_agent_runner;
 class llm_client;
+class composite_tool_provider;
 
 namespace agent::runtime {
 
 class agent_run_store;
 
 } // namespace agent::runtime
+
+namespace agent::approval {
+
+class approval_service;
+
+} // namespace agent::approval
 
 namespace runtime_host {
 
@@ -81,13 +88,29 @@ struct run_result {
   std::map<std::string, std::string> metadata;
 };
 
+struct runtime_runner_context {
+  // Contains only tools explicitly authorized by Runtime configuration. It is empty when no host
+  // tool sources are configured. Custom runner assemblers may combine it with product-owned tools.
+  std::shared_ptr<composite_tool_provider> tool_provider;
+};
+
 struct runtime_dependencies {
   // Factories run during start(). Returning an empty pointer fails startup. The host retains the
   // client for at least as long as the runner produced from it.
   std::function<std::shared_ptr<llm_client>(const llm_options&)> make_llm_client;
+  // Legacy runner assembly remains supported when no host-managed tools are configured.
   std::function<std::shared_ptr<llm_agent_runner>(llm_client&)> make_agent_runner;
   std::function<std::shared_ptr<agent::runtime::agent_run_store>(const run_store_options&)>
     make_run_store;
+  // Context-aware assembly is required when a product customizes the runner while enabling
+  // host-managed tools. It is appended to preserve positional initialization of the original
+  // dependency fields. Supplying both runner factories is rejected as ambiguous.
+  std::function<std::shared_ptr<llm_agent_runner>(llm_client&, const runtime_runner_context&)>
+    make_configured_agent_runner;
+  // Optional product policy for tool approvals. It may be called concurrently by active runs.
+  // Without one, policy-governed tools suspend durable runs for explicit Host Protocol approval
+  // instead of being silently allowed or denied.
+  std::shared_ptr<agent::approval::approval_service> approval_service;
 };
 
 struct doctor_report {

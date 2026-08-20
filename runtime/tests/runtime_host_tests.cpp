@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +17,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <wuwe/agent/approval/approval_service.hpp>
 #include <wuwe/agent/llm/llm_agent_runner.h>
 #include <wuwe/agent/runtime/run_runtime.hpp>
 #include <wuwe/runtime_host.hpp>
@@ -157,8 +158,8 @@ nlohmann::json plugin_manifest_document(
 void write_plugin_package(const std::filesystem::path& root, std::string_view entrypoint_content,
   std::string id = "com.example.tools") {
   const auto manifest = plugin_manifest_document(std::move(id));
-  write_file(root / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
-    manifest.dump(2));
+  write_file(
+    root / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename), manifest.dump(2));
   write_file(root / "bin" / "tools", entrypoint_content);
 }
 
@@ -173,8 +174,8 @@ void write_process_plugin_package(const std::filesystem::path& root, std::string
   manifest["permissions"] = {
     { "environment", std::move(environment_permissions) },
   };
-  write_file(root / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
-    manifest.dump(2));
+  write_file(
+    root / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename), manifest.dump(2));
   std::filesystem::create_directories((root / relative_entrypoint).parent_path());
   std::filesystem::copy_file(
     source, root / relative_entrypoint, std::filesystem::copy_options::overwrite_existing);
@@ -183,10 +184,12 @@ void write_process_plugin_package(const std::filesystem::path& root, std::string
 #ifdef _WIN32
   for (const auto& entry : std::filesystem::directory_iterator(source.parent_path())) {
     auto extension = entry.path().extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
     if (entry.is_regular_file() && extension == ".dll") {
-      std::filesystem::copy_file(entry.path(), root / "bin" / entry.path().filename(),
+      std::filesystem::copy_file(entry.path(),
+        root / "bin" / entry.path().filename(),
         std::filesystem::copy_options::overwrite_existing);
     }
   }
@@ -243,6 +246,40 @@ private:
   std::future<void> started_future_;
   std::chrono::milliseconds cancellation_delay_ { 0 };
   std::atomic<int> completion_count_ { 0 };
+};
+
+class tool_inspecting_llm_client final : public wuwe::llm_client {
+public:
+  wuwe::llm_response complete(const wuwe::llm_request& request) override {
+    observed_tools = request.tools;
+    return { .content = "configured tools observed", .stop_reason = "stop" };
+  }
+
+  std::vector<wuwe::llm_tool> observed_tools;
+};
+
+class configured_plugin_tool_call_client final : public wuwe::llm_client {
+public:
+  wuwe::llm_response complete(const wuwe::llm_request& request) override {
+    observed_tools = request.tools;
+    ++calls;
+    if (calls == 1) {
+      return {
+        .tool_calls = { {
+          .id = "configured-plugin-call",
+          .name = "runtime_echo",
+          .arguments_json = R"({"text":"invoked through Runtime Host"})",
+        } },
+      };
+    }
+    saw_tool_result = !request.messages.empty() && request.messages.back().role == "tool" &&
+                      request.messages.back().content == "invoked through Runtime Host";
+    return { .content = "configured plugin completed", .stop_reason = "stop" };
+  }
+
+  int calls { 0 };
+  bool saw_tool_result { false };
+  std::vector<wuwe::llm_tool> observed_tools;
 };
 
 wuwe::runtime_host::runtime_dependencies dependencies_for(
@@ -303,6 +340,70 @@ void config_validation_is_strict_and_side_effect_free() {
     !wuwe::runtime_host::validate_runtime_config(wuwe::runtime_host::runtime_config_to_json(typed))
        .valid(),
     "typed configuration serialization must not normalize unknown enum values");
+
+  document = valid_config_document();
+  document["plugins"] = {
+    { "isolation", "trusted_process" },
+    { "packages",
+      { {
+        { "path", "plugins/com.example.tools" },
+        { "expectedId", "com.example.tools" },
+        { "expectedContentSha256", std::string(64, 'a') },
+        { "environment", { "PLUGIN_API_TOKEN" } },
+        { "tools", { { { "name", "search" }, { "exposedName", "search_knowledge" } } } },
+      } } },
+  };
+  expect(wuwe::runtime_host::validate_runtime_config(document).valid(),
+    "explicit plugin package and tool configuration should be valid");
+  const auto plugin_config = wuwe::runtime_host::runtime_config_from_json(document);
+  expect(plugin_config.plugins.packages.size() == 1 &&
+           plugin_config.plugins.packages.front().environment ==
+             std::vector<std::string> { "PLUGIN_API_TOKEN" } &&
+           plugin_config.plugins.packages.front().tools.front().exposed_name == "search_knowledge",
+    "typed plugin configuration should preserve package-scoped grants and explicit bindings");
+  expect(wuwe::runtime_host::validate_runtime_config(
+           wuwe::runtime_host::runtime_config_to_json(plugin_config))
+           .valid(),
+    "typed plugin configuration should round-trip through the strict schema");
+
+  auto invalid_plugins = document;
+  invalid_plugins["plugins"]["packages"][0]["inlineSecret"] = "must-not-be-accepted";
+  expect(!wuwe::runtime_host::validate_runtime_config(invalid_plugins).valid(),
+    "plugin configuration must reject unknown inline secret fields");
+  invalid_plugins = document;
+  invalid_plugins["plugins"]["packages"][0]["tools"].push_back(
+    { { "name", "other" }, { "exposedName", "search_knowledge" } });
+  expect(!wuwe::runtime_host::validate_runtime_config(invalid_plugins).valid(),
+    "exposed plugin tool names must be globally unique");
+  invalid_plugins = document;
+  invalid_plugins["plugins"]["environment"] = { "PLUGIN_API_TOKEN" };
+  expect(!wuwe::runtime_host::validate_runtime_config(invalid_plugins).valid(),
+    "plugin environment grants must not be accepted at host-global scope");
+  invalid_plugins = document;
+  invalid_plugins["plugins"]["packages"][0]["environment"] = { "WUWE_PLUGIN_ID" };
+  expect(!wuwe::runtime_host::validate_runtime_config(invalid_plugins).valid(),
+    "plugin configuration must reject Runtime-reserved environment grants");
+}
+
+void plugin_config_paths_are_resolved_from_the_config_file() {
+  temporary_directory root("plugin-config-relative-path");
+  auto document = valid_config_document();
+  document["plugins"] = {
+    { "isolation", "trusted_process" },
+    { "packages",
+      { {
+        { "path", "plugins/com.example.tools" },
+        { "expectedId", "com.example.tools" },
+        { "expectedContentSha256", std::string(64, 'a') },
+        { "tools", { { { "name", "echo_text" }, { "exposedName", "runtime_echo" } } } },
+      } } },
+  };
+  const auto config_path = root.path() / "runtime.json";
+  write_file(config_path, document.dump(2));
+  const auto config = wuwe::runtime_host::load_runtime_config(config_path);
+  expect(config.plugins.packages.front().path ==
+           (root.path() / "plugins" / "com.example.tools").lexically_normal(),
+    "plugin package paths must resolve relative to their configuration file");
 }
 
 void lifecycle_contract_is_explicit() {
@@ -372,10 +473,9 @@ void plugin_manifest_rejects_native_loading() {
     "plugin environment permissions must not collide with Runtime metadata names");
   auto typed = wuwe::runtime_host::plugin_manifest_from_json(process_manifest);
   typed.entrypoint_kind = static_cast<wuwe::runtime_host::plugin_entrypoint_kind>(999);
-  expect(
-    !wuwe::runtime_host::validate_plugin_manifest(
-       wuwe::runtime_host::plugin_manifest_to_json(typed))
-       .valid(),
+  expect(!wuwe::runtime_host::validate_plugin_manifest(
+           wuwe::runtime_host::plugin_manifest_to_json(typed))
+            .valid(),
     "plugin serialization must not normalize an unknown entrypoint kind");
 }
 
@@ -386,7 +486,8 @@ void plugin_packages_are_admitted_and_registered_by_verified_identity() {
   expect(first->manifest().id == "com.example.tools", "admitted plugin should expose its manifest");
   expect(first->root() == std::filesystem::canonical(first_root.path()),
     "admitted plugin should expose a canonical package root");
-  expect(first->entrypoint_path() == std::filesystem::canonical(first_root.path() / "bin" / "tools"),
+  expect(
+    first->entrypoint_path() == std::filesystem::canonical(first_root.path() / "bin" / "tools"),
     "admitted plugin should expose a canonical entrypoint path");
   expect(first->content_sha256().size() == 64,
     "admitted plugin should expose a stable SHA-256 package identity");
@@ -421,8 +522,8 @@ void plugin_packages_are_admitted_and_registered_by_verified_identity() {
   expect(conflict.status == wuwe::runtime_host::plugin_registration_status::conflict &&
            conflict.previous == first,
     "different content for a registered plugin id should conflict by default");
-  const auto replaced = catalog.register_package(
-    replacement, wuwe::runtime_host::plugin_registration_policy::replace);
+  const auto replaced =
+    catalog.register_package(replacement, wuwe::runtime_host::plugin_registration_policy::replace);
   expect(replaced.status == wuwe::runtime_host::plugin_registration_status::replaced &&
            catalog.snapshot().find("com.example.tools") == replacement,
     "explicit replacement should atomically publish the new package");
@@ -434,40 +535,45 @@ void plugin_packages_are_admitted_and_registered_by_verified_identity() {
 
 void plugin_package_admission_rejects_missing_or_ambiguous_files() {
   temporary_directory missing_manifest("plugin-missing-manifest");
-  expect_plugin_error(wuwe::runtime_host::plugin_package_error_code::manifest_unavailable,
+  expect_plugin_error(
+    wuwe::runtime_host::plugin_package_error_code::manifest_unavailable,
     [&] { (void)wuwe::runtime_host::load_plugin_package(missing_manifest.path()); },
     "plugin admission must classify a missing manifest");
 
   temporary_directory invalid_manifest("plugin-invalid-manifest");
-  write_file(invalid_manifest.path() /
-      std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
+  write_file(
+    invalid_manifest.path() / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
     "{not-json");
-  expect_plugin_error(wuwe::runtime_host::plugin_package_error_code::manifest_invalid,
+  expect_plugin_error(
+    wuwe::runtime_host::plugin_package_error_code::manifest_invalid,
     [&] { (void)wuwe::runtime_host::load_plugin_package(invalid_manifest.path()); },
     "plugin admission must classify invalid manifest content");
 
   temporary_directory missing_entrypoint("plugin-missing-entrypoint");
-  write_file(missing_entrypoint.path() /
-      std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
+  write_file(
+    missing_entrypoint.path() / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
     plugin_manifest_document().dump(2));
-  expect_plugin_error(wuwe::runtime_host::plugin_package_error_code::entrypoint_unavailable,
+  expect_plugin_error(
+    wuwe::runtime_host::plugin_package_error_code::entrypoint_unavailable,
     [&] { (void)wuwe::runtime_host::load_plugin_package(missing_entrypoint.path()); },
     "plugin admission must reject a missing entrypoint");
 
   temporary_directory directory_entrypoint("plugin-directory-entrypoint");
   write_file(directory_entrypoint.path() /
-      std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
+               std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
     plugin_manifest_document().dump(2));
   std::filesystem::create_directories(directory_entrypoint.path() / "bin" / "tools");
-  expect_plugin_error(wuwe::runtime_host::plugin_package_error_code::unsupported_file,
+  expect_plugin_error(
+    wuwe::runtime_host::plugin_package_error_code::unsupported_file,
     [&] { (void)wuwe::runtime_host::load_plugin_package(directory_entrypoint.path()); },
     "plugin admission must reject a directory in place of an executable file");
 
   temporary_directory oversized_manifest("plugin-oversized-manifest");
-  write_file(oversized_manifest.path() /
-      std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
+  write_file(
+    oversized_manifest.path() / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
     std::string(1024 * 1024 + 1, 'x'));
-  expect_plugin_error(wuwe::runtime_host::plugin_package_error_code::manifest_too_large,
+  expect_plugin_error(
+    wuwe::runtime_host::plugin_package_error_code::manifest_too_large,
     [&] { (void)wuwe::runtime_host::load_plugin_package(oversized_manifest.path()); },
     "plugin admission must reject an oversized manifest before parsing it");
 }
@@ -479,26 +585,26 @@ void plugin_package_admission_rejects_link_aliases() {
 
   const auto symlink_root = workspace.path() / "symlink-package";
   std::filesystem::create_directories(symlink_root / "bin");
-  write_file(symlink_root /
-      std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
+  write_file(symlink_root / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
     plugin_manifest_document().dump(2));
   std::error_code link_error;
   std::filesystem::create_symlink(outside, symlink_root / "bin" / "tools", link_error);
   if (!link_error) {
-    expect_plugin_error(wuwe::runtime_host::plugin_package_error_code::unsafe_path,
+    expect_plugin_error(
+      wuwe::runtime_host::plugin_package_error_code::unsafe_path,
       [&] { (void)wuwe::runtime_host::load_plugin_package(symlink_root); },
       "plugin admission must reject symbolic-link entrypoints");
   }
 
   const auto hardlink_root = workspace.path() / "hardlink-package";
   std::filesystem::create_directories(hardlink_root / "bin");
-  write_file(hardlink_root /
-      std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
+  write_file(hardlink_root / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
     plugin_manifest_document().dump(2));
   link_error.clear();
   std::filesystem::create_hard_link(outside, hardlink_root / "bin" / "tools", link_error);
   if (!link_error) {
-    expect_plugin_error(wuwe::runtime_host::plugin_package_error_code::unsafe_path,
+    expect_plugin_error(
+      wuwe::runtime_host::plugin_package_error_code::unsafe_path,
       [&] { (void)wuwe::runtime_host::load_plugin_package(hardlink_root); },
       "plugin admission must reject hard-linked entrypoints");
   }
@@ -511,9 +617,12 @@ void plugin_process_execution_is_explicit_and_capability_gated() {
   const auto package = wuwe::runtime_host::load_plugin_package(package_root.path());
 
   wuwe::runtime_host::plugin_process_supervisor sandboxed;
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::invalid_options,
-    [&] { (void)sandboxed.start({}); }, "plugin process start must reject a null package");
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::isolation_unavailable,
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::invalid_options,
+    [&] { (void)sandboxed.start({}); },
+    "plugin process start must reject a null package");
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::isolation_unavailable,
     [&] { (void)sandboxed.start(package); },
     "default plugin process isolation must fail closed when enforcement is unavailable");
 
@@ -527,14 +636,16 @@ void plugin_process_execution_is_explicit_and_capability_gated() {
     "trusted plugin process must not claim filesystem or network enforcement");
   expect(trusted.snapshots().size() == 1,
     "plugin process supervisor should expose loaded process snapshots");
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::already_loaded,
-    [&] { (void)trusted.start(package); }, "plugin process ids must be unique while loaded");
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::already_loaded,
+    [&] { (void)trusted.start(package); },
+    "plugin process ids must be unique while loaded");
 
   const auto tools = trusted.list_tools(package->manifest().id);
-  expect(tools.at("tools").size() == 2,
-    "plugin process should expose tools from its MCP entrypoint");
-  const auto echoed = trusted.call_tool(
-    package->manifest().id, "echo_text", { { "text", "runtime plugin" } });
+  expect(
+    tools.at("tools").size() == 2, "plugin process should expose tools from its MCP entrypoint");
+  const auto echoed =
+    trusted.call_tool(package->manifest().id, "echo_text", { { "text", "runtime plugin" } });
   expect(echoed.at("content").at(0).at("text") == "runtime plugin",
     "plugin process should route MCP tool calls");
 
@@ -542,12 +653,14 @@ void plugin_process_execution_is_explicit_and_capability_gated() {
   expect(trusted.snapshot(package->manifest().id).state ==
            wuwe::runtime_host::plugin_process_state::stopped,
     "stopped plugin process should remain inspectable until unloaded");
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::not_running,
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::not_running,
     [&] { (void)trusted.list_tools(package->manifest().id); },
     "tool operations on a stopped plugin must have a stable not-running classification");
   expect(trusted.unload(package->manifest().id), "stopped plugin process should unload");
   expect(!trusted.unload(package->manifest().id), "unloading an unknown process should be false");
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::not_found,
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::not_found,
     [&] { (void)trusted.snapshot(package->manifest().id); },
     "unloaded plugin process should no longer have a snapshot");
 
@@ -555,10 +668,12 @@ void plugin_process_execution_is_explicit_and_capability_gated() {
   write_process_plugin_package(no_tools_root.path(), "com.example.no-tools", {});
   const auto no_tools = wuwe::runtime_host::load_plugin_package(no_tools_root.path());
   (void)trusted.start(no_tools);
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::capability_denied,
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::capability_denied,
     [&] { (void)trusted.list_tools(no_tools->manifest().id); },
     "undeclared tool capability must deny tool discovery");
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::capability_denied,
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::capability_denied,
     [&] { (void)trusted.call_tool(no_tools->manifest().id, "echo_text"); },
     "undeclared tool capability must deny tool invocation");
 #endif
@@ -567,8 +682,8 @@ void plugin_process_execution_is_explicit_and_capability_gated() {
 void plugin_process_environment_is_allowlisted_and_packages_are_revalidated() {
 #ifdef WUWE_RUNTIME_PLUGIN_FIXTURE_PATH
   temporary_directory package_root("plugin-process-environment");
-  write_process_plugin_package(package_root.path(), "com.example.environment", { "tools" },
-    { "WUWE_RUNTIME_GRANTED_TEST" });
+  write_process_plugin_package(
+    package_root.path(), "com.example.environment", { "tools" }, { "WUWE_RUNTIME_GRANTED_TEST" });
   const auto package = wuwe::runtime_host::load_plugin_package(package_root.path());
 
   wuwe::runtime_host::plugin_process_supervisor missing_environment({
@@ -591,10 +706,10 @@ void plugin_process_environment_is_allowlisted_and_packages_are_revalidated() {
     .environment = { { "WUWE_RUNTIME_GRANTED_TEST", "granted-value" } },
   });
   (void)trusted.start(package);
-  const auto granted = trusted.call_tool(package->manifest().id, "environment_value",
-    { { "name", "WUWE_RUNTIME_GRANTED_TEST" } });
-  const auto inherited = trusted.call_tool(package->manifest().id, "environment_value",
-    { { "name", "WUWE_RUNTIME_PARENT_ONLY_TEST" } });
+  const auto granted = trusted.call_tool(
+    package->manifest().id, "environment_value", { { "name", "WUWE_RUNTIME_GRANTED_TEST" } });
+  const auto inherited = trusted.call_tool(
+    package->manifest().id, "environment_value", { { "name", "WUWE_RUNTIME_PARENT_ONLY_TEST" } });
 #ifdef _WIN32
   (void)_putenv_s("WUWE_RUNTIME_PARENT_ONLY_TEST", "");
 #else
@@ -609,17 +724,58 @@ void plugin_process_environment_is_allowlisted_and_packages_are_revalidated() {
   write_process_plugin_package(changed_root.path(), "com.example.changed");
   const auto changed = wuwe::runtime_host::load_plugin_package(changed_root.path());
   write_file(changed->entrypoint_path(), "replaced after admission");
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::package_changed,
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::package_changed,
     [&] { (void)trusted.start(changed); },
     "plugin package identity must be revalidated immediately before launch");
 
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::invalid_options,
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::invalid_options,
     [] {
       wuwe::runtime_host::plugin_process_supervisor invalid({
         .isolation = static_cast<wuwe::runtime_host::plugin_process_isolation>(999),
       });
     },
     "unknown plugin process isolation values must be rejected");
+#endif
+}
+
+void plugin_activation_environment_is_scoped_per_package() {
+#ifdef WUWE_RUNTIME_PLUGIN_FIXTURE_PATH
+  constexpr std::string_view environment_name = "WUWE_RUNTIME_PACKAGE_SCOPED_TEST";
+  temporary_directory first_root("plugin-environment-first");
+  temporary_directory second_root("plugin-environment-second");
+  write_process_plugin_package(first_root.path(),
+    "com.example.environment-first",
+    { "tools" },
+    { std::string(environment_name) });
+  write_process_plugin_package(second_root.path(),
+    "com.example.environment-second",
+    { "tools" },
+    { std::string(environment_name) });
+
+  wuwe::runtime_host::plugin_runtime runtime({
+    .process_options = {
+      .isolation = wuwe::runtime_host::plugin_process_isolation::trusted_process,
+    },
+  });
+  (void)runtime.register_package(first_root.path());
+  (void)runtime.register_package(second_root.path());
+  (void)runtime.activate("com.example.environment-first",
+    { .environment = { { std::string(environment_name), "first-secret" } } });
+  (void)runtime.activate("com.example.environment-second",
+    { .environment = { { std::string(environment_name), "second-secret" } } });
+
+  const auto first = runtime.call_tool(
+    "com.example.environment-first", "environment_value", { { "name", environment_name } });
+  const auto second = runtime.call_tool(
+    "com.example.environment-second", "environment_value", { { "name", environment_name } });
+  expect(first.at("content").at(0).value("text", std::string {}) == "first-secret" &&
+           second.at("content").at(0).value("text", std::string {}) == "second-secret",
+    "per-activation environment grants must remain scoped to their plugin process");
+  expect(runtime.deactivate("com.example.environment-first") &&
+           runtime.deactivate("com.example.environment-second"),
+    "package-scoped environment fixtures should stop cleanly");
 #endif
 }
 
@@ -633,7 +789,8 @@ void plugin_runtime_coordinates_catalog_and_process_lifecycle() {
     [&] { (void)sandboxed.register_package(wuwe::runtime_host::plugin_package_ptr {}); },
     "plugin runtime should reject null package registration");
   (void)sandboxed.register_package(first_root.path());
-  expect_plugin_process_error(wuwe::runtime_host::plugin_process_error_code::isolation_unavailable,
+  expect_plugin_process_error(
+    wuwe::runtime_host::plugin_process_error_code::isolation_unavailable,
     [&] { (void)sandboxed.activate("com.example.runtime"); },
     "plugin runtime should preserve the default fail-closed process policy");
 
@@ -655,8 +812,8 @@ void plugin_runtime_coordinates_catalog_and_process_lifecycle() {
   expect(activated_again.content_sha256 == activated.content_sha256 &&
            runtime.process_snapshots().size() == 1,
     "plugin runtime activation should be idempotent while running");
-  const auto echoed = runtime.call_tool(
-    "com.example.runtime", "echo_text", { { "text", "coordinated" } });
+  const auto echoed =
+    runtime.call_tool("com.example.runtime", "echo_text", { { "text", "coordinated" } });
   expect(echoed.at("content").at(0).at("text") == "coordinated",
     "plugin runtime should route calls through its active process");
 
@@ -673,8 +830,8 @@ void plugin_runtime_coordinates_catalog_and_process_lifecycle() {
       .generic_string());
   replacement_manifest["version"] = "2.0.0";
   replacement_manifest["permissions"] = nlohmann::json::object();
-  write_file(replacement_root.path() /
-      std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
+  write_file(
+    replacement_root.path() / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
     replacement_manifest.dump(2));
   const auto replacement = wuwe::runtime_host::load_plugin_package(replacement_root.path());
 
@@ -684,15 +841,15 @@ void plugin_runtime_coordinates_catalog_and_process_lifecycle() {
     "rejected package conflicts must leave the active process untouched");
   expect_throws<std::invalid_argument>(
     [&] {
-      (void)runtime.register_package(replacement,
-        static_cast<wuwe::runtime_host::plugin_registration_policy>(999));
+      (void)runtime.register_package(
+        replacement, static_cast<wuwe::runtime_host::plugin_registration_policy>(999));
     },
     "invalid replacement policy must be rejected before changing process state");
   expect(runtime.process_snapshots().size() == 1,
     "invalid replacement policy must not deactivate the current process");
 
-  const auto replaced = runtime.register_package(
-    replacement, wuwe::runtime_host::plugin_registration_policy::replace);
+  const auto replaced =
+    runtime.register_package(replacement, wuwe::runtime_host::plugin_registration_policy::replace);
   expect(replaced.status == wuwe::runtime_host::plugin_registration_status::replaced &&
            runtime.process_snapshots().empty(),
     "explicit replacement should deactivate the old process before publishing new content");
@@ -712,10 +869,11 @@ void plugin_runtime_coordinates_catalog_and_process_lifecycle() {
     "package removal should deactivate and unregister the plugin");
   expect(runtime.catalog_snapshot().empty() && runtime.process_snapshots().empty(),
     "package removal should leave no catalog or process state");
-  expect(!runtime.remove_package("com.example.runtime") &&
-           !runtime.deactivate("com.example.runtime"),
+  expect(
+    !runtime.remove_package("com.example.runtime") && !runtime.deactivate("com.example.runtime"),
     "removal and deactivation should be idempotent for unknown IDs");
-  expect_plugin_runtime_error(wuwe::runtime_host::plugin_runtime_error_code::not_registered,
+  expect_plugin_runtime_error(
+    wuwe::runtime_host::plugin_runtime_error_code::not_registered,
     [&] { (void)runtime.activate("com.example.runtime"); },
     "activation should classify an unregistered plugin ID");
 #endif
@@ -762,8 +920,7 @@ void plugin_tools_are_explicitly_bound_into_the_tool_contract() {
       },
     });
   const auto descriptors = provider->descriptors();
-  expect(descriptors.size() == 1 &&
-           descriptors.front().name == plugin_id + "__echo_text",
+  expect(descriptors.size() == 1 && descriptors.front().name == plugin_id + "__echo_text",
     "plugin tools should expose only explicitly selected bindings with deterministic names");
   const auto& descriptor = descriptors.front();
   expect(descriptor.description == "Echo a string for Runtime plugin process tests." &&
@@ -784,8 +941,8 @@ void plugin_tools_are_explicitly_bound_into_the_tool_contract() {
            descriptor.capabilities.front().resources ==
              std::vector<std::string> { plugin_id + ":echo_text" },
     "plugin tool bindings should retain policy approval and a high-risk scoped capability");
-  expect(provider->tools().size() == 1 &&
-           provider->tools().front().name == plugin_id + "__echo_text",
+  expect(
+    provider->tools().size() == 1 && provider->tools().front().name == plugin_id + "__echo_text",
     "plugin tool providers should satisfy the model-facing provider interface");
 
   fake_llm_client client;
@@ -805,12 +962,12 @@ void plugin_tools_are_explicitly_bound_into_the_tool_contract() {
   std::stop_source stop;
   stop.request_stop();
   expect(provider
-           ->invoke({
-             .name = plugin_id + "__echo_text",
-             .arguments_json = R"({"text":"cancelled"})",
-             .stop_token = stop.get_token(),
-           })
-           .error_category == wuwe::agent::tools::tool_error_category::cancelled,
+             ->invoke({
+               .name = plugin_id + "__echo_text",
+               .arguments_json = R"({"text":"cancelled"})",
+               .stop_token = stop.get_token(),
+             })
+             .error_category == wuwe::agent::tools::tool_error_category::cancelled,
     "plugin tool bindings should honor cancellation before synchronous dispatch");
 
   wuwe::runtime_host::plugin_tool_provider custom(runtime,
@@ -857,11 +1014,11 @@ void plugin_tools_are_explicitly_bound_into_the_tool_contract() {
       .generic_string());
   replacement_manifest["version"] = "2.0.0";
   replacement_manifest["permissions"] = nlohmann::json::object();
-  write_file(replacement_root.path() /
-      std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
+  write_file(
+    replacement_root.path() / std::filesystem::path(wuwe::runtime_host::plugin_manifest_filename),
     replacement_manifest.dump(2));
-  const auto replaced = runtime.register_package(replacement_root.path(),
-    wuwe::runtime_host::plugin_registration_policy::replace);
+  const auto replaced = runtime.register_package(
+    replacement_root.path(), wuwe::runtime_host::plugin_registration_policy::replace);
   expect(replaced.status == wuwe::runtime_host::plugin_registration_status::replaced,
     "plugin tool identity test should publish explicit replacement content");
   (void)runtime.activate(plugin_id);
@@ -869,6 +1026,192 @@ void plugin_tools_are_explicitly_bound_into_the_tool_contract() {
            wuwe::agent::tools::tool_error_category::unavailable,
     "a provider must not dispatch its retained schema to replacement plugin content");
   expect(runtime.deactivate(plugin_id), "plugin tool identity test should stop its replacement");
+#endif
+}
+
+void runtime_host_activates_only_configured_plugin_tools() {
+#ifdef WUWE_RUNTIME_PLUGIN_FIXTURE_PATH
+  temporary_directory package_root("configured-runtime-plugin");
+  const std::string plugin_id = "com.example.configured";
+  write_process_plugin_package(package_root.path(), plugin_id);
+  const auto package = wuwe::runtime_host::load_plugin_package(package_root.path());
+
+  auto document = valid_config_document();
+  document["plugins"] = {
+    { "isolation", "trusted_process" },
+    { "packages",
+      { {
+        { "path", package_root.path().generic_string() },
+        { "expectedId", plugin_id },
+        { "expectedContentSha256", package->content_sha256() },
+        { "tools", { { { "name", "echo_text" }, { "exposedName", "runtime_echo" } } } },
+      } } },
+  };
+  const auto config = wuwe::runtime_host::runtime_config_from_json(document);
+  auto client = std::make_shared<tool_inspecting_llm_client>();
+  const auto dependencies = dependencies_for(client);
+  const auto doctor = wuwe::runtime_host::diagnose_runtime_config(config, dependencies);
+  expect(doctor.ready && doctor.checks.at("plugins").ok,
+    "doctor should verify configured trusted plugin identity without launching it");
+
+  wuwe::runtime_host::host host(dependencies);
+  host.configure(config);
+  host.start();
+  expect(host.health().checks.at("plugins").ok,
+    "configured plugin processes should participate in Runtime health");
+  const auto result = host.run("inspect configured tools");
+  expect(result.status == wuwe::agent::runtime::agent_run_status::completed,
+    "configured plugin tools should compose into a normal Runtime run");
+  expect(
+    client->observed_tools.size() == 1 && client->observed_tools.front().name == "runtime_echo",
+    "the default runner must expose only the explicitly configured plugin tool name");
+  expect(host.stop(), "configured plugin runtime should stop cleanly");
+
+  auto custom_client = std::make_shared<tool_inspecting_llm_client>();
+  auto custom_dependencies = dependencies_for(custom_client);
+  bool context_received = false;
+  custom_dependencies.make_configured_agent_runner =
+    [&](wuwe::llm_client& configured_client,
+      const wuwe::runtime_host::runtime_runner_context& context) {
+      context_received = context.tool_provider && context.tool_provider->tools().size() == 1;
+      return std::make_shared<wuwe::llm_agent_runner>(configured_client, context.tool_provider);
+    };
+  wuwe::runtime_host::host custom_host(std::move(custom_dependencies));
+  custom_host.configure(config);
+  custom_host.start();
+  expect(context_received,
+    "context-aware runner assembly must receive the host-authorized tool provider");
+  expect(custom_host.run("inspect custom runner tools").status ==
+             wuwe::agent::runtime::agent_run_status::completed &&
+           custom_client->observed_tools.size() == 1,
+    "a custom runner assembler should be able to retain configured plugin tools");
+  expect(custom_host.stop(), "context-aware custom runner should stop cleanly");
+
+  auto manual_client = std::make_shared<configured_plugin_tool_call_client>();
+  wuwe::runtime_host::host manual_host(dependencies_for(manual_client));
+  manual_host.configure(config);
+  manual_host.start();
+  const auto suspended = manual_host.run("call the configured plugin");
+  expect(suspended.status == wuwe::agent::runtime::agent_run_status::waiting_for_approval &&
+           manual_client->calls == 1,
+    "configured plugin calls must suspend for explicit approval when no policy is injected");
+  expect(manual_host.stop(), "manual-approval plugin runtime should stop cleanly");
+
+  auto approved_client = std::make_shared<configured_plugin_tool_call_client>();
+  auto approved_dependencies = dependencies_for(approved_client);
+  approved_dependencies.approval_service =
+    std::make_shared<wuwe::agent::approval::allow_all_approval_service>();
+  wuwe::runtime_host::host approved_host(std::move(approved_dependencies));
+  approved_host.configure(config);
+  approved_host.start();
+  const auto approved = approved_host.run("call the configured plugin");
+  expect(approved.status == wuwe::agent::runtime::agent_run_status::completed &&
+           approved.content == "configured plugin completed" && approved_client->calls == 2 &&
+           approved_client->saw_tool_result,
+    "an explicitly injected approval policy must execute the configured plugin end to end");
+  expect(approved_host.stop(), "approved plugin runtime should stop cleanly");
+#endif
+}
+
+void runtime_host_plugin_activation_fails_closed() {
+#ifdef WUWE_RUNTIME_PLUGIN_FIXTURE_PATH
+  temporary_directory package_root("configured-runtime-plugin-failures");
+  const std::string plugin_id = "com.example.failclosed";
+  write_process_plugin_package(package_root.path(), plugin_id);
+  const auto package = wuwe::runtime_host::load_plugin_package(package_root.path());
+  auto document = valid_config_document();
+  document["plugins"] = {
+    { "isolation", "trusted_process" },
+    { "packages",
+      { {
+        { "path", package_root.path().generic_string() },
+        { "expectedId", plugin_id },
+        { "expectedContentSha256", package->content_sha256() },
+        { "tools", { { { "name", "echo_text" }, { "exposedName", "runtime_echo" } } } },
+      } } },
+  };
+
+  auto missing_environment = document;
+  missing_environment["plugins"]["packages"][0]["environment"] = {
+    "WUWE_RUNTIME_PLUGIN_ENV_THAT_MUST_NOT_EXIST_9A1D",
+  };
+  const auto missing_environment_config =
+    wuwe::runtime_host::runtime_config_from_json(missing_environment);
+  expect(!wuwe::runtime_host::diagnose_runtime_config(
+           missing_environment_config, dependencies_for(std::make_shared<fake_llm_client>()))
+            .checks.at("plugins")
+            .ok,
+    "doctor must report missing plugin environment grants");
+  wuwe::runtime_host::host missing_environment_host(
+    dependencies_for(std::make_shared<fake_llm_client>()));
+  missing_environment_host.configure(missing_environment_config);
+  expect_throws<wuwe::runtime_host::runtime_error>([&] { missing_environment_host.start(); },
+    "startup must fail when a configured plugin environment reference is unavailable");
+
+  temporary_directory required_environment_root("configured-runtime-plugin-required-environment");
+  const std::string required_environment_id = "com.example.required-environment";
+  write_process_plugin_package(required_environment_root.path(),
+    required_environment_id,
+    { "tools" },
+    { "WUWE_RUNTIME_PLUGIN_REQUIRED_ENVIRONMENT_31B7" });
+  const auto required_environment_package =
+    wuwe::runtime_host::load_plugin_package(required_environment_root.path());
+  auto missing_grant = document;
+  auto& missing_grant_package = missing_grant["plugins"]["packages"][0];
+  missing_grant_package["path"] = required_environment_root.path().generic_string();
+  missing_grant_package["expectedId"] = required_environment_id;
+  missing_grant_package["expectedContentSha256"] = required_environment_package->content_sha256();
+  const auto missing_grant_config = wuwe::runtime_host::runtime_config_from_json(missing_grant);
+  expect(!wuwe::runtime_host::diagnose_runtime_config(
+           missing_grant_config, dependencies_for(std::make_shared<fake_llm_client>()))
+            .checks.at("plugins")
+            .ok,
+    "doctor must reject manifest environment requirements omitted from package grants");
+  wuwe::runtime_host::host missing_grant_host(
+    dependencies_for(std::make_shared<fake_llm_client>()));
+  missing_grant_host.configure(missing_grant_config);
+  expect_throws<wuwe::runtime_host::runtime_error>([&] { missing_grant_host.start(); },
+    "startup must fail before launch when a manifest environment requirement is not granted");
+
+  auto changed_hash = document;
+  changed_hash["plugins"]["packages"][0]["expectedContentSha256"] = std::string(64, '0');
+  const auto changed_hash_config = wuwe::runtime_host::runtime_config_from_json(changed_hash);
+  expect(!wuwe::runtime_host::diagnose_runtime_config(
+           changed_hash_config, dependencies_for(std::make_shared<fake_llm_client>()))
+            .checks.at("plugins")
+            .ok,
+    "doctor must reject plugin package identity mismatches");
+  wuwe::runtime_host::host changed_hash_host(dependencies_for(std::make_shared<fake_llm_client>()));
+  changed_hash_host.configure(changed_hash_config);
+  expect_throws<wuwe::runtime_host::runtime_error>([&] { changed_hash_host.start(); },
+    "startup must reject plugin content that does not match its pinned SHA-256");
+
+  auto sandboxed = document;
+  sandboxed["plugins"]["isolation"] = "sandboxed_process";
+  const auto sandboxed_config = wuwe::runtime_host::runtime_config_from_json(sandboxed);
+  expect(!wuwe::runtime_host::diagnose_runtime_config(
+           sandboxed_config, dependencies_for(std::make_shared<fake_llm_client>()))
+            .checks.at("plugins")
+            .ok,
+    "doctor must not claim unavailable sandbox enforcement");
+  wuwe::runtime_host::host sandboxed_host(dependencies_for(std::make_shared<fake_llm_client>()));
+  sandboxed_host.configure(sandboxed_config);
+  expect_throws<wuwe::runtime_host::runtime_error>([&] { sandboxed_host.start(); },
+    "sandboxed plugin activation must fail closed until enforcement exists");
+
+  auto legacy_dependencies = dependencies_for(std::make_shared<fake_llm_client>());
+  legacy_dependencies.make_agent_runner = [](wuwe::llm_client& client) {
+    return std::make_shared<wuwe::llm_agent_runner>(client);
+  };
+  const auto configured = wuwe::runtime_host::runtime_config_from_json(document);
+  expect(!wuwe::runtime_host::diagnose_runtime_config(configured, legacy_dependencies)
+            .checks.at("runner")
+            .ok,
+    "doctor must reject legacy custom runner assembly that cannot receive configured tools");
+  wuwe::runtime_host::host legacy_host(std::move(legacy_dependencies));
+  legacy_host.configure(configured);
+  expect_throws<wuwe::runtime_host::runtime_error>([&] { legacy_host.start(); },
+    "startup must not silently discard configured plugin tools in a custom runner");
 #endif
 }
 
@@ -1142,15 +1485,13 @@ void sqlite_idempotency_preserves_unresolved_claims_across_restart() {
   std::filesystem::remove(database.string() + "-wal", ignored);
   std::filesystem::remove(database.string() + "-shm", ignored);
   {
-    auto repository =
-      wuwe::runtime_host::detail::make_sqlite_idempotency_repository(database, 16);
+    auto repository = wuwe::runtime_host::detail::make_sqlite_idempotency_repository(database, 16);
     const auto claim = repository->claim("operation:key", "fingerprint-a");
     expect(claim.status == wuwe::runtime_host::detail::idempotency_claim_status::acquired,
       "first durable idempotency claimant should acquire the key");
   }
   {
-    auto repository =
-      wuwe::runtime_host::detail::make_sqlite_idempotency_repository(database, 16);
+    auto repository = wuwe::runtime_host::detail::make_sqlite_idempotency_repository(database, 16);
     const auto pending = repository->claim("operation:key", "fingerprint-a");
     expect(pending.status == wuwe::runtime_host::detail::idempotency_claim_status::pending,
       "an unfinished durable claim must remain unresolved after repository restart");
@@ -1503,6 +1844,7 @@ void sqlite_retryable_failures_do_not_poison_restart_retries() {
 int main() {
   try {
     config_validation_is_strict_and_side_effect_free();
+    plugin_config_paths_are_resolved_from_the_config_file();
     lifecycle_contract_is_explicit();
     plugin_manifest_rejects_native_loading();
     plugin_packages_are_admitted_and_registered_by_verified_identity();
@@ -1510,8 +1852,11 @@ int main() {
     plugin_package_admission_rejects_link_aliases();
     plugin_process_execution_is_explicit_and_capability_gated();
     plugin_process_environment_is_allowlisted_and_packages_are_revalidated();
+    plugin_activation_environment_is_scoped_per_package();
     plugin_runtime_coordinates_catalog_and_process_lifecycle();
     plugin_tools_are_explicitly_bound_into_the_tool_contract();
+    runtime_host_activates_only_configured_plugin_tools();
+    runtime_host_plugin_activation_fails_closed();
     provider_specific_endpoint_requirements_are_preflighted();
     configured_credential_reference_is_authoritative();
     dependency_injection_supports_custom_providers();

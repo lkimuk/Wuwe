@@ -17,7 +17,11 @@
 #include <wuwe/agent/llm/llm_provider_registry.h>
 #include <wuwe/agent/runtime/run_runtime.hpp>
 #include <wuwe/agent/runtime/sqlite_agent_run_store.hpp>
+#include <wuwe/agent/tools/tool.hpp>
 #include <wuwe/common/sha256.hpp>
+#include <wuwe/runtime_host/plugin_package.hpp>
+#include <wuwe/runtime_host/plugin_runtime.hpp>
+#include <wuwe/runtime_host/plugin_tools.hpp>
 
 #include "idempotency_repository.hpp"
 
@@ -90,8 +94,138 @@ std::shared_ptr<llm_client> default_llm_client(const llm_options& options) {
   return client;
 }
 
-std::shared_ptr<llm_agent_runner> default_agent_runner(llm_client& client) {
-  return std::make_shared<llm_agent_runner>(client);
+std::shared_ptr<llm_agent_runner> default_configured_agent_runner(
+  llm_client& client, const runtime_runner_context& context) {
+  return context.tool_provider ? std::make_shared<llm_agent_runner>(client, context.tool_provider)
+                               : std::make_shared<llm_agent_runner>(client);
+}
+
+plugin_process_isolation process_isolation(plugin_isolation_mode isolation) {
+  switch (isolation) {
+    case plugin_isolation_mode::sandboxed_process:
+      return plugin_process_isolation::sandboxed_process;
+    case plugin_isolation_mode::trusted_process:
+      return plugin_process_isolation::trusted_process;
+  }
+  throw runtime_error(
+    runtime_error_code::dependency_unavailable, "runtime plugin isolation mode is invalid");
+}
+
+std::map<std::string, std::string> resolve_plugin_environment(
+  const plugin_package_options& package) {
+  std::map<std::string, std::string> environment;
+  for (const auto& name : package.environment) {
+    auto value = llm_client_config::load_env_value(name.c_str());
+    if (value.empty()) {
+      throw runtime_error(runtime_error_code::dependency_unavailable,
+        "granted plugin environment variable is not set: " + name);
+    }
+    environment.emplace(name, std::move(value));
+  }
+  return environment;
+}
+
+void require_plugin_environment_grants(const plugin_package& package,
+  const std::map<std::string, std::string>& environment) {
+  for (const auto& name : package.manifest().permissions.environment) {
+    if (!environment.contains(name)) {
+      throw runtime_error(runtime_error_code::dependency_unavailable,
+        "required plugin environment variable is not granted for " + package.manifest().id +
+          ": " + name);
+    }
+  }
+}
+
+struct runtime_plugin_resources {
+  std::shared_ptr<plugin_runtime> runtime;
+  std::shared_ptr<plugin_tool_provider> provider;
+  std::shared_ptr<composite_tool_provider> tools;
+};
+
+runtime_plugin_resources start_configured_plugins(const plugin_host_options& options) {
+  if (options.packages.empty())
+    return {};
+
+  auto runtime = std::make_shared<plugin_runtime>(plugin_runtime_options {
+    .process_options = {
+      .isolation = process_isolation(options.isolation),
+    },
+  });
+  std::vector<std::string> activated;
+  std::vector<plugin_tool_binding> bindings;
+  const auto rollback = [&] {
+    for (auto current = activated.rbegin(); current != activated.rend(); ++current) {
+      try {
+        (void)runtime->deactivate(*current);
+      }
+      catch (...) {
+      }
+    }
+  };
+  try {
+    std::vector<plugin_package_ptr> packages;
+    packages.reserve(options.packages.size());
+    std::vector<std::map<std::string, std::string>> environments;
+    environments.reserve(options.packages.size());
+    for (const auto& configured : options.packages) {
+      auto package = load_plugin_package(configured.path);
+      if (package->manifest().id != configured.expected_id) {
+        throw runtime_error(runtime_error_code::dependency_unavailable,
+          "runtime plugin ID does not match configured identity: " + configured.path.string());
+      }
+      if (package->content_sha256() != configured.expected_content_sha256) {
+        throw runtime_error(runtime_error_code::dependency_unavailable,
+          "runtime plugin content does not match configured SHA-256: " + configured.expected_id);
+      }
+      auto environment = resolve_plugin_environment(configured);
+      require_plugin_environment_grants(*package, environment);
+      packages.push_back(std::move(package));
+      environments.push_back(std::move(environment));
+      for (const auto& tool : configured.tools) {
+        bindings.push_back({
+          .plugin_id = configured.expected_id,
+          .tool_name = tool.name,
+          .exposed_name = tool.exposed_name,
+        });
+      }
+    }
+    for (const auto& package : packages)
+      (void)runtime->register_package(package);
+    for (std::size_t index = 0; index < options.packages.size(); ++index) {
+      const auto& configured = options.packages[index];
+      const auto snapshot = runtime->activate(configured.expected_id,
+        plugin_activation_options {
+          .environment = std::move(environments[index]),
+        });
+      if (snapshot.state != plugin_process_state::running) {
+        throw runtime_error(runtime_error_code::dependency_unavailable,
+          "runtime plugin did not reach the running state: " + configured.expected_id);
+      }
+      activated.push_back(configured.expected_id);
+    }
+    auto provider = std::make_shared<plugin_tool_provider>(*runtime, std::move(bindings));
+    auto tools = std::make_shared<composite_tool_provider>();
+    tools->add(provider);
+    return {
+      .runtime = std::move(runtime),
+      .provider = std::move(provider),
+      .tools = std::move(tools),
+    };
+  }
+  catch (const runtime_error&) {
+    rollback();
+    throw;
+  }
+  catch (const std::exception& ex) {
+    rollback();
+    throw runtime_error(runtime_error_code::dependency_unavailable,
+      "runtime plugin startup failed: " + std::string(ex.what()));
+  }
+  catch (...) {
+    rollback();
+    throw runtime_error(
+      runtime_error_code::dependency_unavailable, "runtime plugin startup failed");
+  }
 }
 
 host_error write_error(const run_store_write_result& write, std::string_view operation) {
@@ -159,8 +293,8 @@ void merge_run_metadata(agent::core::agent_execution_context& context,
   }
 }
 
-std::string idempotency_fingerprint(const std::map<std::string, std::string>& metadata,
-  std::string_view request_fingerprint) {
+std::string idempotency_fingerprint(
+  const std::map<std::string, std::string>& metadata, std::string_view request_fingerprint) {
   common::sha256 hash;
   const auto encoded_metadata = nlohmann::json(metadata).dump();
   for (const auto field : { std::string_view(encoded_metadata), request_fingerprint }) {
@@ -249,9 +383,9 @@ doctor_report diagnose_runtime_config(
                              : (provider ? "built-in LLM provider is available"
                                          : "LLM provider requires external factory registration"),
   };
-  const bool endpoint_available =
-    custom_client || !provider || !provider->base_url_required || !config.llm.base_url.empty() ||
-    !provider->default_base_url.empty();
+  const bool endpoint_available = custom_client || !provider || !provider->base_url_required ||
+                                  !config.llm.base_url.empty() ||
+                                  !provider->default_base_url.empty();
   report.checks["endpoint"] = {
     .ok = endpoint_available,
     .message = custom_client ? "endpoint resolution is delegated to the custom LLM client factory"
@@ -282,6 +416,58 @@ doctor_report diagnose_runtime_config(
 #endif
   }
   report.checks["store"] = { .ok = store_available, .message = std::move(store_message) };
+
+  const bool ambiguous_runner_factories =
+    dependencies.make_agent_runner && dependencies.make_configured_agent_runner;
+  const bool configured_plugins = !config.plugins.packages.empty();
+  const bool runner_supports_plugins = !configured_plugins || !dependencies.make_agent_runner ||
+                                       dependencies.make_configured_agent_runner;
+  report.checks["runner"] = {
+    .ok = !ambiguous_runner_factories && runner_supports_plugins,
+    .message = ambiguous_runner_factories
+                 ? "make_agent_runner and make_configured_agent_runner cannot both be configured"
+                 : (!runner_supports_plugins
+                       ? "configured plugins require the context-aware agent runner factory"
+                       : (dependencies.make_configured_agent_runner
+                             ? "context-aware agent runner factory is configured"
+                             : (dependencies.make_agent_runner
+                                   ? "legacy agent runner factory is configured"
+                                   : "built-in agent runner assembly is available"))),
+  };
+
+  bool plugins_available = true;
+  std::string plugins_message = "no runtime plugins are configured";
+  if (configured_plugins) {
+    if (config.plugins.isolation != plugin_isolation_mode::trusted_process) {
+      plugins_available = false;
+      plugins_message = "sandboxed_process is unavailable because filesystem and network "
+                        "enforcement is not implemented";
+    }
+    else {
+      try {
+        for (const auto& configured : config.plugins.packages) {
+          const auto environment = resolve_plugin_environment(configured);
+          const auto package = load_plugin_package(configured.path);
+          if (package->manifest().id != configured.expected_id) {
+            throw std::runtime_error("plugin ID mismatch: " + configured.expected_id);
+          }
+          if (package->content_sha256() != configured.expected_content_sha256) {
+            throw std::runtime_error("plugin SHA-256 mismatch: " + configured.expected_id);
+          }
+          require_plugin_environment_grants(*package, environment);
+        }
+        plugins_message = "trusted plugin packages and environment grants are available";
+      }
+      catch (const std::exception& ex) {
+        plugins_available = false;
+        plugins_message = ex.what();
+      }
+    }
+  }
+  report.checks["plugins"] = {
+    .ok = plugins_available,
+    .message = std::move(plugins_message),
+  };
   report.ready = std::all_of(
     report.checks.begin(), report.checks.end(), [](const auto& item) { return item.second.ok; });
   return report;
@@ -292,10 +478,14 @@ public:
   explicit implementation(runtime_dependencies dependencies)
       : uses_default_run_store_(!dependencies.make_run_store),
         dependencies_(std::move(dependencies)) {
+    if (dependencies_.make_agent_runner && dependencies_.make_configured_agent_runner) {
+      throw std::invalid_argument(
+        "Runtime dependencies cannot configure both agent runner factories");
+    }
     if (!dependencies_.make_llm_client)
       dependencies_.make_llm_client = default_llm_client;
-    if (!dependencies_.make_agent_runner)
-      dependencies_.make_agent_runner = default_agent_runner;
+    if (!dependencies_.make_agent_runner && !dependencies_.make_configured_agent_runner)
+      dependencies_.make_configured_agent_runner = default_configured_agent_runner;
     if (!dependencies_.make_run_store)
       dependencies_.make_run_store = default_run_store;
   }
@@ -325,6 +515,11 @@ public:
     }
     lifecycle_.transition(lifecycle_state::starting);
     try {
+      if (!config_->plugins.packages.empty() && !dependencies_.make_configured_agent_runner) {
+        throw runtime_error(runtime_error_code::dependency_unavailable,
+          "configured plugins require make_configured_agent_runner when runner assembly is "
+          "customized");
+      }
       auto store = dependencies_.make_run_store(config_->store);
       if (!store)
         throw runtime_error(
@@ -339,7 +534,15 @@ public:
       if (!client)
         throw runtime_error(
           runtime_error_code::dependency_unavailable, "LLM client factory returned no client");
-      auto runner = dependencies_.make_agent_runner(*client);
+      auto plugins = start_configured_plugins(config_->plugins);
+      std::shared_ptr<llm_agent_runner> runner;
+      if (dependencies_.make_configured_agent_runner) {
+        runner = dependencies_.make_configured_agent_runner(
+          *client, runtime_runner_context { .tool_provider = plugins.tools });
+      }
+      else {
+        runner = dependencies_.make_agent_runner(*client);
+      }
       if (!runner)
         throw runtime_error(
           runtime_error_code::dependency_unavailable, "agent runner factory returned no runner");
@@ -350,6 +553,9 @@ public:
         idempotency_repository_ = std::move(idempotency_repository);
         client_ = std::move(client);
         runner_ = std::move(runner);
+        plugin_runtime_ = std::move(plugins.runtime);
+        plugin_provider_ = std::move(plugins.provider);
+        tool_provider_ = std::move(plugins.tools);
       }
       lifecycle_.transition(lifecycle_state::ready);
     }
@@ -396,6 +602,9 @@ public:
       {
         std::scoped_lock resources_lock(resources_mutex_);
         runner_.reset();
+        tool_provider_.reset();
+        plugin_provider_.reset();
+        plugin_runtime_.reset();
         client_.reset();
         idempotency_repository_.reset();
         durable_runtime_.reset();
@@ -427,11 +636,13 @@ public:
     bool has_client = false;
     bool has_store = false;
     bool has_idempotency = false;
+    std::shared_ptr<plugin_runtime> plugins;
     {
       std::scoped_lock lock(resources_mutex_);
       has_client = static_cast<bool>(client_);
       has_store = static_cast<bool>(store_);
       has_idempotency = static_cast<bool>(idempotency_repository_);
+      plugins = plugin_runtime_;
     }
     result.checks["lifecycle"] = {
       .ok = ready,
@@ -451,7 +662,25 @@ public:
       .message = has_idempotency ? "mutation replay repository is configured"
                                  : "mutation replay repository is unavailable",
     };
-    if (ready && has_client && has_store && has_idempotency)
+    bool plugins_ok = true;
+    std::string plugins_message = "no runtime plugins are configured";
+    if (config_ && !config_->plugins.packages.empty()) {
+      plugins_ok = static_cast<bool>(plugins);
+      if (plugins) {
+        const auto snapshots = plugins->process_snapshots();
+        plugins_ok = snapshots.size() == config_->plugins.packages.size() &&
+                     std::all_of(snapshots.begin(), snapshots.end(), [](const auto& snapshot) {
+                       return snapshot.state == plugin_process_state::running;
+                     });
+        plugins_message = plugins_ok ? "configured runtime plugins are active"
+                                     : "one or more configured runtime plugins are unavailable";
+      }
+      else {
+        plugins_message = "configured runtime plugins are unavailable";
+      }
+    }
+    result.checks["plugins"] = { .ok = plugins_ok, .message = std::move(plugins_message) };
+    if (ready && has_client && has_store && has_idempotency && plugins_ok)
       result.status = health_status::healthy;
     else if (result.lifecycle.state == lifecycle_state::starting ||
              result.lifecycle.state == lifecycle_state::draining)
@@ -508,6 +737,7 @@ public:
         .stop_token = linked_stop_source.get_token(),
         .context = std::move(context),
         .runtime = durable,
+        .approval_service = dependencies_.approval_service,
       };
       auto response = runner->complete(prompt, std::move(options));
       const auto stored_run_id =
@@ -808,9 +1038,8 @@ private:
               "a previous mutation with this idempotency key has an unresolved outcome",
               true);
           case detail::idempotency_claim_status::capacity_exceeded:
-            return host_failure<agent::host::run_submission>(host_error_code::unavailable,
-              "runtime idempotency repository is at capacity",
-              true);
+            return host_failure<agent::host::run_submission>(
+              host_error_code::unavailable, "runtime idempotency repository is at capacity", true);
           case detail::idempotency_claim_status::acquired:
             break;
         }
@@ -825,8 +1054,8 @@ private:
           repository->erase(key, fingerprint);
         }
         catch (...) {
-          return host_failure<agent::host::run_submission>(host_error_code::internal,
-            "runtime idempotency claim could not be released");
+          return host_failure<agent::host::run_submission>(
+            host_error_code::internal, "runtime idempotency claim could not be released");
         }
         return host_failure<agent::host::run_submission>(
           host_error_code::unavailable, "runtime idempotency cache is at capacity", true);
@@ -857,8 +1086,8 @@ private:
       }
     }
     catch (...) {
-      result = host_failure<agent::host::run_submission>(host_error_code::internal,
-        "runtime mutation outcome could not be persisted");
+      result = host_failure<agent::host::run_submission>(
+        host_error_code::internal, "runtime mutation outcome could not be persisted");
       erase_replay = false;
     }
     {
@@ -1018,6 +1247,7 @@ private:
                 .stop_token = source->get_token(),
                 .context = std::move(record.context),
                 .runtime = durable,
+                .approval_service = dependencies_.approval_service,
               };
               const auto response = runner->resume(
                 run_id, expected_revision, continuation.continuation_token, std::move(options));
@@ -1179,6 +1409,9 @@ private:
       {
         std::scoped_lock resources_lock(resources_mutex_);
         runner_.reset();
+        tool_provider_.reset();
+        plugin_provider_.reset();
+        plugin_runtime_.reset();
         client_.reset();
         idempotency_repository_.reset();
         durable_runtime_.reset();
@@ -1215,6 +1448,9 @@ private:
   std::shared_ptr<detail::idempotency_repository> idempotency_repository_;
   std::shared_ptr<llm_client> client_;
   std::shared_ptr<llm_agent_runner> runner_;
+  std::shared_ptr<plugin_runtime> plugin_runtime_;
+  std::shared_ptr<plugin_tool_provider> plugin_provider_;
+  std::shared_ptr<composite_tool_provider> tool_provider_;
   mutable std::mutex active_mutex_;
   std::condition_variable active_changed_;
   std::unordered_map<std::string, std::shared_ptr<std::stop_source>> active_runs_;
