@@ -5,7 +5,10 @@
 #include <chrono>
 #include <concepts>
 #include <cstdint>
+#include <cctype>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <map>
@@ -19,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 #include <utility>
 
 #include <wuwe/agent/approval/approval_context.hpp>
@@ -356,6 +360,130 @@ public:
   }
 
 private:
+  static std::string base64_encode(std::string_view bytes) {
+    static constexpr char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string output;
+    output.reserve((bytes.size() + 2) / 3 * 4);
+    for (std::size_t index = 0; index < bytes.size(); index += 3) {
+      const auto first = static_cast<unsigned char>(bytes[index]);
+      const auto second = index + 1 < bytes.size()
+        ? static_cast<unsigned char>(bytes[index + 1]) : 0;
+      const auto third = index + 2 < bytes.size()
+        ? static_cast<unsigned char>(bytes[index + 2]) : 0;
+      const std::uint32_t group = (static_cast<std::uint32_t>(first) << 16)
+        | (static_cast<std::uint32_t>(second) << 8)
+        | static_cast<std::uint32_t>(third);
+      output.push_back(alphabet[(group >> 18) & 0x3f]);
+      output.push_back(alphabet[(group >> 12) & 0x3f]);
+      output.push_back(index + 1 < bytes.size() ? alphabet[(group >> 6) & 0x3f] : '=');
+      output.push_back(index + 2 < bytes.size() ? alphabet[group & 0x3f] : '=');
+    }
+    return output;
+  }
+
+  static std::optional<std::string> visual_artifact_extension_mime(
+    const std::filesystem::path& path) {
+    auto extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+      [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (extension == ".png") return "image/png";
+    if (extension == ".jpg" || extension == ".jpeg") return "image/jpeg";
+    if (extension == ".webp") return "image/webp";
+    if (extension == ".gif") return "image/gif";
+    return std::nullopt;
+  }
+
+  static std::optional<std::string> visual_artifact_content_mime(
+    std::string_view bytes) {
+    constexpr std::string_view png_signature("\x89PNG\r\n\x1a\n", 8);
+    if (bytes.starts_with(png_signature)) {
+      return "image/png";
+    }
+    if (bytes.size() >= 3 &&
+        static_cast<unsigned char>(bytes[0]) == 0xff &&
+        static_cast<unsigned char>(bytes[1]) == 0xd8 &&
+        static_cast<unsigned char>(bytes[2]) == 0xff) {
+      return "image/jpeg";
+    }
+    if (bytes.starts_with("GIF87a") || bytes.starts_with("GIF89a")) {
+      return "image/gif";
+    }
+    if (bytes.size() >= 12 && bytes.substr(0, 4) == "RIFF" &&
+        bytes.substr(8, 4) == "WEBP") {
+      return "image/webp";
+    }
+    return std::nullopt;
+  }
+
+  static std::optional<chat_image> load_visual_artifact(const std::string& artifact) {
+    constexpr std::uintmax_t maximum_image_bytes = 12 * 1024 * 1024;
+    std::error_code error;
+#if defined(__cpp_char8_t)
+    std::u8string utf8_path;
+    utf8_path.reserve(artifact.size());
+    for (const unsigned char byte : artifact) {
+      utf8_path.push_back(static_cast<char8_t>(byte));
+    }
+    const std::filesystem::path path(utf8_path);
+#else
+    const std::filesystem::path path(artifact);
+#endif
+    const auto extension_mime = visual_artifact_extension_mime(path);
+    if (!extension_mime || !std::filesystem::is_regular_file(path, error) || error) {
+      return std::nullopt;
+    }
+    const auto size = std::filesystem::file_size(path, error);
+    if (error || size == 0 || size > maximum_image_bytes) {
+      return std::nullopt;
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+      return std::nullopt;
+    }
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!input || static_cast<std::size_t>(input.gcount()) != bytes.size()) {
+      return std::nullopt;
+    }
+    const auto content_mime = visual_artifact_content_mime(bytes);
+    if (!content_mime || *content_mime != *extension_mime) {
+      return std::nullopt;
+    }
+    return chat_image {
+      .mime_type = *content_mime,
+      .base64_data = base64_encode(bytes),
+      .detail = "auto",
+    };
+  }
+
+  static std::optional<chat_message> visual_artifact_message(
+    const llm_tool_call& call,
+    const llm_tool_result& result,
+    std::size_t maximum_images = 4) {
+    const auto enabled = result.metadata.find("attach_visual_artifacts");
+    if (enabled == result.metadata.end() || enabled->second != "true" || maximum_images == 0) {
+      return std::nullopt;
+    }
+    chat_message message {
+      .role = "user",
+      .content = "Visual evidence produced by tool " + call.name +
+        ". Treat the attached image as tool output for the immediately preceding call.",
+      .context_source = llm_context_source::tool_result,
+    };
+    for (const auto& artifact : result.artifacts) {
+      if (message.images.size() >= maximum_images) {
+        break;
+      }
+      if (auto image = load_visual_artifact(artifact)) {
+        message.images.push_back(std::move(*image));
+      }
+    }
+    return message.images.empty()
+      ? std::nullopt
+      : std::optional<chat_message>(std::move(message));
+  }
+
   void validate_max_tool_rounds() const {
     if (max_tool_rounds_ < 0) {
       throw std::invalid_argument("llm_agent_runner max_tool_rounds must not be negative");
@@ -832,6 +960,7 @@ private:
       observe_assistant_response(assistant_response, &calls, options.context);
     }
 
+    std::optional<chat_message> pending_visual_message;
     for (const auto& call : calls) {
       if (is_cancelled()) {
         auto cancelled = cancelled_response(options.callbacks);
@@ -949,10 +1078,30 @@ private:
         .context_source = llm_context_source::tool_result,
       };
       request.messages.push_back(tool_message);
+      const std::size_t attached_images = pending_visual_message
+        ? pending_visual_message->images.size() : 0;
+      if (auto visual_message = visual_artifact_message(
+            call, tool_result, 4 - std::min<std::size_t>(attached_images, 4))) {
+        if (!pending_visual_message) {
+          pending_visual_message = std::move(*visual_message);
+        }
+        else {
+          pending_visual_message->content += "\n" + visual_message->content;
+          for (auto& image : visual_message->images) {
+            pending_visual_message->images.push_back(std::move(image));
+          }
+        }
+      }
       if (memory_ && options.persist_tool_messages) {
         memory_->observe(tool_message,
           agent::memory::memory_scope_from_execution_context(options.context, memory_->scope()));
       }
+    }
+    // OpenAI-compatible providers require every tool response for one assistant
+    // turn to remain contiguous. Append visual evidence only after all tool
+    // messages have satisfied their corresponding tool_call_id values.
+    if (pending_visual_message) {
+      request.messages.push_back(std::move(*pending_visual_message));
     }
     return std::nullopt;
   }

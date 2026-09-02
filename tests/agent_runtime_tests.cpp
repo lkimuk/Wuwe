@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -161,6 +163,24 @@ public:
 
   int calls { 0 };
   bool saw_stop_possible { false };
+  std::vector<llm_request> requests;
+};
+
+class multi_tool_call_client final : public llm_client {
+public:
+  llm_response complete(const llm_request& request) override {
+    requests.push_back(request);
+    if (requests.size() == 1) {
+      return {
+        .tool_calls = {
+          { .id = "call-1", .name = "echo_text", .arguments_json = R"({"text":"first"})" },
+          { .id = "call-2", .name = "echo_text", .arguments_json = R"({"text":"second"})" },
+        },
+      };
+    }
+    return { .content = "final answer" };
+  }
+
   std::vector<llm_request> requests;
 };
 
@@ -441,6 +461,27 @@ public:
   }
 };
 
+class visual_artifact_provider {
+public:
+  explicit visual_artifact_provider(std::string path) : path_(std::move(path)) {
+  }
+
+  std::vector<llm_tool> tools() const {
+    return { make_llm_tool<echo_text>() };
+  }
+
+  llm_tool_result invoke(const std::string&, const std::string&) const {
+    return {
+      .content = "captured",
+      .artifacts = { path_ },
+      .metadata = { { "attach_visual_artifacts", "true" } },
+    };
+  }
+
+private:
+  std::string path_;
+};
+
 void test_public_tool_api_supports_names_schema_and_parse() {
   const auto tool = make_llm_tool<echo_text>();
   require(tool.name == "echo_text",
@@ -541,6 +582,70 @@ void test_runner_callbacks_and_stop_token_reach_provider() {
   require(events[1] == "tool_result:echo_text:from tool", "runner should emit tool result");
   require(events[2] == "delta:final answer", "runner should emit final content delta");
   require(events[3] == "done:final answer", "runner should emit done");
+}
+
+void test_runner_attaches_opt_in_visual_tool_artifacts() {
+  const auto path = std::filesystem::temp_directory_path() / "wuwe-agent-visual-test.png";
+  {
+    std::ofstream output(path, std::ios::binary);
+    static constexpr unsigned char png_signature[] = { 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a };
+    output.write(reinterpret_cast<const char*>(png_signature), sizeof(png_signature));
+  }
+  tool_call_client client;
+  auto provider = std::make_shared<visual_artifact_provider>(path.string());
+  const auto response = llm_agent_runner(client, provider).complete("inspect the screen");
+  std::error_code ignored;
+
+  require(!response.error_code && client.requests.size() == 2,
+    "runner should continue after an opt-in visual tool result");
+  const auto& messages = client.requests[1].messages;
+  const auto visual = std::find_if(messages.cbegin(), messages.cend(),
+    [](const chat_message& message) { return !message.images.empty(); });
+  require(visual != messages.cend() && visual->role == "user" &&
+      visual->context_source == llm_context_source::tool_result,
+    "runner should append visual evidence as a tool-sourced user message");
+  require(visual->images.size() == 1 && visual->images.front().mime_type == "image/png" &&
+      visual->images.front().base64_data == "iVBORw0KGgo=",
+    "runner should load and base64-encode the opted-in image artifact");
+
+  multi_tool_call_client multi_client;
+  const auto multi_response =
+    llm_agent_runner(multi_client, provider).complete("inspect with two tools");
+  std::filesystem::remove(path, ignored);
+  require(!multi_response.error_code && multi_client.requests.size() == 2,
+    "runner should continue after a multi-tool visual round");
+  const auto& multi_messages = multi_client.requests[1].messages;
+  const auto assistant = std::find_if(multi_messages.cbegin(), multi_messages.cend(),
+    [](const chat_message& message) { return message.role == "assistant"; });
+  require(assistant != multi_messages.cend() &&
+      std::distance(assistant, multi_messages.cend()) >= 4,
+    "multi-tool request should retain the assistant and all following responses");
+  const auto first_tool = std::next(assistant);
+  const auto second_tool = std::next(first_tool);
+  const auto combined_visual = std::next(second_tool);
+  require(first_tool->role == "tool" && first_tool->tool_call_id == "call-1" &&
+      second_tool->role == "tool" && second_tool->tool_call_id == "call-2" &&
+      combined_visual->role == "user" && combined_visual->images.size() == 2,
+    "all tool_call_id responses must remain contiguous before combined visual evidence");
+
+  const auto spoofed_path =
+    std::filesystem::temp_directory_path() / "wuwe-agent-visual-spoof.png";
+  {
+    std::ofstream output(spoofed_path, std::ios::binary);
+    output << "not an image";
+  }
+  tool_call_client spoofed_client;
+  auto spoofed_provider =
+    std::make_shared<visual_artifact_provider>(spoofed_path.string());
+  const auto spoofed_response =
+    llm_agent_runner(spoofed_client, spoofed_provider).complete("inspect the screen");
+  std::filesystem::remove(spoofed_path, ignored);
+  require(!spoofed_response.error_code && spoofed_client.requests.size() == 2,
+    "runner should continue when an opted-in artifact is not a valid image");
+  const auto& spoofed_messages = spoofed_client.requests[1].messages;
+  require(std::none_of(spoofed_messages.cbegin(), spoofed_messages.cend(),
+      [](const chat_message& message) { return !message.images.empty(); }),
+    "runner must not attach an image whose extension and content signature disagree");
 }
 
 void test_runner_prepares_model_requests_and_observes_results() {
@@ -1666,6 +1771,8 @@ int main() {
       test_composite_tool_provider_preserves_stop_token);
     run("runner callbacks and stop token reach provider",
       test_runner_callbacks_and_stop_token_reach_provider);
+    run("runner attaches opt-in visual tool artifacts",
+      test_runner_attaches_opt_in_visual_tool_artifacts);
     run("runner prepares model requests and observes results",
       test_runner_prepares_model_requests_and_observes_results);
     run("runner can defer assistant memory persistence",
