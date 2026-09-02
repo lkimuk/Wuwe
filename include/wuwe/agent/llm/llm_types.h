@@ -230,12 +230,19 @@ inline std::string llm_language_contract(const llm_language_preferences& prefere
   return contract;
 }
 
+struct chat_image {
+  std::string mime_type;
+  std::string base64_data;
+  std::string detail { "auto" };
+};
+
 struct chat_message {
   std::string role;
   std::string content;
   std::optional<std::string> name;
   std::optional<std::string> tool_call_id;
   std::vector<llm_tool_call> tool_calls;
+  std::vector<chat_image> images;
   llm_context_source context_source { llm_context_source::automatic };
 };
 

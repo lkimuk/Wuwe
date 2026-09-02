@@ -47,6 +47,10 @@ public:
       detail::saturating_context_token_add(tokens, estimate_text(call.name));
       detail::saturating_context_token_add(tokens, estimate_text(call.arguments_json));
     }
+    // Provider token accounting for images varies by resolution and detail.
+    // Reserve a conservative fixed budget so context fitting never treats
+    // visual evidence as free input.
+    detail::saturating_context_token_add(tokens, message.images.size() * 1024);
     return tokens;
   }
 

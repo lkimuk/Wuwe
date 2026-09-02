@@ -140,8 +140,26 @@ json anthropic_llm_client::build_payload(const llm_request& request, bool stream
       }
       message["content"] = std::move(content);
     }
-    else {
+    else if (msg.images.empty()) {
       message["content"] = msg.content;
+    }
+    else {
+      auto content = json::array();
+      if (!msg.content.empty()) {
+        content.push_back({ { "type", "text" }, { "text", msg.content } });
+      }
+      for (const auto& image : msg.images) {
+        content.push_back({
+          { "type", "image" },
+          { "source",
+            {
+              { "type", "base64" },
+              { "media_type", image.mime_type.empty() ? "image/png" : image.mime_type },
+              { "data", image.base64_data },
+            } },
+        });
+      }
+      message["content"] = std::move(content);
     }
     messages.push_back(std::move(message));
   }

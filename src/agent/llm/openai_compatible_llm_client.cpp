@@ -785,7 +785,25 @@ json openai_compatible_llm_client::build_openai_payload(const llm_request& reque
       continue;
     }
 
-    json message = { { "role", msg.role }, { "content", msg.content } };
+    json content = msg.content;
+    if (!msg.images.empty()) {
+      content = json::array();
+      if (!msg.content.empty()) {
+        content.push_back({ { "type", "text" }, { "text", msg.content } });
+      }
+      for (const auto& image : msg.images) {
+        const auto mime = image.mime_type.empty() ? "image/png" : image.mime_type;
+        content.push_back({
+          { "type", "image_url" },
+          { "image_url",
+            {
+              { "url", "data:" + mime + ";base64," + image.base64_data },
+              { "detail", image.detail.empty() ? "auto" : image.detail },
+            } },
+        });
+      }
+    }
+    json message = { { "role", msg.role }, { "content", std::move(content) } };
     if (msg.name.has_value()) {
       message["name"] = *msg.name;
     }

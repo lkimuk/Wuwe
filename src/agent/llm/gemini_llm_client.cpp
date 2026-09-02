@@ -175,6 +175,13 @@ json gemini_llm_client::build_payload(const llm_request& request) const {
       if (!msg.content.empty()) {
         parts.push_back({ { "text", msg.content } });
       }
+      for (const auto& image : msg.images) {
+        parts.push_back({ { "inlineData",
+          {
+            { "mimeType", image.mime_type.empty() ? "image/png" : image.mime_type },
+            { "data", image.base64_data },
+          } } });
+      }
       for (const auto& call : msg.tool_calls) {
         parts.push_back({ { "functionCall",
           { { "id", call.id },

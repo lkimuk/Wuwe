@@ -149,6 +149,12 @@ json ollama_llm_client::build_payload(const llm_request& request, bool stream) c
     if (msg.tool_call_id.has_value()) {
       message["tool_call_id"] = *msg.tool_call_id;
     }
+    if (!msg.images.empty()) {
+      message["images"] = json::array();
+      for (const auto& image : msg.images) {
+        message["images"].push_back(image.base64_data);
+      }
+    }
     if (!msg.tool_calls.empty()) {
       auto tool_calls = json::array();
       for (const auto& call : msg.tool_calls) {

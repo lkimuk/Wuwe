@@ -554,6 +554,65 @@ void test_native_provider_clients_parse_text_and_tools() {
   require(ollama_response.tool_calls.size() == 1, "Ollama client should parse tool_calls");
 }
 
+void test_visual_messages_map_to_native_provider_payloads() {
+  wuwe::llm_request request;
+  request.messages.push_back({
+    .role = "user",
+    .content = "inspect this screenshot",
+    .images = { {
+      .mime_type = "image/png",
+      .base64_data = "aW1hZ2U=",
+      .detail = "high",
+    } },
+  });
+
+  auto openai_http = std::make_shared<capture_http_client>(
+    R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})");
+  wuwe::openai_llm_client openai(
+    { .api_key = "", .require_api_key = false, .model = "gpt-test" }, openai_http);
+  require(!openai.complete(request).error_code, "OpenAI visual request should succeed");
+  const auto openai_body = nlohmann::json::parse(openai_http->requests.front().body);
+  const auto& openai_content = openai_body["messages"].front()["content"];
+  require(openai_content.is_array() && openai_content.size() == 2 &&
+      openai_content[1]["image_url"]["url"] == "data:image/png;base64,aW1hZ2U=" &&
+      openai_content[1]["image_url"]["detail"] == "high",
+    "OpenAI should encode chat images as native image_url content parts");
+
+  auto anthropic_http = std::make_shared<capture_http_client>(
+    R"({"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}})");
+  wuwe::anthropic_llm_client anthropic(
+    { .api_key = "", .require_api_key = false, .model = "claude-test" }, anthropic_http);
+  require(!anthropic.complete(request).error_code, "Anthropic visual request should succeed");
+  const auto anthropic_body = nlohmann::json::parse(anthropic_http->requests.front().body);
+  const auto& anthropic_content = anthropic_body["messages"].front()["content"];
+  require(anthropic_content.is_array() && anthropic_content.size() == 2 &&
+      anthropic_content[1]["type"] == "image" &&
+      anthropic_content[1]["source"]["media_type"] == "image/png" &&
+      anthropic_content[1]["source"]["data"] == "aW1hZ2U=",
+    "Anthropic should encode chat images as native base64 image blocks");
+
+  auto gemini_http = std::make_shared<capture_http_client>(
+    R"({"candidates":[{"content":{"parts":[{"text":"ok"}]} ,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}})");
+  wuwe::gemini_llm_client gemini(
+    { .api_key = "", .require_api_key = false, .model = "gemini-test" }, gemini_http);
+  require(!gemini.complete(request).error_code, "Gemini visual request should succeed");
+  const auto gemini_body = nlohmann::json::parse(gemini_http->requests.front().body);
+  const auto& gemini_parts = gemini_body["contents"].front()["parts"];
+  require(gemini_parts.is_array() && gemini_parts.size() == 2 &&
+      gemini_parts[1]["inlineData"]["mimeType"] == "image/png" &&
+      gemini_parts[1]["inlineData"]["data"] == "aW1hZ2U=",
+    "Gemini should encode chat images as native inlineData parts");
+
+  auto ollama_http = std::make_shared<capture_http_client>(
+    R"({"message":{"role":"assistant","content":"ok"},"done_reason":"stop","prompt_eval_count":1,"eval_count":1})");
+  wuwe::ollama_llm_client ollama({ .model = "llama-test" }, ollama_http);
+  require(!ollama.complete(request).error_code, "Ollama visual request should succeed");
+  const auto ollama_body = nlohmann::json::parse(ollama_http->requests.front().body);
+  require(ollama_body["messages"].front()["images"].is_array() &&
+      ollama_body["messages"].front()["images"].front() == "aW1hZ2U=",
+    "Ollama should encode chat images in the native images field");
+}
+
 void test_execution_context_trace_reaches_provider_http_requests() {
   wuwe::llm_request request;
   request.messages.push_back({ .role = "user", .content = "hello" });
@@ -1297,6 +1356,7 @@ int main() {
     test_aggregate_header_preserves_tool_reflection();
     test_openai_compatible_provider_presets();
     test_native_provider_clients_parse_text_and_tools();
+    test_visual_messages_map_to_native_provider_payloads();
     test_execution_context_trace_reaches_provider_http_requests();
     test_reasoning_language_contract_is_mapped_to_provider_payloads();
     test_advanced_generation_capabilities_are_mapped_or_rejected();
