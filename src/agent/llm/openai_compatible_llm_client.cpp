@@ -86,6 +86,54 @@ std::string object_scalar_value(const json& object, const char* key) {
   return json_scalar_to_string(*it);
 }
 
+// OpenRouter wraps upstream provider failures in an outer
+// {"message":"Provider returned error","metadata":{"raw":"..."}}
+// envelope. Keep the diagnostic that identifies the real failure instead of
+// collapsing every such response to the unhelpful outer message.
+std::string provider_error_detail(const json& error, int depth = 0) {
+  if (!error.is_object() || depth > 2) {
+    return {};
+  }
+
+  const auto message = object_scalar_value(error, "message");
+  const auto metadata = error.find("metadata");
+  if (metadata != error.end() && metadata->is_object()) {
+    for (const auto* key : { "raw", "error", "details" }) {
+      const auto value = metadata->find(key);
+      if (value == metadata->end()) {
+        continue;
+      }
+      if (value->is_object()) {
+        const auto nested = provider_error_detail(*value, depth + 1);
+        if (!nested.empty()) {
+          return nested;
+        }
+      }
+      if (value->is_string()) {
+        const auto raw = value->get<std::string>();
+        const auto parsed = json::parse(raw, nullptr, false);
+        if (!parsed.is_discarded() && parsed.is_object()) {
+          const auto nested = parsed.contains("error") && parsed["error"].is_object()
+            ? provider_error_detail(parsed["error"], depth + 1)
+            : provider_error_detail(parsed, depth + 1);
+          if (!nested.empty()) {
+            return nested;
+          }
+        }
+        if (!raw.empty()) {
+          constexpr std::size_t max_provider_error_detail = 4096;
+          return raw.substr(0, max_provider_error_detail);
+        }
+      }
+    }
+    const auto provider = object_scalar_value(*metadata, "provider_name");
+    if (!provider.empty() && !message.empty() && message != "Provider returned error") {
+      return message + " (provider: " + provider + ")";
+    }
+  }
+  return message;
+}
+
 std::string first_string_field(const json& object, std::initializer_list<const char*> keys) {
   if (!object.is_object()) {
     return {};
@@ -208,7 +256,7 @@ std::error_code classify_openai_error(
 std::string openai_error_message(const std::error_code& error_code, const json& body) {
   if (body.is_object() && body.contains("error") && body["error"].is_object()) {
     const auto& error = body["error"];
-    const auto explicit_message = object_scalar_value(error, "message");
+    const auto explicit_message = provider_error_detail(error);
     if (!explicit_message.empty()) {
       return explicit_message;
     }

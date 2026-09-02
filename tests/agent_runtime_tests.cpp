@@ -1563,6 +1563,70 @@ void test_openai_compatible_client_accepts_numeric_error_fields() {
     "numeric streaming OpenAI-compatible error code 404 should classify as model_unavailable");
   require(streaming_response.content == "No endpoints found for this model",
     "numeric streaming OpenAI-compatible error fields should preserve the provider message");
+
+  const auto wrapped_provider_error =
+    R"({"error":{"message":"Provider returned error","code":400,"metadata":{"provider_name":"Example Provider","raw":"{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"response_format is not supported by this model\"}}"}}})";
+  auto wrapped_completion_http =
+    std::make_shared<streaming_capture_http_client>(std::vector<std::string> {},
+      http_response {
+        .error_code = http_status_code::bad_request,
+        .status_code = 400,
+        .body = wrapped_provider_error,
+      });
+  openai_compatible_llm_client wrapped_completion_client(
+    {
+      .base_url = "https://openrouter.ai/api",
+      .api_key = "",
+      .require_api_key = false,
+      .model = "test-model",
+      .max_retries = 0,
+    },
+    wrapped_completion_http);
+  const auto wrapped_completion_response = wrapped_completion_client.complete(request);
+  require(wrapped_completion_response.content == "response_format is not supported by this model",
+    "wrapped provider errors should expose the nested diagnostic for non-streaming responses");
+
+  auto wrapped_streaming_http =
+    std::make_shared<streaming_capture_http_client>(std::vector<std::string> {
+      std::string { "data: " } + wrapped_provider_error + "\n\n",
+    });
+  openai_compatible_llm_client wrapped_streaming_client(
+    {
+      .base_url = "https://openrouter.ai/api",
+      .api_key = "",
+      .require_api_key = false,
+      .model = "test-model",
+      .max_retries = 0,
+    },
+    wrapped_streaming_http);
+  const auto wrapped_streaming_response = wrapped_streaming_client.complete_stream(request, {});
+  require(wrapped_streaming_response.content == "response_format is not supported by this model",
+    "wrapped provider errors should expose the nested diagnostic for streaming responses");
+
+  const auto plain_provider_error =
+    R"({"error":{"message":"Provider returned error","code":429,"metadata":{"provider_name":"Example Provider","raw":"test-model is temporarily rate-limited upstream. Please retry shortly."}}})";
+  auto plain_provider_http =
+    std::make_shared<streaming_capture_http_client>(std::vector<std::string> {},
+      http_response {
+        .error_code = http_status_code::too_many_requests,
+        .status_code = 429,
+        .body = plain_provider_error,
+      });
+  openai_compatible_llm_client plain_provider_client(
+    {
+      .base_url = "https://openrouter.ai/api",
+      .api_key = "",
+      .require_api_key = false,
+      .model = "test-model",
+      .max_retries = 0,
+    },
+    plain_provider_http);
+  const auto plain_provider_response = plain_provider_client.complete(request);
+  require(plain_provider_response.error_code == agent::llm_error_code::rate_limited,
+    "wrapped HTTP 429 provider errors should retain rate-limit classification");
+  require(plain_provider_response.content ==
+      "test-model is temporarily rate-limited upstream. Please retry shortly.",
+    "plain-text provider metadata should replace the generic outer provider error");
 }
 
 void test_openai_compatible_client_reports_missing_api_key_without_network() {
