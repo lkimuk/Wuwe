@@ -620,6 +620,8 @@ void test_reasoning_language_contract_is_mapped_to_provider_payloads() {
     .locale = "zh-CN",
   };
   request.max_output_tokens = 321;
+  request.messages.push_back(
+    { .role = "system", .content = "Host-specific system instruction." });
   request.messages.push_back({ .role = "user", .content = "分析一下当前应用" });
 
   auto openai_http = std::make_shared<capture_http_client>(
@@ -639,6 +641,12 @@ void test_reasoning_language_contract_is_mapped_to_provider_payloads() {
   require(openai_body["messages"].front().value("content", std::string {}).find("zh-CN") !=
             std::string::npos,
     "OpenAI-compatible language contract should include requested language");
+  require(openai_body["messages"].size() == 2 &&
+            openai_body["messages"].front().value("content", std::string {}).find(
+              "Host-specific system instruction.") != std::string::npos,
+    "OpenAI-compatible language and host instructions should share one system message");
+  require(openai_body["messages"][1].value("role", std::string {}) == "user",
+    "OpenAI-compatible conversation should begin with user after the merged system message");
   require(openai_body.value("max_tokens", 0) == 321,
     "OpenAI-compatible requests should carry the output token limit");
   require(openai_response.reasoning_metadata.at("requested_language") == "zh-CN",

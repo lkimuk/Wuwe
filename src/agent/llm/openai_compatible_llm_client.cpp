@@ -773,13 +773,18 @@ llm_response openai_compatible_llm_client::complete_stream(
 }
 
 json openai_compatible_llm_client::build_openai_payload(const llm_request& request) const {
-  auto messages = json::array();
-  const auto language_contract = llm_language_contract(request.language);
-  if (!language_contract.empty()) {
-    messages.push_back({ { "role", "system" }, { "content", language_contract } });
-  }
+  auto conversation_messages = json::array();
+  std::string system = llm_language_contract(request.language);
 
   for (const auto& msg : request.messages) {
+    if (msg.role == "system") {
+      if (!system.empty() && !msg.content.empty()) {
+        system += "\n\n";
+      }
+      system += msg.content;
+      continue;
+    }
+
     json message = { { "role", msg.role }, { "content", msg.content } };
     if (msg.name.has_value()) {
       message["name"] = *msg.name;
@@ -796,6 +801,14 @@ json openai_compatible_llm_client::build_openai_payload(const llm_request& reque
       }
       message["tool_calls"] = std::move(tool_calls);
     }
+    conversation_messages.push_back(std::move(message));
+  }
+
+  auto messages = json::array();
+  if (!system.empty()) {
+    messages.push_back({ { "role", "system" }, { "content", std::move(system) } });
+  }
+  for (auto& message : conversation_messages) {
     messages.push_back(std::move(message));
   }
 
