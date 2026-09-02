@@ -164,6 +164,26 @@ public:
   std::vector<llm_request> requests;
 };
 
+class promised_tool_client final : public llm_client {
+public:
+  llm_response complete(const llm_request& request) override {
+    requests.push_back(request);
+    if (requests.size() == 1) {
+      return { .content = "I will call the tool now." };
+    }
+    if (requests.size() == 2) {
+      return {
+        .tool_calls = {
+          { .id = "continued-call", .name = "echo_text",
+            .arguments_json = R"({"text":"continued"})" },
+        },
+      };
+    }
+    return { .content = "terminal answer" };
+  }
+
+  std::vector<llm_request> requests;
+};
 class named_tool_call_client final : public llm_client {
 public:
   explicit named_tool_call_client(std::string tool_name) : tool_name_(std::move(tool_name)) {
@@ -584,6 +604,44 @@ void test_runner_prepares_model_requests_and_observes_results() {
   require(
     observed_response.content == "prepared response" && observed_response.usage.total_tokens == 10,
     "the result observer should receive the completed provider response");
+}
+
+void test_runner_continues_after_nonterminal_model_response() {
+  promised_tool_client client;
+  auto provider = std::make_shared<duplicate_echo_provider>();
+  llm_agent_run_options options;
+  options.max_model_continuations = 1;
+  options.callbacks.continue_after_model_response = [](
+      const llm_request&, const llm_response& response, std::size_t used) {
+    if (used == 0 && response.content == "I will call the tool now.") {
+      return std::optional<llm_agent_model_continuation> {
+        llm_agent_model_continuation {
+          .instruction = "Call the promised tool now; do not narrate the action.",
+          .tool_choice = llm_tool_choice {
+            .mode = llm_tool_choice_mode::required,
+          },
+        }
+      };
+    }
+    return std::optional<llm_agent_model_continuation> {};
+  };
+
+  const auto response = llm_agent_runner(client, provider).complete(
+    "perform the task", std::move(options));
+  require(!response.error_code && response.content == "terminal answer",
+    "runner should continue a nonterminal prose response and execute the next tool call");
+  require(client.requests.size() == 3,
+    "runner should perform the forced continuation, tool round, and terminal model round");
+  require(client.requests[1].tool_choice &&
+      client.requests[1].tool_choice->mode == llm_tool_choice_mode::required,
+    "continuation should apply its one-round tool choice contract");
+  require(client.requests[1].messages.size() >= 3 &&
+      client.requests[1].messages[1].role == "assistant" &&
+      client.requests[1].messages[1].content == "I will call the tool now." &&
+      client.requests[1].messages[2].role == "user",
+    "continuation should preserve the nonterminal response and append the host instruction");
+  require(!client.requests[2].tool_choice,
+    "the continuation tool choice must not leak into later model rounds");
 }
 
 void test_runner_can_defer_assistant_memory_persistence() {
@@ -1604,6 +1662,8 @@ int main() {
       test_runner_callbacks_and_stop_token_reach_provider);
     run("runner prepares model requests and observes results",
       test_runner_prepares_model_requests_and_observes_results);
+    run("runner continues after nonterminal model response",
+      test_runner_continues_after_nonterminal_model_response);
     run("runner can defer assistant memory persistence",
       test_runner_can_defer_assistant_memory_persistence);
     run(

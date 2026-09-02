@@ -82,6 +82,11 @@ struct llm_agent_event {
   const agent::llm::tool_output_projection_report* tool_output_projection {};
 };
 
+struct llm_agent_model_continuation {
+  std::string instruction;
+  std::optional<llm_tool_choice> tool_choice;
+};
+
 struct llm_agent_callbacks {
   std::function<bool(const llm_request&)> on_model_start;
   std::function<bool(const llm_tool_call&)> allow_tool_call;
@@ -101,6 +106,8 @@ struct llm_agent_callbacks {
     prepare_tool_result;
   std::function<std::optional<llm_request>(llm_request)> prepare_model_request;
   std::function<void(const llm_request&, const llm_response&)> on_model_result;
+  std::function<std::optional<llm_agent_model_continuation>(
+    const llm_request&, const llm_response&, std::size_t)> continue_after_model_response;
   std::function<void(const agent::llm::context_budget_report&)> on_context_budget;
   std::function<llm_tool_authorization(const agent::tools::tool_invocation&)> authorize_tool_call;
   std::function<void(const llm_tool_call&, const agent::llm::tool_output_projection_report&)>
@@ -118,6 +125,7 @@ struct llm_agent_run_options {
   std::shared_ptr<agent::runtime::scheduler> scheduler;
   std::shared_ptr<const agent::llm::context_token_estimator> token_estimator;
   std::size_t max_in_flight_tool_invocations { 16 };
+  std::size_t max_model_continuations { 0 };
   llm_agent_callbacks callbacks;
   bool persist_request_messages { true };
   bool persist_assistant_messages { true };
@@ -564,6 +572,7 @@ private:
     llm_tool_call last_tool_call;
     std::string last_tool_projection;
     std::set<std::string> seen_tool_call_ids;
+    std::size_t used_model_continuations = 0;
     const bool use_streaming = should_stream(options.callbacks);
 
     while (true) {
@@ -578,6 +587,64 @@ private:
         return finalize_durable_run(std::move(timed_out), durable);
       }
       if (response.tool_calls.empty()) {
+        const auto continuation = options.callbacks.continue_after_model_response
+          ? options.callbacks.continue_after_model_response(
+              request, response, used_model_continuations)
+          : std::optional<llm_agent_model_continuation> {};
+        if (continuation) {
+          if (continuation->instruction.empty()) {
+            response.usage = accumulated_usage;
+            response.error_code =
+              agent::make_error_code(agent::llm_error_code::invalid_request);
+            response.stop_reason = "empty_model_continuation_instruction";
+            response.metadata["stop_reason"] = response.stop_reason;
+            response.content =
+              "Agent model continuation callback returned an empty instruction.";
+            emit_error(options.callbacks, response);
+            return finalize_durable_run(std::move(response), durable);
+          }
+          if (used_model_continuations >= options.max_model_continuations) {
+            response.usage = accumulated_usage;
+            response.error_code =
+              agent::make_error_code(agent::llm_error_code::agent_loop_budget_exceeded);
+            response.stop_reason = "model_continuation_budget_exceeded";
+            response.metadata["stop_reason"] = response.stop_reason;
+            response.metadata["used_model_continuations"] =
+              std::to_string(used_model_continuations);
+            response.metadata["max_model_continuations"] =
+              std::to_string(options.max_model_continuations);
+            response.content =
+              "Agent model continuation budget exceeded before producing a terminal answer.";
+            emit_error(options.callbacks, response);
+            return finalize_durable_run(std::move(response), durable);
+          }
+
+          request.messages.push_back({
+            .role = "assistant",
+            .content = response.content,
+          });
+          request.messages.push_back({
+            .role = "user",
+            .content = continuation->instruction,
+          });
+          request.tool_choice = continuation->tool_choice;
+          ++used_model_continuations;
+          response = complete_model(request, options, client_stop_token, use_streaming);
+          request.tool_choice.reset();
+          agent::llm::accumulate_llm_usage(accumulated_usage, response.usage);
+          if (is_cancelled() || response.error_code == agent::llm_error_code::cancelled) {
+            auto cancelled = cancelled_response(options.callbacks);
+            cancelled.usage = accumulated_usage;
+            return finalize_durable_run(std::move(cancelled), durable);
+          }
+          if (response.error_code) {
+            response.usage = accumulated_usage;
+            emit_error(options.callbacks, response);
+            return finalize_durable_run(std::move(response), durable);
+          }
+          emit_nonstreaming_content(options.callbacks, response, use_streaming);
+          continue;
+        }
         response.usage = accumulated_usage;
         if (options.persist_assistant_messages) {
           observe_assistant_response(response, nullptr, options.context);
