@@ -12,12 +12,13 @@ namespace wuwe::agent::knowledge {
 
 struct tika_runtime_config {
   std::string host { "127.0.0.1" };
+  // Set to 0 to select an available loopback port when the owned process starts.
   int port { 9998 };
   std::string base_url;
   std::filesystem::path runtime_dir;
   std::filesystem::path jar_path;
   std::filesystem::path java_path;
-  int startup_timeout_ms { 30000 };
+  int startup_timeout_ms { 60000 };
   int poll_interval_ms { 250 };
   bool stop_on_destroy { true };
 };

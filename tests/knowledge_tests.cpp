@@ -851,6 +851,71 @@ void test_url_loader_live_integration_when_configured() {
     documents.front().metadata.at("loader") == "url", "live URL loader should record URL metadata");
 }
 
+void test_tika_runtime_rejects_invalid_configuration() {
+  for (const int port : { -1, 65536 }) {
+    bool threw = false;
+    try {
+      (void)tika_runtime_process::discover({ .port = port });
+    }
+    catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    require(threw, "tika runtime should reject ports outside the TCP range");
+  }
+
+  bool threw = false;
+  try {
+    (void)tika_runtime_process::discover({
+      .port = 0,
+      .base_url = "http://127.0.0.1:9998",
+    });
+  }
+  catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  require(threw, "tika runtime should reject an ambiguous automatic-port base URL");
+}
+
+void test_tika_runtime_detects_early_process_exit() {
+  const auto root = unique_temp_path("");
+  const auto jar_path = root / "tika-server-standard.jar";
+  std::filesystem::create_directories(root);
+  std::ofstream(jar_path, std::ios::binary) << "not a jar";
+
+  tika_runtime_config config;
+  config.port = 0;
+  config.runtime_dir = root;
+  config.jar_path = jar_path;
+#ifdef _WIN32
+  config.java_path = "where.exe";
+#else
+  config.java_path = "/bin/false";
+#endif
+  config.startup_timeout_ms = 10000;
+  config.poll_interval_ms = 50;
+
+  const auto started = std::chrono::steady_clock::now();
+  bool threw = false;
+  std::string error_message;
+  try {
+    tika_runtime_process runtime;
+    runtime.start(config);
+  }
+  catch (const std::runtime_error& error) {
+    error_message = error.what();
+    threw = contains(error.what(), "exited before becoming available")
+      || contains(error.what(), "exited during startup");
+  }
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+
+  std::error_code ignored;
+  std::filesystem::remove_all(root, ignored);
+  require(threw,
+    "tika runtime should report an owned process that exits during startup: " + error_message);
+  require(elapsed < std::chrono::seconds(5),
+    "tika runtime should detect process exit without waiting for the startup timeout");
+}
+
 void test_tika_runtime_discovers_packaged_sidecar() {
   const auto root = unique_temp_path("");
   const auto tika_dir = root / "runtime" / "tika";
@@ -893,7 +958,65 @@ void test_tika_runtime_discovers_packaged_sidecar() {
     "tika runtime should prefer bundled package JRE on Unix-like systems");
 #endif
 
+  auto automatic_discovery = tika_runtime_process::discover({
+    .port = 0,
+    .runtime_dir = tika_dir,
+  });
+  require(automatic_discovery.found, "tika runtime should discover an automatic-port sidecar");
+  require(automatic_discovery.config.port == 0,
+    "tika runtime discovery should defer automatic port selection until process startup");
+  require(automatic_discovery.config.base_url.empty(),
+    "tika runtime discovery should not publish an unresolved port-zero URL");
+
   cleanup();
+}
+
+void test_tika_runtime_dynamic_ports_when_enabled() {
+  if (env_value("WUWE_TEST_TIKA_RUNTIME") != "1") {
+    println("[SKIP] dynamic Tika runtime integration requires WUWE_TEST_TIKA_RUNTIME=1");
+    return;
+  }
+
+  tika_runtime_config config;
+  config.port = 0;
+  config.runtime_dir = std::filesystem::current_path() / "third_party" / "runtime" / "tika";
+
+  auto first = tika_runtime_process::ensure_running(config);
+  require(first && first->owns_process() && first->running(),
+    "automatic Tika runtime should start an owned process");
+  require(first->config().port > 0 && first->config().port <= 65535,
+    "automatic Tika runtime should expose the selected TCP port");
+  require(!contains(first->base_url(), ":0"),
+    "automatic Tika runtime should expose a resolved base URL");
+  require(tika_runtime_process::service_available(first->base_url(), 3000),
+    "automatic Tika runtime should become healthy");
+
+  auto second = tika_runtime_process::ensure_running(config);
+  require(second && second->owns_process() && second->running(),
+    "a second automatic Tika runtime should start independently");
+  require(second->config().port != first->config().port,
+    "independent automatic Tika runtimes should use different ports");
+  require(tika_runtime_process::service_available(second->base_url(), 3000),
+    "second automatic Tika runtime should become healthy");
+
+  const auto first_url = first->base_url();
+  require(first->config().stop_on_destroy,
+    "automatic Tika runtime should preserve owned-process destruction policy");
+  const std::weak_ptr<tika_runtime_process> first_lifetime = first;
+  first.reset();
+  require(first_lifetime.expired(),
+    "automatic Tika runtime should not retain hidden shared ownership");
+  bool first_stopped = false;
+  for (int attempt = 0; attempt < 40; ++attempt) {
+    if (!tika_runtime_process::service_available(first_url, 250)) {
+      first_stopped = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  require(first_stopped, "destroying an owned Tika runtime should stop its service");
+  require(tika_runtime_process::service_available(second->base_url(), 3000),
+    "stopping one automatic runtime should not affect another runtime");
 }
 
 void test_parser_registry_selects_file_and_tika_parsers() {
@@ -3391,7 +3514,11 @@ int main() {
     run("document loader loads url documents", test_document_loader_loads_url_documents);
     run("url loader live integration when configured",
       test_url_loader_live_integration_when_configured);
+    run("tika runtime rejects invalid configuration",
+      test_tika_runtime_rejects_invalid_configuration);
+    run("tika runtime detects early process exit", test_tika_runtime_detects_early_process_exit);
     run("tika runtime discovers packaged sidecar", test_tika_runtime_discovers_packaged_sidecar);
+    run("tika runtime dynamic ports when enabled", test_tika_runtime_dynamic_ports_when_enabled);
     run("parser registry selects file and tika parsers",
       test_parser_registry_selects_file_and_tika_parsers);
     run("document loader loads files with stable metadata",

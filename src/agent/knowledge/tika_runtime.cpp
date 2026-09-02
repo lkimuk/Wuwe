@@ -3,11 +3,14 @@
 #include <chrono>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include <wuwe/net/default_http_client.h>
+
+#include "tika_runtime_port.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -31,6 +34,13 @@
 namespace wuwe::agent::knowledge {
 namespace {
 
+constexpr int automatic_port_attempts = 3;
+
+class runtime_process_exit_error : public std::runtime_error {
+public:
+  using std::runtime_error::runtime_error;
+};
+
 std::string trim_url(std::string value) {
   while (!value.empty() && value.back() == '/') {
     value.pop_back();
@@ -38,11 +48,39 @@ std::string trim_url(std::string value) {
   return value;
 }
 
+void validate_config(const tika_runtime_config& config) {
+  if (config.port < 0 || config.port > 65535) {
+    throw std::invalid_argument("Tika runtime port must be between 0 and 65535");
+  }
+  if (config.startup_timeout_ms <= 0) {
+    throw std::invalid_argument("Tika runtime startup_timeout_ms must be positive");
+  }
+  if (config.poll_interval_ms <= 0) {
+    throw std::invalid_argument("Tika runtime poll_interval_ms must be positive");
+  }
+  if (config.base_url.empty() && config.host.empty()) {
+    throw std::invalid_argument("Tika runtime host must not be empty");
+  }
+  if (config.port == 0 && !config.base_url.empty()) {
+    throw std::invalid_argument("Tika runtime automatic port cannot be combined with base_url");
+  }
+}
+
+std::string url_host(const std::string& host) {
+  if (host.find(':') != std::string::npos && (host.empty() || host.front() != '[')) {
+    return "[" + host + "]";
+  }
+  return host;
+}
+
 std::string default_base_url(const tika_runtime_config& config) {
   if (!config.base_url.empty()) {
     return trim_url(config.base_url);
   }
-  return "http://" + config.host + ":" + std::to_string(config.port);
+  if (config.port == 0) {
+    return {};
+  }
+  return "http://" + url_host(config.host) + ":" + std::to_string(config.port);
 }
 
 std::optional<std::filesystem::path> executable_directory() {
@@ -168,22 +206,10 @@ std::string build_windows_command_line(const tika_runtime_config& config) {
   output += quote_windows_arg(config.host);
   output += " --port ";
   output += std::to_string(config.port);
+  output += " --noFork";
   return output;
 }
 #endif
-
-void wait_until_available(const tika_runtime_config& config) {
-  const auto started = std::chrono::steady_clock::now();
-  const auto timeout = std::chrono::milliseconds(config.startup_timeout_ms);
-  const auto interval = std::chrono::milliseconds(config.poll_interval_ms);
-  while (std::chrono::steady_clock::now() - started < timeout) {
-    if (tika_runtime_process::service_available(config.base_url, 1000)) {
-      return;
-    }
-    std::this_thread::sleep_for(interval);
-  }
-  throw std::runtime_error("Tika runtime did not become available at " + config.base_url);
-}
 
 } // namespace
 
@@ -194,12 +220,19 @@ struct tika_runtime_process::impl {
 #ifdef _WIN32
   HANDLE process { nullptr };
   HANDLE thread { nullptr };
+  HANDLE job { nullptr };
 #else
-  pid_t pid { -1 };
+  mutable pid_t pid { -1 };
+  mutable int exit_status { 0 };
+  mutable bool has_exit_status { false };
 #endif
 
   ~impl() {
-    stop();
+    if (config.stop_on_destroy) {
+      stop_process();
+    } else {
+      release_process();
+    }
   }
 
   void start_process() {
@@ -215,7 +248,7 @@ struct tika_runtime_process::impl {
       nullptr,
       nullptr,
       FALSE,
-      CREATE_NO_WINDOW,
+      CREATE_NO_WINDOW | CREATE_SUSPENDED,
       nullptr,
       working_directory.empty() ? nullptr : working_directory.c_str(),
       &startup,
@@ -225,6 +258,44 @@ struct tika_runtime_process::impl {
     }
     process = info.hProcess;
     thread = info.hThread;
+    if (config.stop_on_destroy) {
+      job = CreateJobObjectA(nullptr, nullptr);
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits {};
+      limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      if (!job
+        || !SetInformationJobObject(
+          job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))
+        || !AssignProcessToJobObject(job, process)) {
+        const DWORD error = GetLastError();
+        (void)TerminateProcess(process, 1);
+        (void)WaitForSingleObject(process, 2000);
+        CloseHandle(thread);
+        CloseHandle(process);
+        if (job) {
+          CloseHandle(job);
+        }
+        thread = nullptr;
+        process = nullptr;
+        job = nullptr;
+        throw std::system_error(
+          static_cast<int>(error), std::system_category(), "failed to manage Tika process job");
+      }
+    }
+    if (ResumeThread(thread) == static_cast<DWORD>(-1)) {
+      const DWORD error = GetLastError();
+      (void)TerminateProcess(process, 1);
+      (void)WaitForSingleObject(process, 2000);
+      CloseHandle(thread);
+      CloseHandle(process);
+      if (job) {
+        CloseHandle(job);
+      }
+      thread = nullptr;
+      process = nullptr;
+      job = nullptr;
+      throw std::system_error(
+        static_cast<int>(error), std::system_category(), "failed to manage Tika process job");
+    }
     own_process = true;
 #else
     const auto child = fork();
@@ -243,6 +314,7 @@ struct tika_runtime_process::impl {
         config.host,
         "--port",
         std::to_string(config.port),
+        "--noFork",
       };
       std::vector<char*> argv;
       argv.reserve(args.size() + 1);
@@ -255,20 +327,67 @@ struct tika_runtime_process::impl {
     }
     pid = child;
     own_process = true;
+    has_exit_status = false;
 #endif
   }
 
-  void stop() {
-    if (!own_process || !config.stop_on_destroy) {
+  void stop_process() {
+    if (!own_process) {
       return;
     }
 #ifdef _WIN32
+    if (job) {
+      (void)TerminateJobObject(job, 1);
+    } else if (process) {
+      (void)TerminateProcess(process, 1);
+    }
     if (process) {
-      const auto wait_result = WaitForSingleObject(process, 2000);
-      if (wait_result == WAIT_TIMEOUT) {
-        TerminateProcess(process, 1);
-        WaitForSingleObject(process, 2000);
+      (void)WaitForSingleObject(process, 2000);
+    }
+    if (thread) {
+      CloseHandle(thread);
+      thread = nullptr;
+    }
+    if (process) {
+      CloseHandle(process);
+      process = nullptr;
+    }
+    if (job) {
+      CloseHandle(job);
+      job = nullptr;
+    }
+#else
+    if (pid > 0) {
+      (void)kill(pid, SIGTERM);
+      for (int i = 0; i < 20; ++i) {
+        int status = 0;
+        const auto result = waitpid(pid, &status, WNOHANG);
+        if (result == pid) {
+          exit_status = status;
+          has_exit_status = true;
+          pid = -1;
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
+      if (pid > 0) {
+        (void)kill(pid, SIGKILL);
+        (void)waitpid(pid, nullptr, 0);
+        pid = -1;
+      }
+    }
+#endif
+    own_process = false;
+  }
+
+  void release_process() {
+    if (!own_process) {
+      return;
+    }
+#ifdef _WIN32
+    if (job) {
+      CloseHandle(job);
+      job = nullptr;
     }
     if (thread) {
       CloseHandle(thread);
@@ -280,20 +399,11 @@ struct tika_runtime_process::impl {
     }
 #else
     if (pid > 0) {
-      for (int i = 0; i < 20; ++i) {
-        int status = 0;
-        const auto result = waitpid(pid, &status, WNOHANG);
-        if (result == pid) {
-          pid = -1;
-          break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
-      if (pid > 0) {
-        kill(pid, SIGTERM);
-        (void)waitpid(pid, nullptr, 0);
-        pid = -1;
-      }
+      const pid_t child = pid;
+      std::thread([child] {
+        (void)waitpid(child, nullptr, 0);
+      }).detach();
+      pid = -1;
     }
 #endif
     own_process = false;
@@ -305,10 +415,66 @@ struct tika_runtime_process::impl {
       return false;
     }
     DWORD exit_code = 0;
-    return GetExitCodeProcess(process, &exit_code) && exit_code == STILL_ACTIVE;
+    if (!GetExitCodeProcess(process, &exit_code)) {
+      return false;
+    }
+    return exit_code == STILL_ACTIVE;
 #else
-    return pid > 0;
+    if (pid <= 0) {
+      return false;
+    }
+    int status = 0;
+    const auto result = waitpid(pid, &status, WNOHANG);
+    if (result == 0) {
+      return true;
+    }
+    if (result == pid) {
+      pid = -1;
+      exit_status = status;
+      has_exit_status = true;
+    }
+    return false;
 #endif
+  }
+
+  std::string exit_description() const {
+#ifdef _WIN32
+    DWORD exit_code = 0;
+    if (process && GetExitCodeProcess(process, &exit_code) && exit_code != STILL_ACTIVE) {
+      return " (exit code " + std::to_string(exit_code) + ")";
+    }
+#else
+    if (has_exit_status) {
+      if (WIFEXITED(exit_status)) {
+        return " (exit code " + std::to_string(WEXITSTATUS(exit_status)) + ")";
+      }
+      if (WIFSIGNALED(exit_status)) {
+        return " (signal " + std::to_string(WTERMSIG(exit_status)) + ")";
+      }
+    }
+#endif
+    return {};
+  }
+
+  void wait_until_available() {
+    const auto started = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::milliseconds(config.startup_timeout_ms);
+    const auto interval = std::chrono::milliseconds(config.poll_interval_ms);
+    while (std::chrono::steady_clock::now() - started < timeout) {
+      if (!running()) {
+        throw runtime_process_exit_error("Tika runtime exited before becoming available at "
+          + config.base_url + exit_description());
+      }
+      if (tika_runtime_process::service_available(config.base_url, 1000)) {
+        if (!running()) {
+          throw runtime_process_exit_error("Tika runtime exited during startup at " + config.base_url
+            + exit_description());
+        }
+        return;
+      }
+      std::this_thread::sleep_for(interval);
+    }
+    throw std::runtime_error("Tika runtime did not become available at " + config.base_url);
   }
 };
 
@@ -322,7 +488,10 @@ tika_runtime_process::tika_runtime_process(tika_runtime_process&&) noexcept = de
 tika_runtime_process& tika_runtime_process::operator=(tika_runtime_process&&) noexcept = default;
 
 tika_runtime_discovery tika_runtime_process::discover(tika_runtime_config config) {
-  config.base_url = default_base_url(config);
+  validate_config(config);
+  if (config.port != 0) {
+    config.base_url = default_base_url(config);
+  }
   if (!config.runtime_dir.empty()) {
     auto jar = find_tika_jar(config.runtime_dir);
     if (!jar) {
@@ -374,6 +543,7 @@ bool tika_runtime_process::service_available(
 
 std::shared_ptr<tika_runtime_process> tika_runtime_process::ensure_running(
   tika_runtime_config config) {
+  validate_config(config);
   auto discovery = discover(std::move(config));
   if (!discovery.found) {
     return {};
@@ -385,11 +555,17 @@ std::shared_ptr<tika_runtime_process> tika_runtime_process::ensure_running(
 }
 
 void tika_runtime_process::start(tika_runtime_config config) {
-  config.base_url = default_base_url(config);
-  if (service_available(config.base_url, 1000)) {
-    impl_->config = std::move(config);
-    impl_->own_process = false;
-    return;
+  validate_config(config);
+  impl_->stop_process();
+
+  const bool automatic_port = config.port == 0;
+  if (!automatic_port) {
+    config.base_url = default_base_url(config);
+    if (service_available(config.base_url, 1000)) {
+      impl_->config = std::move(config);
+      impl_->own_process = false;
+      return;
+    }
   }
   if (config.jar_path.empty()) {
     auto discovery = discover(std::move(config));
@@ -401,19 +577,45 @@ void tika_runtime_process::start(tika_runtime_config config) {
   if (config.java_path.empty()) {
     config.java_path = default_java_path(config.runtime_dir);
   }
-  impl_->config = std::move(config);
-  impl_->start_process();
-  try {
-    wait_until_available(impl_->config);
+  if (!automatic_port) {
+    impl_->config = std::move(config);
+    impl_->start_process();
+    try {
+      impl_->wait_until_available();
+    }
+    catch (...) {
+      impl_->stop_process();
+      throw;
+    }
+    return;
   }
-  catch (...) {
-    impl_->stop();
-    throw;
+
+  std::string last_error;
+  for (int attempt = 0; attempt < automatic_port_attempts; ++attempt) {
+    auto candidate = config;
+    candidate.port = detail::select_available_loopback_port(candidate.host);
+    candidate.base_url = default_base_url(candidate);
+    impl_->config = std::move(candidate);
+    try {
+      impl_->start_process();
+      impl_->wait_until_available();
+      return;
+    }
+    catch (const runtime_process_exit_error& error) {
+      last_error = error.what();
+      impl_->stop_process();
+    }
+    catch (...) {
+      impl_->stop_process();
+      throw;
+    }
   }
+  throw std::runtime_error("Tika runtime failed to start on an automatically selected port after "
+    + std::to_string(automatic_port_attempts) + " attempts: " + last_error);
 }
 
 void tika_runtime_process::stop() {
-  impl_->stop();
+  impl_->stop_process();
 }
 
 bool tika_runtime_process::running() const {
