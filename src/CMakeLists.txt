@@ -90,6 +90,7 @@ if(WUWE_FETCH_CPR)
     # Keep dependency-specific policy in a function scope so source consumers do
     # not inherit Wuwe's curl/CPR cache preferences.
     function(wuwe_fetch_cpr_dependency)
+        list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
         set(BUILD_SHARED_LIBS OFF)
         set(BUILD_STATIC_LIBS ON)
         set(CPR_CURL_USE_LIBPSL OFF)

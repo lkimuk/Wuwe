@@ -25,13 +25,50 @@ if(WUWE_PACKAGE_WITH_SQLITE)
 endif()
 
 set(WUWE_DEPENDENCY_CMAKE_DIR "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/cmake")
+set(WUWE_USING_BUNDLED_CURL OFF)
 
 if(NOT TARGET CURL::libcurl_static AND NOT TARGET CURL::libcurl)
     if(EXISTS "${WUWE_DEPENDENCY_CMAKE_DIR}/CURL/CURLConfig.cmake")
         include("${WUWE_DEPENDENCY_CMAKE_DIR}/CURL/CURLConfig.cmake")
+        set(WUWE_USING_BUNDLED_CURL ON)
     else()
         find_dependency(CURL REQUIRED)
     endif()
+endif()
+
+# The packaged static curl must keep using the zlib archive it was built with.
+# Do not let an unrelated consumer dependency with the generic ZLIB::ZLIB name
+# silently change that link contract.
+if(WUWE_USING_BUNDLED_CURL)
+    find_library(WUWE_BUNDLED_ZLIB_LIBRARY
+        NAMES zlibstatic zlibstat zlib z
+        PATHS "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@"
+        NO_DEFAULT_PATH REQUIRED)
+    if(NOT TARGET wuwe::bundled_zlib)
+        add_library(wuwe::bundled_zlib STATIC IMPORTED)
+        set_target_properties(wuwe::bundled_zlib PROPERTIES
+            IMPORTED_LOCATION "${WUWE_BUNDLED_ZLIB_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
+    endif()
+    foreach(WUWE_CURL_TARGET CURL::libcurl_static CURL::libcurl)
+        if(TARGET "${WUWE_CURL_TARGET}")
+            get_target_property(WUWE_CURL_ALIASED_TARGET
+                "${WUWE_CURL_TARGET}" ALIASED_TARGET)
+            if(WUWE_CURL_ALIASED_TARGET)
+                set(WUWE_CURL_MUTABLE_TARGET "${WUWE_CURL_ALIASED_TARGET}")
+            else()
+                set(WUWE_CURL_MUTABLE_TARGET "${WUWE_CURL_TARGET}")
+            endif()
+            get_target_property(WUWE_CURL_LINK_LIBRARIES
+                "${WUWE_CURL_MUTABLE_TARGET}" INTERFACE_LINK_LIBRARIES)
+            if(WUWE_CURL_LINK_LIBRARIES)
+                string(REPLACE "ZLIB::ZLIB" "wuwe::bundled_zlib"
+                    WUWE_CURL_LINK_LIBRARIES "${WUWE_CURL_LINK_LIBRARIES}")
+                set_target_properties("${WUWE_CURL_MUTABLE_TARGET}" PROPERTIES
+                    INTERFACE_LINK_LIBRARIES "${WUWE_CURL_LINK_LIBRARIES}")
+            endif()
+        endif()
+    endforeach()
 endif()
 
 if(NOT TARGET cpr::cpr)
