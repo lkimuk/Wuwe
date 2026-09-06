@@ -233,6 +233,10 @@ inline std::string llm_language_contract(const llm_language_preferences& prefere
 struct chat_message {
   std::string role;
   std::string content;
+  // Provider-visible reasoning state that must be replayed verbatim by
+  // providers such as DeepSeek when tools are used in thinking mode. This is
+  // protocol state, not user-visible assistant content.
+  std::string reasoning_content;
   std::optional<std::string> name;
   std::optional<std::string> tool_call_id;
   std::vector<llm_tool_call> tool_calls;

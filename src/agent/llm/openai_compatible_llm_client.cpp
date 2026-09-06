@@ -9,11 +9,16 @@
 #include <wuwe/net/sse_event_parser.h>
 
 #include <chrono>
+#include <atomic>
+#include <algorithm>
+#include <cctype>
 #include <initializer_list>
 #include <map>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <unordered_set>
 
 WUWE_NAMESPACE_BEGIN
 
@@ -257,6 +262,147 @@ std::string build_chat_completions_url(const llm_client_config& config) {
   return config.base_url + path;
 }
 
+std::string trim_copy(std::string value) {
+  const auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
+  value.erase(value.begin(), std::find_if_not(value.begin(), value.end(), is_space));
+  value.erase(std::find_if_not(value.rbegin(), value.rend(), is_space).base(), value.end());
+  return value;
+}
+
+void replace_all(std::string& value, std::string_view from, std::string_view to) {
+  std::size_t offset = 0;
+  while ((offset = value.find(from, offset)) != std::string::npos) {
+    value.replace(offset, from.size(), to);
+    offset += to.size();
+  }
+}
+
+std::string canonicalize_dsml(std::string value) {
+  replace_all(value, "<｜DSML｜", "<|DSML|");
+  replace_all(value, "</｜DSML｜", "</|DSML|");
+  replace_all(value, "“", "\"");
+  replace_all(value, "”", "\"");
+  return value;
+}
+
+std::optional<std::string> attribute_value(
+  const std::string& attributes, std::string_view name) {
+  const std::regex expression(
+    std::string(R"re((?:^|\s))re") + std::string(name) +
+      R"re(\s*=\s*["']([^"']*)["'])re",
+    std::regex::icase);
+  std::smatch match;
+  if (!std::regex_search(attributes, match, expression)) {
+    return std::nullopt;
+  }
+  return match[1].str();
+}
+
+std::optional<std::vector<llm_tool_call>> parse_dsml_tool_calls(
+  const std::string& content, const std::vector<llm_tool>& available_tools,
+  std::size_t& protocol_offset) {
+  static std::atomic<std::uint64_t> next_call_id { 1 };
+  constexpr std::size_t max_protocol_bytes = 1024 * 1024;
+  if (content.size() > max_protocol_bytes) {
+    return std::nullopt;
+  }
+  const auto canonical = canonicalize_dsml(content);
+  const auto envelope = canonical.find("<|DSML|tool_calls");
+  if (envelope == std::string::npos) {
+    return std::nullopt;
+  }
+  const auto envelope_start_end = canonical.find('>', envelope);
+  constexpr std::string_view envelope_closing = "</|DSML|tool_calls>";
+  const auto envelope_end = canonical.find(envelope_closing, envelope);
+  if (envelope_start_end == std::string::npos || envelope_end == std::string::npos ||
+      envelope_start_end >= envelope_end ||
+      !trim_copy(canonical.substr(envelope_end + envelope_closing.size())).empty()) {
+    return std::nullopt;
+  }
+  protocol_offset = envelope;
+  const auto protocol = canonical.substr(
+    envelope_start_end + 1, envelope_end - envelope_start_end - 1);
+
+  const std::unordered_set<std::string> registered_tools = [&] {
+    std::unordered_set<std::string> names;
+    for (const auto& tool : available_tools) {
+      names.insert(tool.name);
+    }
+    return names;
+  }();
+  const std::regex invoke_expression(
+    R"re(<\|DSML\|invoke\s+([^>]*)>([\s\S]*?)</\|DSML\|invoke\s*>)re",
+    std::regex::icase);
+  const std::regex parameter_expression(
+    R"re(<\|DSML\|(?:invokeParameter|parameter)\s+([^>]*)>([\s\S]*?)</\|DSML\|(?:invokeParameter|parameter)\s*>)re",
+    std::regex::icase);
+
+  std::vector<llm_tool_call> calls;
+  for (auto invoke = std::sregex_iterator(protocol.begin(), protocol.end(), invoke_expression);
+       invoke != std::sregex_iterator(); ++invoke) {
+    const auto name = attribute_value((*invoke)[1].str(), "name");
+    if (!name || !registered_tools.contains(*name)) {
+      return std::nullopt;
+    }
+
+    json arguments = json::object();
+    const auto body = (*invoke)[2].str();
+    for (auto parameter = std::sregex_iterator(body.begin(), body.end(), parameter_expression);
+         parameter != std::sregex_iterator(); ++parameter) {
+      const auto attributes = (*parameter)[1].str();
+      const auto parameter_name = attribute_value(attributes, "name");
+      if (!parameter_name || parameter_name->empty() || arguments.contains(*parameter_name)) {
+        return std::nullopt;
+      }
+      const auto string_attribute = attribute_value(attributes, "string");
+      const auto raw_value = trim_copy((*parameter)[2].str());
+      if (!string_attribute || *string_attribute == "true" || *string_attribute == "1") {
+        arguments[*parameter_name] = raw_value;
+      }
+      else if (*string_attribute == "false" || *string_attribute == "0") {
+        auto parsed = json::parse(raw_value, nullptr, false);
+        if (parsed.is_discarded()) {
+          return std::nullopt;
+        }
+        arguments[*parameter_name] = std::move(parsed);
+      }
+      else {
+        return std::nullopt;
+      }
+    }
+    calls.push_back({
+      .id = "wuwe-dsml-" +
+            std::to_string(next_call_id.fetch_add(1, std::memory_order_relaxed)),
+      .name = *name,
+      .arguments_json = arguments.dump(),
+    });
+  }
+  if (calls.empty()) {
+    return std::nullopt;
+  }
+  return calls;
+}
+
+bool requires_explicit_tool_choice(const llm_request& request) {
+  return request.tool_choice &&
+         (request.tool_choice->mode == llm_tool_choice_mode::required ||
+           request.tool_choice->mode == llm_tool_choice_mode::named);
+}
+
+bool is_explicit_tool_choice_unsupported(const llm_response& response) {
+  if (!response.error_code) {
+    return false;
+  }
+  auto message = response.content;
+  std::transform(message.begin(), message.end(), message.begin(),
+    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return message.find("tool_choice") != std::string::npos &&
+         (message.find("not support") != std::string::npos ||
+           message.find("unsupported") != std::string::npos ||
+           message.find("does not support") != std::string::npos ||
+           message.find("不支持") != std::string::npos);
+}
+
 } // namespace
 
 openai_compatible_llm_client::openai_compatible_llm_client(llm_client_config config)
@@ -265,7 +411,14 @@ openai_compatible_llm_client::openai_compatible_llm_client(llm_client_config con
 
 openai_compatible_llm_client::openai_compatible_llm_client(
   llm_client_config config, std::shared_ptr<http_client> http)
-    : config_(normalize_config(std::move(config))), http_(std::move(http)) {
+    : openai_compatible_llm_client(
+        std::move(config), std::move(http), openai_compatibility_policy {}) {
+}
+
+openai_compatible_llm_client::openai_compatible_llm_client(llm_client_config config,
+  std::shared_ptr<http_client> http, openai_compatibility_policy policy)
+    : config_(normalize_config(std::move(config))), http_(std::move(http)),
+      compatibility_policy_(policy) {
   if (!http_) {
     http_ = std::make_shared<default_http_client>();
   }
@@ -294,7 +447,13 @@ llm_response openai_compatible_llm_client::complete(
     return { .error_code = agent::make_error_code(agent::llm_error_code::missing_api_key) };
   }
 
-  const auto payload = build_openai_payload(request);
+  llm_request effective_request = request;
+  if (compatibility_policy_.negotiate_explicit_tool_choice &&
+      explicit_tool_choice_unsupported_.load(std::memory_order_acquire) &&
+      requires_explicit_tool_choice(effective_request)) {
+    effective_request.tool_choice.reset();
+  }
+  const auto payload = build_openai_payload(effective_request);
 
   const http_request req {
     .method = "POST",
@@ -312,17 +471,29 @@ llm_response openai_compatible_llm_client::complete(
     }
 
     const auto response = http_->send(req);
-    llm_response parsed = parse_openai_response(response);
+    llm_response parsed = normalize_provider_response(
+      effective_request, parse_openai_response(response));
     agent::llm_detail::apply_retry_metadata(parsed, response);
     apply_reasoning_language_metadata(parsed,
-      request.language,
-      has_language_preferences(request.language) ? llm_reasoning_language_control::prompt_contract
-                                                 : llm_reasoning_language_control::unsupported);
+      effective_request.language,
+      has_language_preferences(effective_request.language)
+        ? llm_reasoning_language_control::prompt_contract
+        : llm_reasoning_language_control::unsupported);
     if (stop_token.stop_requested()) {
       return { .error_code = agent::make_error_code(agent::llm_error_code::cancelled) };
     }
     if (!parsed.error_code) {
       return parsed;
+    }
+    if (compatibility_policy_.negotiate_explicit_tool_choice &&
+        requires_explicit_tool_choice(effective_request) &&
+        is_explicit_tool_choice_unsupported(parsed)) {
+      explicit_tool_choice_unsupported_.store(true, std::memory_order_release);
+      auto compatible_request = request;
+      compatible_request.tool_choice.reset();
+      auto retried = complete(compatible_request, stop_token);
+      retried.metadata["wuwe_tool_choice_fallback"] = "provider_default";
+      return retried;
     }
     if (attempt >= max_retries || !agent::llm_detail::is_retryable_error(parsed.error_code)) {
       return parsed;
@@ -340,6 +511,36 @@ llm_response openai_compatible_llm_client::complete(
 
 llm_response openai_compatible_llm_client::complete_stream(
   const llm_request& request, const llm_stream_callbacks& callbacks, std::stop_token stop_token) {
+  if (compatibility_policy_.buffer_text_tool_protocol) {
+    auto response = complete(request, stop_token);
+    if (response.error_code) {
+      emit_stream_event(callbacks,
+        { .type = llm_stream_event_type::error,
+          .response = response,
+          .error_code = response.error_code,
+          .message = response.content });
+      return response;
+    }
+    if (!response.content.empty()) {
+      emit_stream_event(callbacks,
+        { .type = llm_stream_event_type::content_delta,
+          .content_delta = response.content });
+    }
+    if (!response.reasoning_summary.empty()) {
+      emit_stream_event(callbacks,
+        { .type = llm_stream_event_type::reasoning_done,
+          .reasoning_summary = response.reasoning_summary,
+          .reasoning_metadata = response.reasoning_metadata,
+          .response = response });
+    }
+    for (const auto& call : response.tool_calls) {
+      emit_stream_event(callbacks,
+        { .type = llm_stream_event_type::tool_call_done, .tool_call = call });
+    }
+    emit_stream_event(
+      callbacks, { .type = llm_stream_event_type::done, .response = response });
+    return response;
+  }
   if (auto rejected = agent::llm::llm_request_rejection(request, capabilities())) {
     agent::llm::emit_llm_request_rejection(callbacks, *rejected);
     return std::move(*rejected);
@@ -733,6 +934,9 @@ json openai_compatible_llm_client::build_openai_payload(const llm_request& reque
 
   for (const auto& msg : request.messages) {
     json message = { { "role", msg.role }, { "content", msg.content } };
+    if (compatibility_policy_.replay_reasoning_content && !msg.reasoning_content.empty()) {
+      message["reasoning_content"] = msg.reasoning_content;
+    }
     if (msg.name.has_value()) {
       message["name"] = *msg.name;
     }
@@ -908,6 +1112,31 @@ llm_response openai_compatible_llm_client::parse_openai_response(
   }
 
   return result;
+}
+
+llm_response openai_compatible_llm_client::normalize_provider_response(
+  const llm_request& request, llm_response response) const {
+  if (!compatibility_policy_.normalize_dsml_tool_calls || response.error_code ||
+      !response.tool_calls.empty() || request.tools.empty() || response.content.empty()) {
+    return response;
+  }
+
+  std::size_t protocol_offset = 0;
+  const auto calls = parse_dsml_tool_calls(response.content, request.tools, protocol_offset);
+  if (!calls) {
+    return response;
+  }
+  auto prefix = trim_copy(response.content.substr(0, protocol_offset));
+  if (!prefix.empty()) {
+    if (!response.reasoning_summary.empty()) {
+      response.reasoning_summary += "\n";
+    }
+    response.reasoning_summary += prefix;
+  }
+  response.content.clear();
+  response.tool_calls = *calls;
+  response.metadata["wuwe_tool_protocol_normalized"] = "dsml";
+  return response;
 }
 
 WUWE_NAMESPACE_END

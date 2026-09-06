@@ -22,12 +22,24 @@ llm_client_config openai_llm_client::normalize_config(llm_client_config config) 
 }
 
 deepseek_llm_client::deepseek_llm_client(llm_client_config config)
-    : openai_compatible_llm_client(normalize_config(std::move(config))) {
+    : openai_compatible_llm_client(normalize_config(std::move(config)), nullptr,
+        {
+          .normalize_dsml_tool_calls = true,
+          .buffer_text_tool_protocol = true,
+          .negotiate_explicit_tool_choice = true,
+          .replay_reasoning_content = true,
+        }) {
 }
 
 deepseek_llm_client::deepseek_llm_client(
   llm_client_config config, std::shared_ptr<http_client> http)
-    : openai_compatible_llm_client(normalize_config(std::move(config)), std::move(http)) {
+    : openai_compatible_llm_client(normalize_config(std::move(config)), std::move(http),
+        {
+          .normalize_dsml_tool_calls = true,
+          .buffer_text_tool_protocol = true,
+          .negotiate_explicit_tool_choice = true,
+          .replay_reasoning_content = true,
+        }) {
 }
 
 llm_client_config deepseek_llm_client::normalize_config(llm_client_config config) {

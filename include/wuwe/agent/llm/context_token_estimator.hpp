@@ -35,6 +35,7 @@ public:
     std::size_t tokens = 4;
     detail::saturating_context_token_add(tokens, estimate_text(message.role));
     detail::saturating_context_token_add(tokens, estimate_text(message.content));
+    detail::saturating_context_token_add(tokens, estimate_text(message.reasoning_content));
     if (message.name) {
       detail::saturating_context_token_add(tokens, estimate_text(*message.name));
     }
