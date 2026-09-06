@@ -81,6 +81,7 @@ enum class reasoning_error_code {
   model_call_budget_exceeded,
   tool_call_budget_exceeded,
   tool_round_budget_exceeded,
+  model_continuation_budget_exceeded,
   reflection_budget_exceeded,
   planning_budget_exceeded,
   missing_api_key,
@@ -118,6 +119,8 @@ inline std::string to_string(reasoning_error_code code) {
       return "tool_call_budget_exceeded";
     case reasoning_error_code::tool_round_budget_exceeded:
       return "tool_round_budget_exceeded";
+    case reasoning_error_code::model_continuation_budget_exceeded:
+      return "model_continuation_budget_exceeded";
     case reasoning_error_code::reflection_budget_exceeded:
       return "reflection_budget_exceeded";
     case reasoning_error_code::planning_budget_exceeded:

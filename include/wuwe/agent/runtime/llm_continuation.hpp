@@ -114,6 +114,7 @@ inline nlohmann::json message_to_json(const chat_message& value) {
   nlohmann::json output {
     { "role", value.role },
     { "content", value.content },
+    { "reasoning_content", value.reasoning_content },
     { "tool_calls", std::move(calls) },
     { "context_source", std::string(to_string(value.context_source)) },
   };
@@ -127,6 +128,7 @@ inline chat_message message_from_json(const nlohmann::json& value) {
   chat_message message;
   message.role = value.value("role", std::string {});
   message.content = value.value("content", std::string {});
+  message.reasoning_content = value.value("reasoning_content", std::string {});
   if (value.contains("name") && !value.at("name").is_null()) {
     message.name = value.at("name").get<std::string>();
   }

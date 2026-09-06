@@ -447,7 +447,8 @@ private:
     result.completed = static_cast<bool>(response);
     if (response.error_code) {
       result.underlying_error = response.error_code;
-      result.reasoning_error = map_underlying_error(response.error_code);
+      result.reasoning_error = map_underlying_error(
+        response.error_code, response.stop_reason);
       result.error_code = make_error_code(result.reasoning_error);
       result.error = response.content.empty() ? response.error_code.message() : response.content;
     }
@@ -1576,7 +1577,8 @@ private:
     }
   }
 
-  static reasoning_error_code map_underlying_error(std::error_code code) {
+  static reasoning_error_code map_underlying_error(
+    std::error_code code, std::string_view stop_reason = {}) {
     if (!code) {
       return reasoning_error_code::none;
     }
@@ -1603,6 +1605,9 @@ private:
     }
     if (code ==
         ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::agent_loop_budget_exceeded)) {
+      if (stop_reason == "model_continuation_budget_exceeded") {
+        return reasoning_error_code::model_continuation_budget_exceeded;
+      }
       return reasoning_error_code::tool_round_budget_exceeded;
     }
     if (code == ::wuwe::agent::make_error_code(::wuwe::agent::llm_error_code::transport_error) ||

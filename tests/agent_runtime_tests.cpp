@@ -146,6 +146,7 @@ public:
 
     if (calls == 1) {
       return {
+        .reasoning_summary = "provider reasoning state",
         .tool_calls = {
           {
             .id = "call-1",
@@ -180,6 +181,18 @@ public:
       };
     }
     return { .content = "terminal answer" };
+  }
+
+  std::vector<llm_request> requests;
+};
+
+class nonterminal_until_finalization_client final : public llm_client {
+public:
+  llm_response complete(const llm_request& request) override {
+    requests.push_back(request);
+    return request.tools.empty()
+      ? llm_response { .content = "final answer from available evidence" }
+      : llm_response { .content = "I will keep investigating." };
   }
 
   std::vector<llm_request> requests;
@@ -296,6 +309,9 @@ public:
   llm_response complete(const llm_request& request, std::stop_token) override {
     ++calls;
     requests.push_back(request);
+    if (request.tools.empty()) {
+      return { .content = "final answer from collected evidence" };
+    }
     return {
       .content = "still needs a tool",
       .tool_calls = {
@@ -305,6 +321,28 @@ public:
           .arguments_json = R"({"text":"again"})",
         },
       },
+    };
+  }
+
+  int calls { 0 };
+  std::vector<llm_request> requests;
+};
+
+class finite_tool_call_client final : public llm_client {
+public:
+  llm_response complete(const llm_request& request) override {
+    ++calls;
+    requests.push_back(request);
+    if (calls > 2) {
+      return { .content = "terminal answer after two evidence rounds" };
+    }
+    return {
+      .content = "collecting evidence",
+      .tool_calls = { {
+        .id = "finite-call-" + std::to_string(calls),
+        .name = "echo_text",
+        .arguments_json = R"({"text":"evidence"})",
+      } },
     };
   }
 
@@ -555,6 +593,10 @@ void test_runner_callbacks_and_stop_token_reach_provider() {
   require(!response.error_code && response.content == "final answer",
     "runner should complete after tool round");
   require(client.calls == 2, "runner should call the model again after a tool result");
+  require(client.requests[1].messages.size() >= 2 &&
+      client.requests[1].messages[1].role == "assistant" &&
+      client.requests[1].messages[1].reasoning_content == "provider reasoning state",
+    "runner must replay provider reasoning state with the assistant tool-call message");
   require(provider->saw_stop_possible, "runner should pass stop_token to stop-aware providers");
   require(events.size() == 4, "runner should emit expected callback count");
   require(events[0] == "tool_start:echo_text", "runner should emit tool start");
@@ -642,6 +684,45 @@ void test_runner_continues_after_nonterminal_model_response() {
     "continuation should preserve the nonterminal response and append the host instruction");
   require(!client.requests[2].tool_choice,
     "the continuation tool choice must not leak into later model rounds");
+}
+
+void test_runner_finalizes_after_model_continuation_budget() {
+  nonterminal_until_finalization_client client;
+  auto provider = std::make_shared<duplicate_echo_provider>();
+  llm_agent_run_options options;
+  options.max_model_continuations = 1;
+  options.callbacks.prepare_model_request = [provider](llm_request request) {
+    request.tools = provider->tools();
+    return std::optional<llm_request> { std::move(request) };
+  };
+  options.callbacks.continue_after_model_response = [](
+      const llm_request&, const llm_response&, std::size_t) {
+    return std::optional<llm_agent_model_continuation> {
+      llm_agent_model_continuation {
+        .instruction = "Continue the unfinished task.",
+      }
+    };
+  };
+  options.callbacks.finalize_after_model_continuation_budget = [](
+      const llm_request&, const llm_response&, std::size_t used, std::size_t maximum) {
+    require(used == 1 && maximum == 1,
+      "model finalizer should receive exact continuation counters");
+    return std::optional<llm_agent_terminal_finalization> {
+      llm_agent_terminal_finalization {
+        .instruction = "Answer now from the available evidence.",
+      }
+    };
+  };
+
+  const auto response = llm_agent_runner(client, provider).complete(
+    "answer the question", std::move(options));
+  require(!response.error_code &&
+      response.content == "final answer from available evidence",
+    "a corrective continuation limit should converge to a terminal answer");
+  require(client.requests.size() == 3 && client.requests.back().tools.empty(),
+    "model continuation finalization must make one tools-disabled synthesis call");
+  require(response.metadata.at("model_continuation_budget_finalization") == "true",
+    "model continuation finalization should be observable");
 }
 
 void test_runner_can_defer_assistant_memory_persistence() {
@@ -899,6 +980,68 @@ void test_runner_reports_tool_round_budget_exhaustion_with_stable_error() {
     "runner should report last model response before replacing user-facing content");
   require(response.error_code.message().find("resource unavailable") == std::string::npos,
     "runner should not leak resource-unavailable wording");
+}
+
+void test_runner_can_finalize_from_evidence_at_tool_round_boundary() {
+  endless_tool_call_client client;
+  auto provider = std::make_shared<tool_provider<echo_text>>();
+  llm_agent_runner runner(client, provider, 1);
+
+  llm_agent_run_options options;
+  options.callbacks.prepare_model_request = [provider](llm_request request) {
+    // Dynamic hosts may refresh the visible tool catalog before every model
+    // call. The runner must still enforce a tools-disabled finalization call.
+    request.tools = provider->tools();
+    return std::optional<llm_request> { std::move(request) };
+  };
+  options.callbacks.finalize_after_tool_round_budget = [](
+      const llm_request&, const llm_response&, std::size_t used, std::size_t maximum) {
+    require(used == 1 && maximum == 1,
+      "budget finalizer should receive the exact tool-round counters");
+    return std::optional<llm_agent_tool_budget_finalization> {
+      llm_agent_tool_budget_finalization {
+        .instruction = "Answer now from the evidence already collected.",
+      }
+    };
+  };
+
+  const auto response = runner.complete("investigate and answer", std::move(options));
+  require(!response.error_code &&
+      response.content == "final answer from collected evidence",
+    "runner should produce a terminal answer instead of discarding collected evidence");
+  require(client.requests.size() == 3 && client.requests.back().tools.empty(),
+    "budget finalization must make exactly one tools-disabled synthesis call");
+  require(response.metadata.at("tool_round_budget_finalization") == "true",
+    "recovered responses should retain an observable finalization marker");
+  require(response.metadata.at("used_tool_rounds") == "1" &&
+      response.metadata.at("max_tool_rounds") == "1",
+    "recovered responses should retain the exhausted tool-round counters");
+}
+
+void test_runner_can_continue_across_bounded_tool_round_windows() {
+  finite_tool_call_client client;
+  auto provider = std::make_shared<tool_provider<echo_text>>();
+  llm_agent_runner runner(client, provider, 1);
+
+  std::size_t window_callbacks = 0;
+  llm_agent_run_options options;
+  options.max_tool_round_windows = 2;
+  options.callbacks.continue_after_tool_round_window = [&window_callbacks](
+      const llm_request&, const llm_response&, std::size_t used,
+      std::size_t maximum, std::size_t completed) {
+    ++window_callbacks;
+    return used == 1 && maximum == 1 && completed == 0;
+  };
+
+  const auto response = runner.complete("finish the task", std::move(options));
+  require(!response.error_code &&
+      response.content == "terminal answer after two evidence rounds",
+    "a progress window must not terminate a task that can continue safely");
+  require(window_callbacks == 1 && client.calls == 3,
+    "the runner should cross exactly one bounded progress window");
+  require(response.metadata.at("used_tool_rounds") == "2" &&
+      response.metadata.at("completed_tool_round_windows") == "1",
+    "successful responses should report total rounds and crossed windows");
 }
 
 void test_runner_pre_cancelled_request_does_not_call_model() {
@@ -1664,6 +1807,8 @@ int main() {
       test_runner_prepares_model_requests_and_observes_results);
     run("runner continues after nonterminal model response",
       test_runner_continues_after_nonterminal_model_response);
+    run("runner finalizes after model continuation budget",
+      test_runner_finalizes_after_model_continuation_budget);
     run("runner can defer assistant memory persistence",
       test_runner_can_defer_assistant_memory_persistence);
     run(
@@ -1680,6 +1825,10 @@ int main() {
       test_projection_policy_is_preflighted_before_model_and_tool_execution);
     run("runner reports tool round budget exhaustion with stable error",
       test_runner_reports_tool_round_budget_exhaustion_with_stable_error);
+    run("runner finalizes from evidence at the tool round boundary",
+      test_runner_can_finalize_from_evidence_at_tool_round_boundary);
+    run("runner continues across bounded tool round windows",
+      test_runner_can_continue_across_bounded_tool_round_windows);
     run("runner pre-cancelled request does not call model",
       test_runner_pre_cancelled_request_does_not_call_model);
     run("async runner can be cancelled by handle", test_async_runner_can_be_cancelled_by_handle);

@@ -87,6 +87,12 @@ struct llm_agent_model_continuation {
   std::optional<llm_tool_choice> tool_choice;
 };
 
+struct llm_agent_terminal_finalization {
+  std::string instruction;
+};
+
+using llm_agent_tool_budget_finalization = llm_agent_terminal_finalization;
+
 struct llm_agent_callbacks {
   std::function<bool(const llm_request&)> on_model_start;
   std::function<bool(const llm_tool_call&)> allow_tool_call;
@@ -108,6 +114,14 @@ struct llm_agent_callbacks {
   std::function<void(const llm_request&, const llm_response&)> on_model_result;
   std::function<std::optional<llm_agent_model_continuation>(
     const llm_request&, const llm_response&, std::size_t)> continue_after_model_response;
+  std::function<std::optional<llm_agent_terminal_finalization>(
+    const llm_request&, const llm_response&, std::size_t, std::size_t)>
+    finalize_after_model_continuation_budget;
+  std::function<std::optional<llm_agent_tool_budget_finalization>(
+    const llm_request&, const llm_response&, std::size_t, std::size_t)>
+    finalize_after_tool_round_budget;
+  std::function<bool(const llm_request&, const llm_response&, std::size_t,
+    std::size_t, std::size_t)> continue_after_tool_round_window;
   std::function<void(const agent::llm::context_budget_report&)> on_context_budget;
   std::function<llm_tool_authorization(const agent::tools::tool_invocation&)> authorize_tool_call;
   std::function<void(const llm_tool_call&, const agent::llm::tool_output_projection_report&)>
@@ -126,6 +140,9 @@ struct llm_agent_run_options {
   std::shared_ptr<const agent::llm::context_token_estimator> token_estimator;
   std::size_t max_in_flight_tool_invocations { 16 };
   std::size_t max_model_continuations { 0 };
+  // Tool-round limits are progress windows when the host explicitly opts in.
+  // This independent cap keeps the total number of windows finite.
+  std::size_t max_tool_round_windows { 1 };
   llm_agent_callbacks callbacks;
   bool persist_request_messages { true };
   bool persist_assistant_messages { true };
@@ -530,6 +547,7 @@ private:
           continuation.pending_calls,
           continuation.used_tool_rounds,
           std::string {},
+          std::string {},
           true,
           continuation.assistant_persisted,
           continuation.accumulated_usage,
@@ -573,6 +591,8 @@ private:
     std::string last_tool_projection;
     std::set<std::string> seen_tool_call_ids;
     std::size_t used_model_continuations = 0;
+    std::size_t tool_rounds_in_window = 0;
+    std::size_t completed_tool_round_windows = 0;
     const bool use_streaming = should_stream(options.callbacks);
 
     while (true) {
@@ -604,6 +624,77 @@ private:
             return finalize_durable_run(std::move(response), durable);
           }
           if (used_model_continuations >= options.max_model_continuations) {
+            const auto finalization = options.callbacks.finalize_after_model_continuation_budget
+              ? options.callbacks.finalize_after_model_continuation_budget(request,
+                  response,
+                  used_model_continuations,
+                  options.max_model_continuations)
+              : std::optional<llm_agent_terminal_finalization> {};
+            if (finalization && !finalization->instruction.empty()) {
+              request.messages.push_back({
+                .role = "assistant",
+                .content = response.content,
+                .reasoning_content = response.reasoning_summary,
+              });
+              request.messages.push_back({
+                .role = "user",
+                .content = finalization->instruction,
+              });
+              request.tools.clear();
+              request.tool_choice.reset();
+              auto final_options = options;
+              const auto prepare_final_request =
+                final_options.callbacks.prepare_model_request;
+              final_options.callbacks.prepare_model_request =
+                [prepare_final_request](llm_request final_request)
+                  -> std::optional<llm_request> {
+                if (prepare_final_request) {
+                  auto prepared = prepare_final_request(std::move(final_request));
+                  if (!prepared) {
+                    return std::nullopt;
+                  }
+                  final_request = std::move(*prepared);
+                }
+                final_request.tools.clear();
+                final_request.tool_choice.reset();
+                return final_request;
+              };
+              auto final_response = complete_model(
+                request, final_options, client_stop_token, use_streaming);
+              agent::llm::accumulate_llm_usage(accumulated_usage, final_response.usage);
+              final_response.usage = accumulated_usage;
+              final_response.metadata["used_model_continuations"] =
+                std::to_string(used_model_continuations);
+              final_response.metadata["max_model_continuations"] =
+                std::to_string(options.max_model_continuations);
+              final_response.metadata["model_continuation_budget_finalization"] = "true";
+              if (is_cancelled() ||
+                  final_response.error_code == agent::llm_error_code::cancelled) {
+                auto cancelled = cancelled_response(options.callbacks);
+                cancelled.usage = accumulated_usage;
+                return finalize_durable_run(std::move(cancelled), durable);
+              }
+              if (final_response.error_code) {
+                emit_error(options.callbacks, final_response);
+                return finalize_durable_run(std::move(final_response), durable);
+              }
+              if (!final_response.tool_calls.empty()) {
+                final_response.error_code =
+                  agent::make_error_code(agent::llm_error_code::invalid_response);
+                final_response.stop_reason =
+                  "model_continuation_finalization_requested_tool";
+                final_response.content =
+                  "Model-continuation finalization returned a tool call after tools were disabled.";
+                emit_error(options.callbacks, final_response);
+                return finalize_durable_run(std::move(final_response), durable);
+              }
+              emit_nonstreaming_content(options.callbacks, final_response, use_streaming);
+              if (options.persist_assistant_messages) {
+                observe_assistant_response(final_response, nullptr, options.context);
+              }
+              emit_done(options.callbacks, final_response);
+              return finalize_durable_run(std::move(final_response), durable);
+            }
             response.usage = accumulated_usage;
             response.error_code =
               agent::make_error_code(agent::llm_error_code::agent_loop_budget_exceeded);
@@ -622,6 +713,7 @@ private:
           request.messages.push_back({
             .role = "assistant",
             .content = response.content,
+            .reasoning_content = response.reasoning_summary,
           });
           request.messages.push_back({
             .role = "user",
@@ -646,28 +738,124 @@ private:
           continue;
         }
         response.usage = accumulated_usage;
+        response.metadata["used_tool_rounds"] = std::to_string(used_tool_rounds);
+        response.metadata["max_tool_rounds"] = std::to_string(max_tool_rounds_);
+        response.metadata["completed_tool_round_windows"] =
+          std::to_string(completed_tool_round_windows);
+        response.metadata["max_tool_round_windows"] =
+          std::to_string(options.max_tool_round_windows);
         if (options.persist_assistant_messages) {
           observe_assistant_response(response, nullptr, options.context);
         }
         emit_done(options.callbacks, response);
         return finalize_durable_run(std::move(response), durable);
       }
-      if (used_tool_rounds >= max_tool_rounds_) {
-        response.usage = accumulated_usage;
-        response.error_code =
-          agent::make_error_code(agent::llm_error_code::agent_loop_budget_exceeded);
-        response.stop_reason = "tool_round_budget_exceeded";
-        response.metadata["stop_reason"] = response.stop_reason;
-        response.metadata["used_tool_rounds"] = std::to_string(used_tool_rounds);
-        response.metadata["max_tool_rounds"] = std::to_string(max_tool_rounds_);
-        response.metadata["last_tool_call"] = last_tool_call.name;
-        response.metadata["last_tool_call_id"] = last_tool_call.id;
-        response.metadata["last_tool_arguments"] = last_tool_call.arguments_json;
-        response.metadata["last_tool_result"] = last_tool_projection;
-        response.metadata["last_model_response"] = response.content;
-        response.content = "Agent tool round budget exceeded before producing a final answer.";
-        emit_error(options.callbacks, response);
-        return finalize_durable_run(std::move(response), durable);
+      if (tool_rounds_in_window >= static_cast<std::size_t>(max_tool_rounds_)) {
+        const bool continue_window = completed_tool_round_windows + 1
+            < options.max_tool_round_windows
+          && options.callbacks.continue_after_tool_round_window
+          && options.callbacks.continue_after_tool_round_window(request,
+            response,
+            tool_rounds_in_window,
+            static_cast<std::size_t>(max_tool_rounds_),
+            completed_tool_round_windows);
+        if (continue_window) {
+          tool_rounds_in_window = 0;
+          ++completed_tool_round_windows;
+        } else {
+          const auto finalization = options.callbacks.finalize_after_tool_round_budget
+            ? options.callbacks.finalize_after_tool_round_budget(request,
+                response,
+                static_cast<std::size_t>(used_tool_rounds),
+                static_cast<std::size_t>(max_tool_rounds_))
+            : std::optional<llm_agent_tool_budget_finalization> {};
+          if (finalization && !finalization->instruction.empty()) {
+          // The response that crossed the boundary contains unexecuted tool
+          // calls and therefore cannot be replayed as an assistant message.
+          // Continue from the last complete tool-result turn and remove tools
+          // so the recovery call must synthesize a terminal answer.
+          request.messages.push_back({
+            .role = "user",
+            .content = finalization->instruction,
+          });
+          request.tools.clear();
+          request.tool_choice.reset();
+          auto final_options = options;
+          const auto prepare_final_request =
+            final_options.callbacks.prepare_model_request;
+          final_options.callbacks.prepare_model_request =
+            [prepare_final_request](llm_request final_request)
+              -> std::optional<llm_request> {
+            if (prepare_final_request) {
+              auto prepared = prepare_final_request(std::move(final_request));
+              if (!prepared) {
+                return std::nullopt;
+              }
+              final_request = std::move(*prepared);
+            }
+            final_request.tools.clear();
+            final_request.tool_choice.reset();
+            return final_request;
+          };
+          auto final_response =
+            complete_model(request, final_options, client_stop_token, use_streaming);
+          agent::llm::accumulate_llm_usage(accumulated_usage, final_response.usage);
+          final_response.usage = accumulated_usage;
+          final_response.metadata["used_tool_rounds"] =
+            std::to_string(used_tool_rounds);
+          final_response.metadata["max_tool_rounds"] =
+            std::to_string(max_tool_rounds_);
+          final_response.metadata["completed_tool_round_windows"] =
+            std::to_string(completed_tool_round_windows);
+          final_response.metadata["max_tool_round_windows"] =
+            std::to_string(options.max_tool_round_windows);
+          final_response.metadata["tool_round_budget_finalization"] = "true";
+          if (is_cancelled() ||
+              final_response.error_code == agent::llm_error_code::cancelled) {
+            auto cancelled = cancelled_response(options.callbacks);
+            cancelled.usage = accumulated_usage;
+            return finalize_durable_run(std::move(cancelled), durable);
+          }
+          if (final_response.error_code) {
+            emit_error(options.callbacks, final_response);
+            return finalize_durable_run(std::move(final_response), durable);
+          }
+          if (!final_response.tool_calls.empty()) {
+            final_response.error_code =
+              agent::make_error_code(agent::llm_error_code::invalid_response);
+            final_response.stop_reason = "tool_budget_finalization_requested_tool";
+            final_response.content =
+              "Tool-budget finalization returned a tool call after tools were disabled.";
+            emit_error(options.callbacks, final_response);
+            return finalize_durable_run(std::move(final_response), durable);
+          }
+          emit_nonstreaming_content(options.callbacks, final_response, use_streaming);
+          if (options.persist_assistant_messages) {
+            observe_assistant_response(final_response, nullptr, options.context);
+          }
+          emit_done(options.callbacks, final_response);
+          return finalize_durable_run(std::move(final_response), durable);
+          }
+          response.usage = accumulated_usage;
+          response.error_code =
+            agent::make_error_code(agent::llm_error_code::agent_loop_budget_exceeded);
+          response.stop_reason = "tool_round_budget_exceeded";
+          response.metadata["stop_reason"] = response.stop_reason;
+          response.metadata["used_tool_rounds"] = std::to_string(used_tool_rounds);
+          response.metadata["max_tool_rounds"] = std::to_string(max_tool_rounds_);
+          response.metadata["completed_tool_round_windows"] =
+            std::to_string(completed_tool_round_windows);
+          response.metadata["max_tool_round_windows"] =
+            std::to_string(options.max_tool_round_windows);
+          response.metadata["last_tool_call"] = last_tool_call.name;
+          response.metadata["last_tool_call_id"] = last_tool_call.id;
+          response.metadata["last_tool_arguments"] = last_tool_call.arguments_json;
+          response.metadata["last_tool_result"] = last_tool_projection;
+          response.metadata["last_model_response"] = response.content;
+          response.content = "Agent tool round budget exceeded before producing a final answer.";
+          emit_error(options.callbacks, response);
+          return finalize_durable_run(std::move(response), durable);
+        }
       }
       if (!invoke_) {
         response.usage = accumulated_usage;
@@ -678,6 +866,7 @@ private:
         return finalize_durable_run(std::move(response), durable);
       }
       ++used_tool_rounds;
+      ++tool_rounds_in_window;
 
       std::vector<llm_tool_call> prepared_calls;
       prepared_calls.reserve(response.tool_calls.size());
@@ -733,6 +922,7 @@ private:
             prepared_calls,
             used_tool_rounds,
             response.content,
+            response.reasoning_summary,
             false,
             false,
             accumulated_usage,
@@ -768,7 +958,8 @@ private:
 
   std::optional<llm_response> process_tool_batch(llm_request& request,
     const std::vector<llm_tool_call>& calls, int used_tool_rounds,
-    const std::string& assistant_content, bool assistant_already_in_request,
+    const std::string& assistant_content, const std::string& assistant_reasoning_content,
+    bool assistant_already_in_request,
     bool assistant_persisted, const llm_usage& accumulated_usage,
     const std::vector<std::string>& approved_tool_call_ids, const llm_agent_run_options& options,
     std::stop_token client_stop_token, const std::function<bool()>& is_cancelled,
@@ -829,6 +1020,7 @@ private:
           request.messages.push_back({
             .role = "assistant",
             .content = assistant_content,
+            .reasoning_content = assistant_reasoning_content,
             .tool_calls = calls,
             .context_source = llm_context_source::tool_result,
           });
@@ -884,6 +1076,7 @@ private:
       request.messages.push_back({
         .role = "assistant",
         .content = assistant_content,
+        .reasoning_content = assistant_reasoning_content,
         .tool_calls = calls,
         .context_source = llm_context_source::tool_result,
       });
@@ -891,6 +1084,7 @@ private:
     if (!assistant_persisted && options.persist_assistant_messages) {
       llm_response assistant_response {
         .content = assistant_content,
+        .reasoning_summary = assistant_reasoning_content,
         .tool_calls = calls,
       };
       if (assistant_response.content.empty() && !request.messages.empty()) {
@@ -1653,6 +1847,10 @@ private:
     if (options.max_in_flight_tool_invocations == 0) {
       throw std::invalid_argument(
         "agent run max in-flight tool invocations must be greater than zero");
+    }
+    if (options.max_tool_round_windows == 0) {
+      throw std::invalid_argument(
+        "agent run max tool-round windows must be greater than zero");
     }
     if (options.pricing && !agent::llm::valid_llm_pricing(*options.pricing)) {
       throw std::invalid_argument("agent run pricing is invalid");
