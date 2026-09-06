@@ -1,9 +1,11 @@
 #include <wuwe/agent/execution/controlled_process_backend.hpp>
+#include <wuwe/agent/process/local_process_backend.hpp>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <fstream>
 #include <functional>
@@ -906,6 +908,149 @@ execution_result launch_python_process(const controlled_process_backend_config& 
 
 #endif // _WIN32
 
+#ifndef _WIN32
+
+python_interpreter_status status_for_process_launch_error(const process::process_result& capture) {
+  const auto found = capture.metadata.find("launch_error_code");
+  if (found == capture.metadata.end()) {
+    return python_interpreter_status::launch_failed;
+  }
+
+  try {
+    switch (std::stoi(found->second)) {
+      case ENOENT:
+      case ENOTDIR:
+        return python_interpreter_status::not_found;
+      case EACCES:
+      case EPERM:
+        return python_interpreter_status::permission_denied;
+      case ENOEXEC:
+        return python_interpreter_status::not_executable;
+      default:
+        return python_interpreter_status::launch_failed;
+    }
+  }
+  catch (...) {
+    return python_interpreter_status::launch_failed;
+  }
+}
+
+execution_termination_reason from_process_termination_reason(
+  process::process_termination_reason reason) {
+  switch (reason) {
+    case process::process_termination_reason::exited:
+      return execution_termination_reason::exited;
+    case process::process_termination_reason::timed_out:
+      return execution_termination_reason::timeout;
+    case process::process_termination_reason::cancelled:
+      return execution_termination_reason::cancelled;
+    case process::process_termination_reason::launch_failed:
+      return execution_termination_reason::launch_failed;
+    case process::process_termination_reason::policy_denied:
+      return execution_termination_reason::policy_denied;
+    case process::process_termination_reason::approval_denied:
+      return execution_termination_reason::approval_denied;
+    case process::process_termination_reason::backend_error:
+      return execution_termination_reason::backend_error;
+  }
+  return execution_termination_reason::backend_error;
+}
+
+process::process_result run_python_portable(const std::filesystem::path& interpreter,
+  std::string code, std::string stdin_text, const std::filesystem::path& workdir,
+  const std::map<std::string, std::string>& env, std::chrono::milliseconds timeout,
+  std::size_t max_stdout_bytes, std::size_t max_stderr_bytes,
+  std::chrono::milliseconds max_cpu_time = {}, std::stop_token stop_token = {}) {
+  process::local_process_backend backend;
+  process::process_request request {
+    .executable = interpreter,
+    .arguments = { "-c", std::move(code) },
+    .stdin_text = std::move(stdin_text),
+    .workdir = workdir,
+    .environment = env,
+    .inherit_parent_environment = false,
+    .limits = {
+      .timeout = timeout,
+      .max_stdout_bytes = max_stdout_bytes,
+      .max_stderr_bytes = max_stderr_bytes,
+      .max_stdin_bytes = 0,
+      .max_argument_bytes = 0,
+      .max_argument_count = 0,
+      .max_environment_bytes = 0,
+      .max_environment_count = 0,
+      .max_cpu_time = max_cpu_time,
+    },
+  };
+  return backend.run(request, stop_token);
+}
+
+std::filesystem::path choose_portable_workdir(
+  const controlled_process_backend_config& config, const execution_request& request) {
+  if (!request.workdir.empty()) {
+    return request.workdir;
+  }
+  if (!config.fallback_workdir.empty()) {
+    return config.fallback_workdir;
+  }
+  return std::filesystem::temp_directory_path() / "wuwe-execution";
+}
+
+execution_result launch_python_process_portable(const controlled_process_backend_config& config,
+  const execution_request& request, std::stop_token stop_token) {
+  if (request.use_shell) {
+    return {
+      .termination_reason = execution_termination_reason::policy_denied,
+      .error_message = "controlled process backend does not support shell execution",
+    };
+  }
+
+  const auto workdir = choose_portable_workdir(config, request);
+  try {
+    std::filesystem::create_directories(workdir);
+  }
+  catch (const std::exception& error) {
+    return {
+      .termination_reason = execution_termination_reason::launch_failed,
+      .error_message = error.what(),
+    };
+  }
+
+  auto capture = run_python_portable(config.python_interpreter,
+    request.code,
+    request.stdin_text,
+    workdir,
+    request.env,
+    request.limits.timeout,
+    request.limits.max_stdout_bytes,
+    request.limits.max_stderr_bytes,
+    request.limits.max_cpu_time,
+    stop_token);
+  execution_result result {
+    .exit_code = capture.exit_code,
+    .termination_reason = from_process_termination_reason(capture.termination_reason),
+    .timed_out = capture.termination_reason == process::process_termination_reason::timed_out,
+    .cancelled = capture.termination_reason == process::process_termination_reason::cancelled,
+    .stdout_truncated = capture.stdout_truncated,
+    .stderr_truncated = capture.stderr_truncated,
+    .stdout_text = std::move(capture.stdout_text),
+    .stderr_text = std::move(capture.stderr_text),
+    .error_message = std::move(capture.error_message),
+    .elapsed = capture.elapsed,
+    .metadata = std::move(capture.metadata),
+  };
+  result.metadata["process_backend"] = "local_process";
+  result.metadata["process_tree_cleanup_enforcement"] = "enforced";
+  result.metadata["process_count_limit_enforcement"] = "not_enforced";
+  result.metadata["cpu_time_limit_enforcement"] = "enforced";
+  result.metadata["memory_limit_enforcement"] = "not_enforced";
+  result.metadata["max_process_count"] = std::to_string(request.limits.max_process_count);
+  result.metadata["max_memory_bytes"] = std::to_string(request.limits.max_memory_bytes);
+  result.metadata["max_cpu_time_ms"] = std::to_string(request.limits.max_cpu_time.count());
+  return result;
+}
+
+#endif // !_WIN32
+
 } // namespace
 
 std::string to_string(python_interpreter_status status) {
@@ -1066,10 +1211,122 @@ python_interpreter_probe_result probe_python_interpreter(
   result.metadata["error_code"] = stable_error_code_for_status(result.status);
   return result;
 #else
-  result.status = python_interpreter_status::launch_failed;
+  const auto explicit_path =
+    request.interpreter.is_absolute() || request.interpreter.has_parent_path();
+  if (explicit_path) {
+    std::error_code filesystem_error;
+    const auto status = std::filesystem::status(request.interpreter, filesystem_error);
+    if (filesystem_error) {
+      result.status = filesystem_error == std::errc::no_such_file_or_directory
+                        ? python_interpreter_status::not_found
+                        : python_interpreter_status::permission_denied;
+      result.system_error = filesystem_error;
+      result.metadata["error_code"] = stable_error_code_for_status(result.status);
+      result.metadata["filesystem_error_code"] = std::to_string(filesystem_error.value());
+      result.metadata["filesystem_error_message"] = filesystem_error.message();
+      return result;
+    }
+    if (!std::filesystem::exists(status)) {
+      result.status = python_interpreter_status::not_found;
+      result.metadata["error_code"] = stable_error_code_for_status(result.status);
+      return result;
+    }
+    if (!std::filesystem::is_regular_file(status)) {
+      result.status = python_interpreter_status::not_executable;
+      result.metadata["error_code"] = stable_error_code_for_status(result.status);
+      return result;
+    }
+    const auto permissions = status.permissions();
+    const auto executable = (permissions & (std::filesystem::perms::owner_exec |
+                              std::filesystem::perms::group_exec |
+                              std::filesystem::perms::others_exec)) != std::filesystem::perms::none;
+    if (!executable) {
+      result.status = python_interpreter_status::not_executable;
+      result.metadata["error_code"] = stable_error_code_for_status(result.status);
+      return result;
+    }
+  }
+
+  const auto workdir = request.workdir.empty()
+                         ? std::filesystem::temp_directory_path() / "wuwe-execution"
+                         : request.workdir;
+  try {
+    std::filesystem::create_directories(workdir);
+  }
+  catch (const std::exception& error) {
+    result.status = python_interpreter_status::launch_failed;
+    result.metadata["error_code"] = stable_error_code_for_status(result.status);
+    result.metadata["probe_error"] = error.what();
+    return result;
+  }
+
+  static constexpr auto probe_code =
+    "import sys, json\n"
+    "print(json.dumps({'version': sys.version, "
+    "'version_info': list(sys.version_info[:3]), 'executable': sys.executable}))\n";
+  auto capture = run_python_portable(request.interpreter,
+    probe_code,
+    {},
+    workdir,
+    request.env,
+    request.timeout,
+    65536,
+    65536);
+  result.stdout_text = capture.stdout_text;
+  result.stderr_text = capture.stderr_text;
+  result.metadata["elapsed_ms"] = std::to_string(capture.elapsed.count());
+  if (capture.exit_code.has_value()) {
+    result.metadata["exit_code"] = std::to_string(*capture.exit_code);
+  }
+  for (const auto& [key, value] : capture.metadata) {
+    result.metadata[key] = value;
+  }
+  if (capture.termination_reason == process::process_termination_reason::launch_failed) {
+    result.status = status_for_process_launch_error(capture);
+    result.metadata["error_code"] = stable_error_code_for_status(result.status);
+    if (!capture.error_message.empty()) {
+      result.metadata["launch_error_message"] = capture.error_message;
+    }
+    return result;
+  }
+  if (capture.termination_reason == process::process_termination_reason::timed_out) {
+    result.status = python_interpreter_status::startup_timeout;
+    result.metadata["error_code"] = stable_error_code_for_status(result.status);
+    result.metadata["timeout_phase"] = "startup";
+    return result;
+  }
+  if (capture.termination_reason != process::process_termination_reason::exited ||
+      !capture.exit_code.has_value() || *capture.exit_code != 0) {
+    result.status = python_interpreter_status::invalid_python;
+    result.metadata["error_code"] = stable_error_code_for_status(result.status);
+    return result;
+  }
+
+  try {
+    const auto parsed = nlohmann::json::parse(capture.stdout_text);
+    result.version = parsed.value("version", "");
+    result.executable = parsed.value("executable", "");
+    if (!result.executable.empty()) {
+      result.resolved_path = result.executable;
+    }
+    result.metadata["version"] = result.version;
+    result.metadata["executable"] = result.executable;
+    const auto version_info = parsed.at("version_info");
+    if (!version_info.is_array() || version_info.empty() || version_info.at(0).get<int>() < 3) {
+      result.status = python_interpreter_status::unsupported_version;
+      result.metadata["error_code"] = stable_error_code_for_status(result.status);
+      return result;
+    }
+  }
+  catch (const std::exception& error) {
+    result.status = python_interpreter_status::invalid_python;
+    result.metadata["error_code"] = stable_error_code_for_status(result.status);
+    result.metadata["parse_error"] = error.what();
+    return result;
+  }
+
+  result.status = python_interpreter_status::ok;
   result.metadata["error_code"] = stable_error_code_for_status(result.status);
-  result.metadata["probe_error"] =
-    "Python interpreter probing is currently implemented only on Windows";
   return result;
 #endif
 }
@@ -1084,10 +1341,13 @@ std::optional<execution_result> controlled_process_backend::validate_python_inte
     return std::nullopt;
   }
 
-#ifdef _WIN32
   const auto probe = probe_python_interpreter({
     .interpreter = config_.python_interpreter,
+#ifdef _WIN32
     .workdir = choose_workdir(config_, request),
+#else
+    .workdir = choose_portable_workdir(config_, request),
+#endif
     .env = request.env,
     .timeout = config_.python_startup_timeout,
   });
@@ -1120,34 +1380,21 @@ std::optional<execution_result> controlled_process_backend::validate_python_inte
     result.metadata["timeout_phase"] = "startup";
   }
   return result;
-#else
-  (void)request;
-  execution_result result {
-    .exit_code = std::nullopt,
-    .termination_reason = execution_termination_reason::backend_error,
-    .timed_out = false,
-    .cancelled = false,
-    .stdout_truncated = false,
-    .stderr_truncated = false,
-    .stdout_text = {},
-    .stderr_text = {},
-    .error_message = "Python interpreter validation is currently implemented only on Windows",
-    .elapsed = std::chrono::milliseconds { 0 },
-    .metadata = {},
-  };
-  result.metadata["error_code"] = "python_interpreter_validation_unavailable";
-  result.metadata["python_interpreter"] = config_.python_interpreter.string();
-  return result;
-#endif
 }
 
 sandbox::sandbox_backend_info controlled_process_backend::info() const {
-  const auto job_enforcement =
 #ifdef _WIN32
+  const auto process_tree_enforcement =
     config_.use_job_object ? sandbox::enforcement_level::enforced
                            : sandbox::enforcement_level::not_enforced;
+  const auto process_count_enforcement = process_tree_enforcement;
+  const auto cpu_time_enforcement = process_tree_enforcement;
+  const auto memory_enforcement = process_tree_enforcement;
 #else
-    sandbox::enforcement_level::not_enforced;
+  const auto process_tree_enforcement = sandbox::enforcement_level::enforced;
+  const auto process_count_enforcement = sandbox::enforcement_level::not_enforced;
+  const auto cpu_time_enforcement = sandbox::enforcement_level::enforced;
+  const auto memory_enforcement = sandbox::enforcement_level::not_enforced;
 #endif
 
   return {
@@ -1171,10 +1418,10 @@ sandbox::sandbox_backend_info controlled_process_backend::info() const {
       .stderr_limit = sandbox::enforcement_level::enforced,
       .environment_allowlist = sandbox::enforcement_level::enforced,
       .working_directory = sandbox::enforcement_level::enforced,
-      .process_tree_cleanup = job_enforcement,
-      .process_count_limit = job_enforcement,
-      .cpu_time_limit = job_enforcement,
-      .memory_limit = job_enforcement,
+      .process_tree_cleanup = process_tree_enforcement,
+      .process_count_limit = process_count_enforcement,
+      .cpu_time_limit = cpu_time_enforcement,
+      .memory_limit = memory_enforcement,
       .filesystem_read_deny = sandbox::enforcement_level::not_enforced,
       .filesystem_write_deny = sandbox::enforcement_level::not_enforced,
       .network_deny = sandbox::enforcement_level::not_enforced,
@@ -1208,22 +1455,7 @@ execution_result controlled_process_backend::run(
 #ifdef _WIN32
   return launch_python_process(config_, request, stop_token);
 #else
-  (void)config_;
-  (void)request;
-  (void)stop_token;
-  return {
-    .exit_code = std::nullopt,
-    .termination_reason = execution_termination_reason::backend_error,
-    .timed_out = false,
-    .cancelled = false,
-    .stdout_truncated = false,
-    .stderr_truncated = false,
-    .stdout_text = {},
-    .stderr_text = {},
-    .error_message = "controlled process backend is currently implemented only on Windows",
-    .elapsed = std::chrono::milliseconds { 0 },
-    .metadata = {},
-  };
+  return launch_python_process_portable(config_, request, stop_token);
 #endif
 }
 
