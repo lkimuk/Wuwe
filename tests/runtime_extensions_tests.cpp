@@ -269,6 +269,61 @@ void test_context_budget() {
     "context budgeting must drop old tool exchanges atomically while preserving the newest "
     "structured projection byte-for-byte");
 
+  llm_request retention_heavy_tool_history;
+  for (int index = 0; index < 6; ++index) {
+    const auto id = "retained-tool-" + std::to_string(index);
+    retention_heavy_tool_history.messages.push_back({
+      .role = "assistant",
+      .tool_calls = { { .id = id, .name = "lookup", .arguments_json = "{}" } },
+    });
+    retention_heavy_tool_history.messages.push_back({
+      .role = "tool",
+      .content = std::string(40, static_cast<char>('a' + index)),
+      .tool_call_id = id,
+    });
+  }
+  retention_heavy_tool_history.messages.push_back(
+    { .role = "user", .content = "finish with the newest evidence" });
+  const auto relaxed_tool_floor_result = manager.fit(retention_heavy_tool_history,
+    {
+      .context_window_tokens = 512,
+      .reserved_output_tokens = 10,
+      .limits = { .tool_results = 150 },
+      .minimum_recent_tool_exchanges = 12,
+    });
+  require(relaxed_tool_floor_result &&
+            relaxed_tool_floor_result.report.preservation_floor_relaxed &&
+            relaxed_tool_floor_result.report.after.tool_results <= 150 &&
+            relaxed_tool_floor_result.request.messages.size() >= 3 &&
+            relaxed_tool_floor_result.request.messages[
+              relaxed_tool_floor_result.request.messages.size() - 3]
+                .tool_calls.front()
+                .id == "retained-tool-5",
+    "hard tool-result limits must relax an oversized recent-exchange floor while retaining "
+    "the newest atomic exchange");
+
+  llm_request retention_heavy_conversation;
+  retention_heavy_conversation.messages = {
+    { .role = "user", .content = std::string(60, 'a') },
+    { .role = "assistant", .content = std::string(60, 'b') },
+    { .role = "user", .content = std::string(60, 'c') },
+  };
+  const auto relaxed_conversation_floor_result = manager.fit(retention_heavy_conversation,
+    {
+      .context_window_tokens = 256,
+      .reserved_output_tokens = 10,
+      .minimum_recent_conversation_messages = 8,
+      .limits = { .conversation = 80 },
+    });
+  require(relaxed_conversation_floor_result &&
+            relaxed_conversation_floor_result.report.preservation_floor_relaxed &&
+            relaxed_conversation_floor_result.report.after.conversation <= 80 &&
+            !relaxed_conversation_floor_result.request.messages.empty() &&
+            relaxed_conversation_floor_result.request.messages.back().content.find('c') !=
+              std::string::npos,
+    "hard conversation limits must relax an oversized message floor and retain the newest "
+    "conversation tail");
+
   const auto impossible_exchange_result = manager.fit(protected_tool_exchange,
     {
       .context_window_tokens = 512,
@@ -277,9 +332,11 @@ void test_context_budget() {
     });
   require(!impossible_exchange_result &&
             impossible_exchange_result.report.truncated_messages == 0 &&
-            impossible_exchange_result.request.messages[3].content == structured_latest,
+            impossible_exchange_result.request.messages[3].content == structured_latest &&
+            impossible_exchange_result.report.error.find("tool_results tokens") !=
+              std::string::npos,
     "a protected recent Tool exchange must fail a contradictory component limit instead of "
-    "corrupting its model-facing projection");
+    "corrupting its model-facing projection, and must identify the failing component");
 }
 
 void test_context_budget_runner_integration() {

@@ -39,6 +39,7 @@ struct context_budget_report {
   context_budget_usage after;
   std::size_t dropped_messages { 0 };
   std::size_t truncated_messages { 0 };
+  bool preservation_floor_relaxed { false };
   bool fitted { false };
   std::string error;
 };
@@ -245,17 +246,13 @@ private:
     }
     const auto removable =
       candidates.size() > preserve_recent ? candidates.size() - preserve_recent : 0;
-    for (std::size_t position = 0; position < candidates.size() && current > limit; ++position) {
+    const auto reduce_candidate = [&](std::size_t position) {
       const auto index = candidates[position];
       if (removed[index]) {
-        continue;
+        return;
       }
       auto& message = result.request.messages[index];
       const auto tokens = estimator_->estimate_message(message);
-      const bool protected_recent = position >= removable;
-      if (protected_recent) {
-        continue;
-      }
       if (current - (std::min)(current, tokens) >= limit || !can_truncate(message)) {
         removed[index] = true;
         ++result.report.dropped_messages;
@@ -267,6 +264,36 @@ private:
       }
       current =
         component(usage(result.request, removed, result.report.before.reserved_output), source);
+    };
+    for (std::size_t position = 0; position < removable && current > limit; ++position) {
+      reduce_candidate(position);
+    }
+
+    // A preservation count is a quality preference, not permission to violate
+    // the hard component/window limit. Relax it from oldest to newest while
+    // retaining at least the latest conversational message whenever possible.
+    for (std::size_t position = removable;
+         position + 1 < candidates.size() && current > limit;
+         ++position) {
+      result.report.preservation_floor_relaxed = true;
+      reduce_candidate(position);
+    }
+    if (current > limit && !candidates.empty()) {
+      const auto latest = candidates.back();
+      auto& message = result.request.messages[latest];
+      if (!removed[latest] && can_truncate(message)) {
+        result.report.preservation_floor_relaxed = true;
+        const auto excess = current - limit;
+        truncate_message(message, excess);
+        ++result.report.truncated_messages;
+        current = component(
+          usage(result.request, removed, result.report.before.reserved_output), source);
+      }
+    }
+    if (current > limit) {
+      result.report.error = context_source_name(source) + " tokens (" + std::to_string(current) +
+        ") cannot be reduced to component limit (" + std::to_string(limit) +
+        ") while retaining the latest message";
     }
     return current <= limit;
   }
@@ -320,7 +347,7 @@ private:
       llm_context_source::tool_result);
     const auto groups = tool_exchange_groups(result.request, removed);
     const auto removable = groups.size() > preserve_recent ? groups.size() - preserve_recent : 0;
-    for (std::size_t position = 0; position < removable && current > limit; ++position) {
+    const auto drop_group = [&](std::size_t position) {
       for (const auto index : groups[position].message_indices) {
         if (!removed[index]) {
           removed[index] = true;
@@ -329,8 +356,48 @@ private:
       }
       current = component(usage(result.request, removed, result.report.before.reserved_output),
         llm_context_source::tool_result);
+    };
+    for (std::size_t position = 0; position < removable && current > limit; ++position) {
+      drop_group(position);
+    }
+
+    // Keep tool-call/result groups atomic, but relax the requested retention
+    // floor when those groups collectively exceed a hard token limit. The
+    // newest exchange remains protected because dropping it would erase the
+    // evidence needed for the model's immediate continuation.
+    for (std::size_t position = removable;
+         position + 1 < groups.size() && current > limit;
+         ++position) {
+      result.report.preservation_floor_relaxed = true;
+      drop_group(position);
+    }
+    if (current > limit) {
+      result.report.error = "tool_results tokens (" + std::to_string(current) +
+        ") cannot be reduced to component limit (" + std::to_string(limit) +
+        ") while retaining the latest atomic tool exchange";
     }
     return current <= limit;
+  }
+
+  [[nodiscard]] static std::string context_source_name(llm_context_source source) {
+    switch (source) {
+      case llm_context_source::system:
+        return "system";
+      case llm_context_source::conversation:
+        return "conversation";
+      case llm_context_source::memory:
+        return "memory";
+      case llm_context_source::knowledge:
+        return "knowledge";
+      case llm_context_source::skill:
+        return "skills";
+      case llm_context_source::tool_result:
+        return "tool_results";
+      case llm_context_source::other:
+      case llm_context_source::automatic:
+        return "other";
+    }
+    return "other";
   }
 
   [[nodiscard]] static bool can_truncate(const ::wuwe::chat_message& message) {

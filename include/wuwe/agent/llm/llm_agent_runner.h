@@ -2100,6 +2100,22 @@ private:
           std::to_string(fitted.report.before.input_total());
         response.metadata["reserved_output_tokens"] =
           std::to_string(fitted.report.before.reserved_output);
+        response.metadata["context_system_tokens"] =
+          std::to_string(fitted.report.before.system);
+        response.metadata["context_conversation_tokens"] =
+          std::to_string(fitted.report.before.conversation);
+        response.metadata["context_memory_tokens"] =
+          std::to_string(fitted.report.before.memory);
+        response.metadata["context_knowledge_tokens"] =
+          std::to_string(fitted.report.before.knowledge);
+        response.metadata["context_skill_tokens"] =
+          std::to_string(fitted.report.before.skills);
+        response.metadata["context_tool_schema_tokens"] =
+          std::to_string(fitted.report.before.tool_schemas);
+        response.metadata["context_tool_result_tokens"] =
+          std::to_string(fitted.report.before.tool_results);
+        response.metadata["context_other_tokens"] =
+          std::to_string(fitted.report.before.other);
         return response;
       }
       if (callbacks.on_context_budget) {
