@@ -764,9 +764,10 @@ void test_deepseek_normalizes_validated_dsml_tool_calls() {
 
   const auto response = client.complete(request);
   require(!response.error_code, "valid DSML should normalize successfully");
-  require(response.content.empty(), "DSML protocol markup must not remain visible content");
-  require(response.reasoning_summary == "I will inspect the device.",
-    "text preceding DSML should be retained as provider-visible reasoning");
+  require(response.content == "I will inspect the device.",
+    "ordinary assistant text preceding DSML must remain visible response content");
+  require(response.reasoning_summary.empty(),
+    "ordinary assistant text preceding DSML must not be reclassified as reasoning");
   require(response.tool_calls.size() == 1 && response.tool_calls.front().name == "lookup",
     "DSML should produce one validated tool call");
   const auto arguments = nlohmann::json::parse(response.tool_calls.front().arguments_json);
@@ -832,12 +833,32 @@ void test_deepseek_negotiates_unsupported_explicit_tool_choice() {
     "subsequent requests should use the learned provider capability");
 }
 
-void test_deepseek_buffers_text_tool_protocol_before_callbacks() {
-  const auto body = nlohmann::json {
-    { "choices", nlohmann::json::array({ { { "message",
-      { { "content",
-        R"(<|DSML|tool_calls><|DSML|invoke name="lookup"></|DSML|invoke></|DSML|tool_calls>)" } } } } }) },
-  }.dump();
+void test_deepseek_maps_request_scoped_thinking_control() {
+  auto http = std::make_shared<capture_http_client>(
+    R"({"choices":[{"message":{"content":"{\"operation\":\"answer\"}"},"finish_reason":"stop"}]})");
+  wuwe::deepseek_llm_client client(
+    { .api_key = "", .require_api_key = false, .model = "deepseek-test" }, http);
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user", .content = "classify" });
+  request.thinking_mode = wuwe::llm_thinking_mode::disabled;
+
+  const auto response = client.complete(request);
+  require(!response.error_code && http->requests.size() == 1,
+    "DeepSeek lightweight requests should complete normally");
+  const auto payload = nlohmann::json::parse(http->requests.front().body);
+  require(payload.contains("thinking") &&
+            payload.at("thinking").value("type", std::string {}) == "disabled",
+    "DeepSeek should receive request-scoped thinking.type=disabled");
+}
+
+void test_deepseek_streams_while_filtering_text_tool_protocol() {
+  const std::string body =
+    "data: {\"choices\":[{\"delta\":{\"content\":\"I will inspect the target.\\n<|DSML|tool_\"},"
+    "\"finish_reason\":null}]}\n\n"
+    "data: {\"choices\":[{\"delta\":{\"content\":\"calls><|DSML|invoke "
+    "name=\\\"lookup\\\"></|DSML|invoke></|DSML|tool_calls>\"},"
+    "\"finish_reason\":\"tool_calls\"}]}\n\n"
+    "data: [DONE]\n\n";
   auto http = std::make_shared<capture_http_client>(body);
   wuwe::deepseek_llm_client client(
     { .api_key = "", .require_api_key = false, .model = "deepseek-test" }, http);
@@ -857,13 +878,64 @@ void test_deepseek_buffers_text_tool_protocol_before_callbacks() {
   const auto response = client.complete_stream(request, callbacks);
   require(!response.error_code && response.tool_calls.size() == 1,
     "buffered DeepSeek completion should retain the normalized tool call");
-  require(visible_content.find("DSML") == std::string::npos,
-    "provider text protocol must never leak through streaming callbacks");
+  require(visible_content == "I will inspect the target.\n" &&
+            visible_content.find("DSML") == std::string::npos,
+    "ordinary assistant commentary should stream while provider protocol remains hidden");
+  require(response.content == "I will inspect the target.",
+    "streamed commentary must remain response content after DSML normalization");
   require(completed_calls.size() == 1 && completed_calls.front().name == "lookup",
     "buffered protocol should emit a structured tool_call_done event");
   const auto payload = nlohmann::json::parse(http->requests.front().body);
-  require(!payload.contains("stream"),
-    "text-protocol safety buffering should use an atomic non-streaming request");
+  require(payload.value("stream", false),
+    "text-protocol filtering must retain real provider streaming");
+}
+
+void test_deepseek_stream_filter_restores_invalid_protocol_text() {
+  const std::string body =
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Literal <|DSML|tool_\"},"
+    "\"finish_reason\":null}]}\n\n"
+    "data: {\"choices\":[{\"delta\":{\"content\":\"calls is documentation, not a call.\"},"
+    "\"finish_reason\":\"stop\"}]}\n\n"
+    "data: [DONE]\n\n";
+  auto http = std::make_shared<capture_http_client>(body);
+  wuwe::deepseek_llm_client client(
+    { .api_key = "", .require_api_key = false, .model = "deepseek-test" }, http);
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user", .content = "explain the protocol" });
+  request.tools.push_back({ .name = "lookup" });
+  std::string visible_content;
+  wuwe::llm_stream_callbacks callbacks;
+  callbacks.on_event = [&](const wuwe::llm_stream_event& event) {
+    visible_content += event.content_delta;
+  };
+
+  const auto response = client.complete_stream(request, callbacks);
+  require(!response.error_code && response.tool_calls.empty(),
+    "invalid DSML-like prose must remain an ordinary successful response");
+  require(visible_content == response.content &&
+            response.content == "Literal <|DSML|tool_calls is documentation, not a call.",
+    "a false-positive protocol prefix must not truncate streamed or final content");
+}
+
+void test_openai_compatible_rejects_reasoning_only_terminal_stream() {
+  const std::string body =
+    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"working\"},"
+    "\"finish_reason\":null}]}\n\n"
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+    "data: [DONE]\n\n";
+  auto http = std::make_shared<capture_http_client>(body);
+  wuwe::deepseek_llm_client client(
+    { .api_key = "", .require_api_key = false, .model = "deepseek-test" }, http);
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user", .content = "answer" });
+
+  const auto response = client.complete_stream(request, {});
+  require(response.error_code == wuwe::agent::llm_error_code::invalid_response,
+    "reasoning-only terminal streams must not be reported as successful answers");
+  require(response.stop_reason == "empty_terminal_response",
+    "empty terminal responses should expose a stable diagnostic stop reason");
+  require(response.metadata.at("reasoning_bytes") == "7",
+    "empty-response diagnostics should preserve the observed reasoning size");
 }
 
 void test_advanced_generation_capabilities_are_mapped_or_rejected() {
@@ -1456,7 +1528,10 @@ int main() {
     test_deepseek_normalizes_validated_dsml_tool_calls();
     test_deepseek_rejects_unregistered_or_malformed_dsml();
     test_deepseek_negotiates_unsupported_explicit_tool_choice();
-    test_deepseek_buffers_text_tool_protocol_before_callbacks();
+    test_deepseek_maps_request_scoped_thinking_control();
+    test_deepseek_streams_while_filtering_text_tool_protocol();
+    test_deepseek_stream_filter_restores_invalid_protocol_text();
+    test_openai_compatible_rejects_reasoning_only_terminal_stream();
     test_advanced_generation_capabilities_are_mapped_or_rejected();
     test_native_provider_streaming_success_and_incomplete_streams();
     test_native_provider_streaming_uses_stage_timeout_options();

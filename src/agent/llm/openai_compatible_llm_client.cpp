@@ -14,11 +14,13 @@
 #include <cctype>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
 #include <system_error>
 #include <unordered_set>
+#include <utility>
 
 WUWE_NAMESPACE_BEGIN
 
@@ -285,6 +287,64 @@ std::string canonicalize_dsml(std::string value) {
   return value;
 }
 
+class dsml_stream_filter {
+public:
+  std::string feed(std::string_view chunk) {
+    pending_.append(chunk.data(), chunk.size());
+    if (protocol_detected_) {
+      return {};
+    }
+
+    const auto ascii = pending_.find(kAsciiMarker);
+    const auto fullwidth = pending_.find(kFullwidthMarker);
+    auto marker = std::min(ascii, fullwidth);
+    if (ascii == std::string::npos) {
+      marker = fullwidth;
+    }
+    else if (fullwidth == std::string::npos) {
+      marker = ascii;
+    }
+    if (marker != std::string::npos) {
+      protocol_detected_ = true;
+      auto visible = pending_.substr(0, marker);
+      pending_.erase(0, marker);
+      return visible;
+    }
+
+    const auto retained = marker_prefix_suffix_size(pending_);
+    auto visible = pending_.substr(0, pending_.size() - retained);
+    pending_.erase(0, pending_.size() - retained);
+    return visible;
+  }
+
+  std::string finish(bool suppress_protocol) {
+    if (protocol_detected_ && suppress_protocol) {
+      pending_.clear();
+      return {};
+    }
+    return std::exchange(pending_, {});
+  }
+
+private:
+  static std::size_t marker_prefix_suffix_size(const std::string& value) {
+    std::size_t retained = 0;
+    for (const auto marker : { kAsciiMarker, kFullwidthMarker }) {
+      const auto limit = (std::min)(value.size(), marker.size() - 1);
+      for (std::size_t size = 1; size <= limit; ++size) {
+        if (value.compare(value.size() - size, size, marker.data(), size) == 0) {
+          retained = (std::max)(retained, size);
+        }
+      }
+    }
+    return retained;
+  }
+
+  static constexpr std::string_view kAsciiMarker = "<|DSML|tool_calls";
+  static constexpr std::string_view kFullwidthMarker = "<｜DSML｜tool_calls";
+  std::string pending_;
+  bool protocol_detected_ { false };
+};
+
 std::optional<std::string> attribute_value(
   const std::string& attributes, std::string_view name) {
   const std::regex expression(
@@ -511,36 +571,6 @@ llm_response openai_compatible_llm_client::complete(
 
 llm_response openai_compatible_llm_client::complete_stream(
   const llm_request& request, const llm_stream_callbacks& callbacks, std::stop_token stop_token) {
-  if (compatibility_policy_.buffer_text_tool_protocol) {
-    auto response = complete(request, stop_token);
-    if (response.error_code) {
-      emit_stream_event(callbacks,
-        { .type = llm_stream_event_type::error,
-          .response = response,
-          .error_code = response.error_code,
-          .message = response.content });
-      return response;
-    }
-    if (!response.content.empty()) {
-      emit_stream_event(callbacks,
-        { .type = llm_stream_event_type::content_delta,
-          .content_delta = response.content });
-    }
-    if (!response.reasoning_summary.empty()) {
-      emit_stream_event(callbacks,
-        { .type = llm_stream_event_type::reasoning_done,
-          .reasoning_summary = response.reasoning_summary,
-          .reasoning_metadata = response.reasoning_metadata,
-          .response = response });
-    }
-    for (const auto& call : response.tool_calls) {
-      emit_stream_event(callbacks,
-        { .type = llm_stream_event_type::tool_call_done, .tool_call = call });
-    }
-    emit_stream_event(
-      callbacks, { .type = llm_stream_event_type::done, .response = response });
-    return response;
-  }
   if (auto rejected = agent::llm::llm_request_rejection(request, capabilities())) {
     agent::llm::emit_llm_request_rejection(callbacks, *rejected);
     return std::move(*rejected);
@@ -610,6 +640,10 @@ llm_response openai_compatible_llm_client::complete_stream(
     bool saw_sse_event = false;
     bool saw_done = false;
     bool stream_parse_failed = false;
+    std::optional<dsml_stream_filter> text_tool_filter;
+    if (compatibility_policy_.buffer_text_tool_protocol && !request.tools.empty()) {
+      text_tool_filter.emplace();
+    }
     agent::llm_detail::stream_timeout_guard timeout_guard(config_.stream_timeouts);
 
     const auto fail_stream = [&](std::error_code error_code, std::string content) {
@@ -714,11 +748,16 @@ llm_response openai_compatible_llm_client::complete_stream(
           if (!content_delta.empty()) {
             result.content += content_delta;
             emitted_output = true;
-            emit_stream_event(callbacks,
-              {
-                .type = llm_stream_event_type::content_delta,
-                .content_delta = content_delta,
-              });
+            const auto visible_delta = text_tool_filter
+              ? text_tool_filter->feed(content_delta)
+              : content_delta;
+            if (!visible_delta.empty()) {
+              emit_stream_event(callbacks,
+                {
+                  .type = llm_stream_event_type::content_delta,
+                  .content_delta = visible_delta,
+                });
+            }
           }
         }
 
@@ -797,6 +836,16 @@ llm_response openai_compatible_llm_client::complete_stream(
     }
 
     if (stream_parse_failed) {
+      if (!emitted_output && compatibility_policy_.negotiate_explicit_tool_choice &&
+          requires_explicit_tool_choice(request) &&
+          is_explicit_tool_choice_unsupported(result)) {
+        explicit_tool_choice_unsupported_.store(true, std::memory_order_release);
+        auto compatible_request = request;
+        compatible_request.tool_choice.reset();
+        auto retried = complete_stream(compatible_request, callbacks, stop_token);
+        retried.metadata["wuwe_tool_choice_fallback"] = "provider_default";
+        return retried;
+      }
       return result;
     }
 
@@ -812,6 +861,18 @@ llm_response openai_compatible_llm_client::complete_stream(
       else {
         result.content =
           openai_error_message(result.error_code, body.is_discarded() ? json::object() : body);
+      }
+
+      if (result.error_code && !emitted_output &&
+          compatibility_policy_.negotiate_explicit_tool_choice &&
+          requires_explicit_tool_choice(request) &&
+          is_explicit_tool_choice_unsupported(result)) {
+        explicit_tool_choice_unsupported_.store(true, std::memory_order_release);
+        auto compatible_request = request;
+        compatible_request.tool_choice.reset();
+        auto retried = complete_stream(compatible_request, callbacks, stop_token);
+        retried.metadata["wuwe_tool_choice_fallback"] = "provider_default";
+        return retried;
       }
 
       if (result.error_code && attempt < max_retries && !emitted_output &&
@@ -834,7 +895,7 @@ llm_response openai_compatible_llm_client::complete_stream(
     }
 
     if (!saw_sse_event) {
-      result = parse_openai_response(response);
+      result = normalize_provider_response(request, parse_openai_response(response));
       apply_reasoning_language_metadata(result, request.language, reasoning_language_control);
       if (result.error_code) {
         emit_stream_event(callbacks,
@@ -869,6 +930,22 @@ llm_response openai_compatible_llm_client::complete_stream(
             .tool_call = call,
           });
       }
+      if (result.content.empty() && result.tool_calls.empty()) {
+        result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
+        result.stop_reason = "empty_terminal_response";
+        result.metadata["finish_reason"] = result.finish_reason;
+        result.metadata["reasoning_bytes"] = std::to_string(result.reasoning_summary.size());
+        result.content =
+          "OpenAI-compatible response ended without final content or a tool call.";
+        emit_stream_event(callbacks,
+          {
+            .type = llm_stream_event_type::error,
+            .response = result,
+            .error_code = result.error_code,
+            .message = result.content,
+          });
+        return result;
+      }
       emit_stream_event(callbacks,
         {
           .type = llm_stream_event_type::done,
@@ -880,6 +957,21 @@ llm_response openai_compatible_llm_client::complete_stream(
     for (auto& [index, call] : tool_calls) {
       (void)index;
       result.tool_calls.push_back(call);
+    }
+    result = normalize_provider_response(request, std::move(result));
+    if (text_tool_filter) {
+      const bool normalized_protocol =
+        result.metadata.contains("wuwe_tool_protocol_normalized");
+      const auto tail = text_tool_filter->finish(normalized_protocol);
+      if (!tail.empty()) {
+        emit_stream_event(callbacks,
+          {
+            .type = llm_stream_event_type::content_delta,
+            .content_delta = tail,
+          });
+      }
+    }
+    for (const auto& call : result.tool_calls) {
       emit_stream_event(callbacks,
         {
           .type = llm_stream_event_type::tool_call_done,
@@ -887,11 +979,13 @@ llm_response openai_compatible_llm_client::complete_stream(
         });
     }
 
-    if (!saw_done && result.content.empty() && result.reasoning_summary.empty() &&
-        result.tool_calls.empty()) {
+    if (result.content.empty() && result.tool_calls.empty()) {
       result.error_code = agent::make_error_code(agent::llm_error_code::invalid_response);
-      result.content =
-        "OpenAI-compatible streaming response ended without content, tool calls, or [DONE].";
+      result.stop_reason = "empty_terminal_response";
+      result.metadata["finish_reason"] = result.finish_reason;
+      result.metadata["saw_done"] = saw_done ? "true" : "false";
+      result.metadata["reasoning_bytes"] = std::to_string(result.reasoning_summary.size());
+      result.content = "OpenAI-compatible streaming response ended without final content or a tool call.";
       emit_stream_event(callbacks,
         {
           .type = llm_stream_event_type::error,
@@ -1133,14 +1227,7 @@ llm_response openai_compatible_llm_client::normalize_provider_response(
   if (!calls) {
     return response;
   }
-  auto prefix = trim_copy(response.content.substr(0, protocol_offset));
-  if (!prefix.empty()) {
-    if (!response.reasoning_summary.empty()) {
-      response.reasoning_summary += "\n";
-    }
-    response.reasoning_summary += prefix;
-  }
-  response.content.clear();
+  response.content = trim_copy(response.content.substr(0, protocol_offset));
   response.tool_calls = *calls;
   response.metadata["wuwe_tool_protocol_normalized"] = "dsml";
   return response;
