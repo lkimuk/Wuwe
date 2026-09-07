@@ -22,8 +22,8 @@ struct openai_compatibility_policy {
   // Some OpenAI-compatible reasoning models expose tool calls through a
   // provider text protocol instead of the standard tool_calls field.
   bool normalize_dsml_tool_calls { false };
-  // Buffer responses while a text tool protocol may be present so protocol
-  // markup can never escape through streaming callbacks.
+  // Filter provider text tool protocol markers at the streaming boundary so
+  // protocol markup cannot escape while ordinary text remains incremental.
   bool buffer_text_tool_protocol { false };
   // Retry once without an explicit required/named tool choice when a provider
   // reports that the current reasoning mode does not support it.
@@ -31,6 +31,9 @@ struct openai_compatibility_policy {
   // Provider requires its visible reasoning state to be replayed on the
   // assistant tool-call message in the next request.
   bool replay_reasoning_content { false };
+  // Emit the OpenAI-compatible `thinking.type` request control used by
+  // providers such as DeepSeek for lightweight non-reasoning subrequests.
+  bool request_thinking_control { false };
 };
 
 class openai_compatible_llm_client : public llm_client {

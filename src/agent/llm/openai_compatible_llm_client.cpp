@@ -965,6 +965,13 @@ json openai_compatible_llm_client::build_openai_payload(const llm_request& reque
     payload["max_tokens"] = *request.max_output_tokens;
   }
 
+  if (compatibility_policy_.request_thinking_control &&
+      request.thinking_mode != llm_thinking_mode::provider_default) {
+    payload["thinking"] = {
+      { "type", request.thinking_mode == llm_thinking_mode::enabled ? "enabled" : "disabled" },
+    };
+  }
+
   if (!request.stop_sequences.empty()) {
     payload["stop"] = request.stop_sequences;
   }

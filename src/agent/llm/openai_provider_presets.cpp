@@ -28,6 +28,7 @@ deepseek_llm_client::deepseek_llm_client(llm_client_config config)
           .buffer_text_tool_protocol = true,
           .negotiate_explicit_tool_choice = true,
           .replay_reasoning_content = true,
+          .request_thinking_control = true,
         }) {
 }
 
@@ -39,6 +40,7 @@ deepseek_llm_client::deepseek_llm_client(
           .buffer_text_tool_protocol = true,
           .negotiate_explicit_tool_choice = true,
           .replay_reasoning_content = true,
+          .request_thinking_control = true,
         }) {
 }
 

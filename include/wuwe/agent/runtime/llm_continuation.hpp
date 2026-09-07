@@ -176,6 +176,7 @@ inline nlohmann::json request_to_json(const llm_request& value) {
     value.response_format ? nlohmann::json(*value.response_format) : nlohmann::json(nullptr);
   output["max_output_tokens"] =
     value.max_output_tokens ? nlohmann::json(*value.max_output_tokens) : nlohmann::json(nullptr);
+  output["thinking_mode"] = std::string(to_string(value.thinking_mode));
   output["stop_sequences"] = value.stop_sequences;
   output["seed"] = value.seed ? nlohmann::json(*value.seed) : nlohmann::json(nullptr);
   output["json_schema_output"] = value.json_schema_output
@@ -251,6 +252,12 @@ inline llm_request request_from_json(const nlohmann::json& value) {
   if (value.contains("max_output_tokens") && !value.at("max_output_tokens").is_null()) {
     request.max_output_tokens = value.at("max_output_tokens").get<int>();
   }
+  const auto thinking_mode = value.value("thinking_mode", std::string("provider_default"));
+  request.thinking_mode = thinking_mode == "enabled"
+                            ? llm_thinking_mode::enabled
+                            : thinking_mode == "disabled"
+                                ? llm_thinking_mode::disabled
+                                : llm_thinking_mode::provider_default;
   request.stop_sequences = value.value("stop_sequences", std::vector<std::string> {});
   if (value.contains("seed") && !value.at("seed").is_null()) {
     request.seed = value.at("seed").get<std::int64_t>();

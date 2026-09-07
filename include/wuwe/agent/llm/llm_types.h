@@ -92,6 +92,24 @@ enum class llm_context_overflow_policy {
   trim_low_priority,
 };
 
+enum class llm_thinking_mode {
+  provider_default,
+  enabled,
+  disabled,
+};
+
+inline std::string_view to_string(llm_thinking_mode mode) noexcept {
+  switch (mode) {
+    case llm_thinking_mode::provider_default:
+      return "provider_default";
+    case llm_thinking_mode::enabled:
+      return "enabled";
+    case llm_thinking_mode::disabled:
+      return "disabled";
+  }
+  return "provider_default";
+}
+
 inline std::string_view to_string(llm_context_overflow_policy policy) noexcept {
   switch (policy) {
     case llm_context_overflow_policy::reject:
@@ -252,6 +270,9 @@ struct llm_request {
   std::optional<llm_tool_choice> tool_choice;
   llm_language_preferences language;
   std::optional<int> max_output_tokens;
+  // Request-scoped provider thinking control. Providers that do not declare
+  // support ignore provider_default and must not receive vendor-only fields.
+  llm_thinking_mode thinking_mode { llm_thinking_mode::provider_default };
   std::vector<std::string> stop_sequences;
   std::optional<std::int64_t> seed;
   std::optional<llm_json_schema_output> json_schema_output;
