@@ -1,8 +1,8 @@
 #ifndef WUWE_AGENT_LLM_OPENAI_COMPATIBLE_LLM_CLIENT_H
 #define WUWE_AGENT_LLM_OPENAI_COMPATIBLE_LLM_CLIENT_H
 
-#include <memory>
 #include <atomic>
+#include <memory>
 #include <stop_token>
 
 #include <nlohmann/json.hpp>
@@ -34,6 +34,9 @@ struct openai_compatibility_policy {
   // Emit the OpenAI-compatible `thinking.type` request control used by
   // providers such as DeepSeek for lightweight non-reasoning subrequests.
   bool request_thinking_control { false };
+  // Some compatible APIs (e.g. MiMo) document only max_completion_tokens.
+  // Keep the output-budget mapping explicit instead of guessing from model IDs.
+  bool use_max_completion_tokens { false };
 };
 
 class openai_compatible_llm_client : public llm_client {
@@ -59,15 +62,14 @@ public:
     std::stop_token stop_token = {}) override;
 
 protected:
-  openai_compatible_llm_client(llm_client_config config,
-    std::shared_ptr<http_client> http, openai_compatibility_policy policy);
+  openai_compatible_llm_client(llm_client_config config, std::shared_ptr<http_client> http,
+    openai_compatibility_policy policy);
   static llm_client_config normalize_config(llm_client_config config);
 
   json build_openai_payload(const llm_request& request) const;
   std::vector<std::pair<std::string, std::string>> build_headers() const;
   llm_response parse_openai_response(const http_response& response) const;
-  llm_response normalize_provider_response(
-    const llm_request& request, llm_response response) const;
+  llm_response normalize_provider_response(const llm_request& request, llm_response response) const;
 
 protected:
   llm_client_config config_;

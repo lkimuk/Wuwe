@@ -21,7 +21,14 @@ void register_builtin_llm_clients() {
       ("DeepSeek", deepseek_llm_client),
       ("DashScope", dashscope_llm_client),
       ("Qwen", qwen_llm_client),
-      ("Zhipu", zhipu_llm_client))
+      ("Zhipu", zhipu_llm_client),
+      ("Kimi", kimi_llm_client),
+      ("MiniMax", minimax_llm_client),
+      ("SiliconFlow", siliconflow_llm_client),
+      ("Doubao", doubao_llm_client),
+      ("Nvidia", nvidia_llm_client),
+      ("StepFun", stepfun_llm_client),
+      ("MiMo", mimo_llm_client))
     return true;
   }();
   (void)registered;

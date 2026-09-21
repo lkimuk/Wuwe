@@ -44,6 +44,21 @@ llm_provider_capabilities anthropic_capabilities() {
   };
 }
 
+llm_provider_capabilities minimax_capabilities() {
+  // Native Chat Completions retains <think> content verbatim by default.
+  // Do not advertise a separate reasoning stream or unsupported generation
+  // controls merely because another OpenAI-compatible provider supports them.
+  return { .streaming = true, .tools = true };
+}
+
+llm_provider_capabilities mimo_capabilities() {
+  auto capabilities = reasoning_openai_compatible_capabilities();
+  // MiMo documents automatic tool selection only. Non-auto values are ignored
+  // upstream, so reject explicit tool-choice controls rather than promise them.
+  capabilities.tool_choice = false;
+  return capabilities;
+}
+
 llm_provider_capabilities gemini_capabilities() {
   return {
     .streaming = true,
@@ -188,6 +203,69 @@ const std::vector<llm_provider_info>& list_llm_providers() {
       .default_chat_completions_path = "/chat/completions",
       .api_key_env_names = { "ZHIPU_API_KEY", "BIGMODEL_API_KEY" },
       .capabilities = cloud_chat_capabilities(),
+    },
+    {
+      .id = "Kimi",
+      .display_name = "Kimi (Moonshot)",
+      .protocol = llm_provider_protocol::openai_compatible,
+      .default_base_url = "https://api.moonshot.cn",
+      .default_chat_completions_path = "/v1/chat/completions",
+      .api_key_env_names = { "MOONSHOT_API_KEY", "KIMI_API_KEY" },
+      .capabilities = reasoning_openai_compatible_capabilities(),
+    },
+    {
+      .id = "MiniMax",
+      .display_name = "MiniMax",
+      .protocol = llm_provider_protocol::openai_compatible,
+      .default_base_url = "https://api.minimaxi.com",
+      .default_chat_completions_path = "/v1/chat/completions",
+      .api_key_env_names = { "MINIMAX_API_KEY" },
+      .capabilities = minimax_capabilities(),
+    },
+    {
+      .id = "SiliconFlow",
+      .display_name = "SiliconFlow",
+      .protocol = llm_provider_protocol::openai_compatible,
+      .default_base_url = "https://api.siliconflow.cn",
+      .default_chat_completions_path = "/v1/chat/completions",
+      .api_key_env_names = { "SILICONFLOW_API_KEY" },
+      .capabilities = reasoning_openai_compatible_capabilities(),
+    },
+    {
+      .id = "Doubao",
+      .display_name = "Volcengine Doubao",
+      .protocol = llm_provider_protocol::openai_compatible,
+      .default_base_url = "https://ark.cn-beijing.volces.com/api/v3",
+      .default_chat_completions_path = "/chat/completions",
+      .api_key_env_names = { "ARK_API_KEY", "DOUBAO_API_KEY" },
+      .capabilities = reasoning_openai_compatible_capabilities(),
+    },
+    {
+      .id = "Nvidia",
+      .display_name = "NVIDIA NIM",
+      .protocol = llm_provider_protocol::openai_compatible,
+      .default_base_url = "https://integrate.api.nvidia.com",
+      .default_chat_completions_path = "/v1/chat/completions",
+      .api_key_env_names = { "NVIDIA_API_KEY" },
+      .capabilities = reasoning_openai_compatible_capabilities(),
+    },
+    {
+      .id = "StepFun",
+      .display_name = "StepFun",
+      .protocol = llm_provider_protocol::openai_compatible,
+      .default_base_url = "https://api.stepfun.com",
+      .default_chat_completions_path = "/v1/chat/completions",
+      .api_key_env_names = { "STEPFUN_API_KEY" },
+      .capabilities = reasoning_openai_compatible_capabilities(),
+    },
+    {
+      .id = "MiMo",
+      .display_name = "Xiaomi MiMo",
+      .protocol = llm_provider_protocol::openai_compatible,
+      .default_base_url = "https://api.xiaomimimo.com",
+      .default_chat_completions_path = "/v1/chat/completions",
+      .api_key_env_names = { "MIMO_API_KEY" },
+      .capabilities = mimo_capabilities(),
     },
   };
   return providers;

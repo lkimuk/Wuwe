@@ -1056,7 +1056,9 @@ json openai_compatible_llm_client::build_openai_payload(const llm_request& reque
   };
 
   if (request.max_output_tokens && *request.max_output_tokens > 0) {
-    payload["max_tokens"] = *request.max_output_tokens;
+    const auto* limit_key =
+      compatibility_policy_.use_max_completion_tokens ? "max_completion_tokens" : "max_tokens";
+    payload[limit_key] = *request.max_output_tokens;
   }
 
   if (compatibility_policy_.request_thinking_control &&

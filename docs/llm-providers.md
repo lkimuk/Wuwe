@@ -50,6 +50,13 @@ can call `context_budget_manager::fit()` explicitly.
 | `DashScope` | OpenAI-compatible | `DASHSCOPE_API_KEY`, `QWEN_API_KEY`, then `OPENAI_API_KEY` |
 | `Qwen` | OpenAI-compatible | `QWEN_API_KEY`, `DASHSCOPE_API_KEY`, then `OPENAI_API_KEY` |
 | `Zhipu` | OpenAI-compatible | `ZHIPU_API_KEY`, then `BIGMODEL_API_KEY` |
+| `Kimi` | OpenAI-compatible | `MOONSHOT_API_KEY`, then `KIMI_API_KEY` |
+| `MiniMax` | OpenAI-compatible | `MINIMAX_API_KEY` |
+| `SiliconFlow` | OpenAI-compatible | `SILICONFLOW_API_KEY` |
+| `Doubao` | OpenAI-compatible | `ARK_API_KEY`, then `DOUBAO_API_KEY` |
+| `Nvidia` | OpenAI-compatible | `NVIDIA_API_KEY` |
+| `StepFun` | OpenAI-compatible | `STEPFUN_API_KEY` |
+| `MiMo` | OpenAI-compatible | `MIMO_API_KEY` |
 
 `OpenAICompatible` requires a `base_url`. Other presets supply a default endpoint that can still be overridden.
 

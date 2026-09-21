@@ -271,6 +271,7 @@ add_executable(header_independence_tests
     header_independence/sandbox_plan_header.cpp
     header_independence/sandbox_codec_header.cpp
     header_independence/llm_dispatch_header.cpp
+    header_independence/llm_provider_presets_header.cpp
     header_independence/skills_header.cpp
     header_independence/version_header.cpp
     header_independence/umbrella_header.cpp

@@ -30,6 +30,14 @@ int main() {
     return 1;
   }
 
+  for (const auto* id :
+    { "Kimi", "MiniMax", "SiliconFlow", "Doubao", "Nvidia", "StepFun", "MiMo" }) {
+    const auto client = wuwe::make_llm_client(id, { .load_api_key_from_environment = false });
+    if (!client || !client->supports_streaming()) {
+      return 1;
+    }
+  }
+
   constexpr auto factory_provider_id = "PackageFactoryExtension";
   wuwe::llm_client_factory factory;
   factory.unregister_type(factory_provider_id);

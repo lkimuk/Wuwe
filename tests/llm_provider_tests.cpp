@@ -1,5 +1,7 @@
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -174,6 +176,13 @@ void test_factory_registers_protocol_and_provider_clients() {
          "DashScope",
          "Qwen",
          "Zhipu",
+         "Kimi",
+         "MiniMax",
+         "SiliconFlow",
+         "Doubao",
+         "Nvidia",
+         "StepFun",
+         "MiMo",
        }) {
     auto client = factory.create_shared(key,
       wuwe::llm_client_config {
@@ -360,6 +369,331 @@ void test_aggregate_header_preserves_tool_reflection() {
     "wuwe.h should not interfere with reflected tool parameters");
   require(tool.parameters_json_schema.find("Text to echo.") != std::string::npos,
     "wuwe.h should not interfere with field descriptions");
+}
+
+std::optional<std::string_view> request_header_value(
+  const wuwe::http_request& request, std::string_view name) {
+  for (const auto& [key, value] : request.headers) {
+    if (wuwe::http_header_name_equals(key, name)) {
+      return value;
+    }
+  }
+  return std::nullopt;
+}
+
+class scoped_test_env {
+public:
+  explicit scoped_test_env(const char* name) : name_(name) {
+#if defined(_WIN32)
+    char* value = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&value, &length, name) == 0 && value) {
+      previous_ = value;
+    }
+    std::free(value);
+#else
+    if (const char* value = std::getenv(name)) {
+      previous_ = value;
+    }
+#endif
+  }
+  ~scoped_test_env() {
+    assign(previous_);
+  }
+  scoped_test_env(const scoped_test_env&) = delete;
+  scoped_test_env& operator=(const scoped_test_env&) = delete;
+  void set(std::string value) {
+    assign(value);
+  }
+
+private:
+  void assign(const std::optional<std::string>& value) {
+#if defined(_WIN32)
+    _putenv_s(name_.c_str(), value ? value->c_str() : "");
+#else
+    if (value) {
+      setenv(name_.c_str(), value->c_str(), 1);
+    }
+    else {
+      unsetenv(name_.c_str());
+    }
+#endif
+  }
+  std::string name_;
+  std::optional<std::string> previous_;
+};
+
+template<typename Client>
+void verify_new_provider(
+  const char* id, const char* endpoint, const char* key_env, const char* alias_env = nullptr) {
+  scoped_test_env primary(key_env);
+  scoped_test_env openai("OPENAI_API_KEY");
+  scoped_test_env openrouter("OPENROUTER_API_KEY");
+  std::optional<scoped_test_env> alias;
+  if (alias_env) {
+    alias.emplace(alias_env);
+    alias->set("");
+  }
+  primary.set("");
+  openai.set("unrelated-openai-key");
+  openrouter.set("unrelated-openrouter-key");
+  const auto* info = wuwe::find_llm_provider(id);
+  require(
+    info && info->api_key_env_names.front() == key_env, "dedicated provider metadata missing");
+  require(
+    info->capabilities.streaming && info->capabilities.tools, "provider lost core capabilities");
+  auto cfg = wuwe::llm_client_config { .model = "test-model", .max_retries = 0 };
+  const std::string body = R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})";
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user", .content = "hello" });
+  auto missing_http = std::make_shared<capture_http_client>(body);
+  Client missing(cfg, missing_http);
+  require(missing.complete(request).error_code == wuwe::agent::llm_error_code::missing_api_key &&
+            missing_http->requests.empty(),
+    "preset used an unrelated provider key");
+  auto factory_missing = wuwe::make_llm_client(id, cfg);
+  require(factory_missing && factory_missing->complete(request).error_code ==
+                               wuwe::agent::llm_error_code::missing_api_key,
+    "factory credential policy differs from direct client");
+
+  primary.set("primary-test-key");
+  if (alias) {
+    alias->set("alias-test-key");
+  }
+  require(wuwe::normalize_llm_client_config(id, cfg)->api_key == "primary-test-key",
+    "primary environment credential did not win");
+  if (alias_env) {
+    primary.set("");
+    require(wuwe::normalize_llm_client_config(id, cfg)->api_key == "alias-test-key",
+      "provider alias credential was not resolved");
+    primary.set("primary-test-key");
+  }
+  auto http = std::make_shared<capture_http_client>(body);
+  Client client(cfg, http);
+  require(client.complete(request).content == "ok", "new provider completion failed");
+  require(http->requests.front().url == endpoint, "new provider endpoint incorrect");
+  require(request_header_value(http->requests.front(), "Authorization") ==
+            std::optional<std::string_view>("Bearer primary-test-key"),
+    "provider credential not sent");
+  auto payload = nlohmann::json::parse(http->requests.front().body);
+  require(payload["model"] == "test-model", "configured model was replaced");
+
+  cfg.api_key = "explicit-key";
+  cfg.base_url = "https://private.example/prefix";
+  cfg.chat_completions_path = "/custom/chat";
+  request.model = "ep-user-selected-model";
+  auto override_http = std::make_shared<capture_http_client>(body);
+  Client overridden(cfg, override_http);
+  (void)overridden.complete(request);
+  payload = nlohmann::json::parse(override_http->requests.front().body);
+  require(payload["model"] == "ep-user-selected-model", "request model/endpoint ID not preserved");
+  require(override_http->requests.front().url == "https://private.example/prefix/custom/chat",
+    "explicit endpoint override lost");
+  require(request_header_value(override_http->requests.front(), "Authorization") ==
+            std::optional<std::string_view>("Bearer explicit-key"),
+    "explicit key did not win");
+
+  cfg = { .load_api_key_from_environment = false, .model = "test-model", .max_retries = 0 };
+  auto disabled_http = std::make_shared<capture_http_client>(body);
+  Client disabled(cfg, disabled_http);
+  require(disabled.complete(request).error_code == wuwe::agent::llm_error_code::missing_api_key &&
+            disabled_http->requests.empty(),
+    "disabled environment loading was ignored");
+
+  cfg.api_key = "test-key";
+  auto tool_http = std::make_shared<capture_http_client>(
+    R"({"choices":[{"message":{"content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"test\"}"}}]},"finish_reason":"tool_calls"}]})");
+  Client tools(cfg, tool_http);
+  request.tools = { { .name = "lookup",
+    .description = "Look up a value",
+    .parameters_json_schema = R"({"type":"object","properties":{"q":{"type":"string"}}})" } };
+  const auto tool_result = tools.complete(request);
+  require(!tool_result.error_code && tool_result.tool_calls.size() == 1 &&
+            tool_result.tool_calls[0].name == "lookup",
+    "new provider tool call failed");
+  require(
+    nlohmann::json::parse(tool_http->requests[0].body)["tools"][0]["function"]["name"] == "lookup",
+    "tool schema not serialized");
+
+  auto stream_http = std::make_shared<capture_http_client>(
+    "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"
+    "data: "
+    "{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,"
+    "\"completion_tokens\":2,\"total_tokens\":5}}\n\n"
+    "data: [DONE]\n\n");
+  Client streaming(cfg, stream_http);
+  std::string emitted;
+  const auto stream_result = streaming.complete_stream(request,
+    {
+      .on_event =
+        [&](const wuwe::llm_stream_event& event) {
+          if (event.type == wuwe::llm_stream_event_type::content_delta) {
+            emitted += event.content_delta;
+          }
+        },
+    });
+  require(!stream_result.error_code && stream_result.content == "hello" && emitted == "hello" &&
+            stream_result.usage.total_tokens == 5,
+    "new provider streaming/usage failed");
+  require(
+    stream_http->requests[0].url == endpoint, "streaming and completion use different endpoints");
+}
+
+void test_new_provider_presets() {
+  verify_new_provider<wuwe::nvidia_llm_client>(
+    "Nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", "NVIDIA_API_KEY");
+  verify_new_provider<wuwe::stepfun_llm_client>(
+    "StepFun", "https://api.stepfun.com/v1/chat/completions", "STEPFUN_API_KEY");
+  verify_new_provider<wuwe::mimo_llm_client>(
+    "MiMo", "https://api.xiaomimimo.com/v1/chat/completions", "MIMO_API_KEY");
+  verify_new_provider<wuwe::kimi_llm_client>(
+    "Kimi", "https://api.moonshot.cn/v1/chat/completions", "MOONSHOT_API_KEY", "KIMI_API_KEY");
+  verify_new_provider<wuwe::minimax_llm_client>(
+    "MiniMax", "https://api.minimaxi.com/v1/chat/completions", "MINIMAX_API_KEY");
+  verify_new_provider<wuwe::siliconflow_llm_client>(
+    "SiliconFlow", "https://api.siliconflow.cn/v1/chat/completions", "SILICONFLOW_API_KEY");
+  verify_new_provider<wuwe::doubao_llm_client>("Doubao",
+    "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    "ARK_API_KEY",
+    "DOUBAO_API_KEY");
+
+  const auto cfg = wuwe::llm_client_config {
+    .api_key = "test-key",
+    .load_api_key_from_environment = false,
+    .model = "test-model",
+    .max_retries = 0,
+  };
+  wuwe::llm_request request;
+  request.messages = {
+    { .role = "assistant",
+      .content = "",
+      .reasoning_content = "retained provider state",
+      .tool_calls = { { .id = "call-1", .name = "lookup", .arguments_json = "{}" } } },
+    { .role = "tool", .content = "result", .tool_call_id = "call-1" },
+  };
+  request.thinking_mode = wuwe::llm_thinking_mode::disabled;
+  const std::string body = R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})";
+  auto kimi_http = std::make_shared<capture_http_client>(body);
+  wuwe::kimi_llm_client kimi(cfg, kimi_http);
+  require(!kimi.complete(request).error_code, "Kimi tool continuation failed");
+  const auto kimi_payload = nlohmann::json::parse(kimi_http->requests[0].body);
+  require(kimi_payload["messages"][0]["reasoning_content"] == "retained provider state" &&
+            kimi_payload["thinking"]["type"] == "disabled",
+    "Kimi thinking contract lost");
+
+  auto silicon_http = std::make_shared<capture_http_client>(body);
+  wuwe::siliconflow_llm_client silicon(cfg, silicon_http);
+  (void)silicon.complete(request);
+  const auto silicon_payload = nlohmann::json::parse(silicon_http->requests[0].body);
+  require(silicon_payload["messages"][0]["reasoning_content"] == "retained provider state" &&
+            !silicon_payload.contains("thinking"),
+    "SiliconFlow received a different vendor's thinking control");
+
+  auto minimax_http = std::make_shared<capture_http_client>(
+    R"({"choices":[{"message":{"content":"<think>provider state</think>answer"},"finish_reason":"stop"}]})");
+  wuwe::minimax_llm_client minimax(cfg, minimax_http);
+  const auto minimax_response = minimax.complete(request);
+  require(minimax_response.content == "<think>provider state</think>answer" &&
+            minimax_response.reasoning_summary.empty(),
+    "MiniMax native thinking content was rewritten");
+  require(!minimax.capabilities().reasoning_summary && !minimax.capabilities().tool_choice &&
+            !minimax.capabilities().json_schema_output,
+    "MiniMax advertised unimplemented controls");
+  request.tools = { { .name = "lookup", .parameters_json_schema = R"({"type":"object"})" } };
+  request.tool_choice = wuwe::llm_tool_choice { .mode = wuwe::llm_tool_choice_mode::required };
+  require(
+    minimax.complete(request).error_code == wuwe::agent::llm_error_code::unsupported_capability &&
+      minimax_http->requests.size() == 1,
+    "unsupported MiniMax controls reached the network");
+}
+
+template<typename Client>
+void verify_priority_provider_protocol(bool mimo_controls) {
+  const auto cfg = wuwe::llm_client_config {
+    .api_key = "test-key",
+    .load_api_key_from_environment = false,
+    .model = "vendor/model-id",
+    .max_retries = 0,
+  };
+  const std::string response_body =
+    R"({"choices":[{"message":{"content":"answer","reasoning_content":"new-state"},"finish_reason":"stop"}]})";
+  auto http = std::make_shared<capture_http_client>(response_body);
+  Client client(cfg, http);
+  wuwe::llm_request request;
+  request.messages = {
+    { .role = "assistant",
+      .content = "",
+      .reasoning_content = "verbatim-history",
+      .tool_calls = { { .id = "c1", .name = "lookup", .arguments_json = "{}" } } },
+    { .role = "tool", .content = "found", .tool_call_id = "c1" },
+  };
+  request.tools = { { .name = "lookup", .parameters_json_schema = R"({"type":"object"})" } };
+  request.max_output_tokens = 256;
+  request.temperature = 0.8;
+  const auto result = client.complete(request);
+  require(
+    !result.error_code && result.content == "answer" && result.reasoning_summary == "new-state",
+    "priority provider did not parse separate reasoning");
+  const auto payload = nlohmann::json::parse(http->requests[0].body);
+  require(payload["messages"][0]["reasoning_content"] == "verbatim-history",
+    "priority provider dropped tool-continuation reasoning");
+  const auto* limit_key = mimo_controls ? "max_completion_tokens" : "max_tokens";
+  const auto* other_limit_key = mimo_controls ? "max_tokens" : "max_completion_tokens";
+  require(
+    payload[limit_key] == 256 && !payload.contains(other_limit_key), "wrong output-limit field");
+  require(payload["temperature"] == 0.8 && !payload.contains("thinking"),
+    "preset silently changed sampling or default thinking behavior");
+
+  for (const auto mode : { wuwe::llm_thinking_mode::enabled, wuwe::llm_thinking_mode::disabled }) {
+    request.thinking_mode = mode;
+    (void)client.complete(request);
+    const auto explicit_payload = nlohmann::json::parse(http->requests.back().body);
+    if (mimo_controls) {
+      require(explicit_payload["thinking"]["type"] ==
+                (mode == wuwe::llm_thinking_mode::enabled ? "enabled" : "disabled"),
+        "MiMo thinking control not mapped");
+    }
+    else {
+      require(
+        !explicit_payload.contains("thinking"), "vendor-specific switch leaked to another preset");
+    }
+  }
+  if (mimo_controls) {
+    const auto sent = http->requests.size();
+    request.tool_choice = wuwe::llm_tool_choice { .mode = wuwe::llm_tool_choice_mode::required };
+    require(
+      client.complete(request).error_code == wuwe::agent::llm_error_code::unsupported_capability &&
+        http->requests.size() == sent,
+      "MiMo accepted an unsupported tool-choice guarantee");
+    request.tool_choice.reset();
+  }
+
+  auto stream_http = std::make_shared<capture_http_client>(
+    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"plan\"},\"finish_reason\":null}]}\n\n"
+    "data: "
+    "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c2\",\"type\":\"function\","
+    "\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n"
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+    "data: [DONE]\n\n");
+  Client streaming(cfg, stream_http);
+  std::string reasoning;
+  const auto streamed = streaming.complete_stream(request,
+    {
+      .on_reasoning_delta = [&](std::string_view delta) { reasoning += delta; },
+    });
+  require(!streamed.error_code && streamed.reasoning_summary == "plan" && reasoning == "plan" &&
+            streamed.tool_calls.size() == 1 && streamed.tool_calls[0].name == "lookup" &&
+            streamed.tool_calls[0].arguments_json == "{}",
+    "priority provider reasoning/tool stream failed");
+  const auto stream_payload = nlohmann::json::parse(stream_http->requests[0].body);
+  require(stream_payload[limit_key] == 256 && !stream_payload.contains(other_limit_key),
+    "streaming output-limit mapping differs from completion");
+}
+
+void test_priority_provider_protocols() {
+  verify_priority_provider_protocol<wuwe::nvidia_llm_client>(false);
+  verify_priority_provider_protocol<wuwe::stepfun_llm_client>(false);
+  verify_priority_provider_protocol<wuwe::mimo_llm_client>(true);
 }
 
 void test_openai_compatible_provider_presets() {
@@ -1521,6 +1855,8 @@ int main() {
     test_provider_registry_exposes_default_metadata_and_config();
     test_aggregate_header_preserves_tool_reflection();
     test_openai_compatible_provider_presets();
+    test_new_provider_presets();
+    test_priority_provider_protocols();
     test_native_provider_clients_parse_text_and_tools();
     test_execution_context_trace_reaches_provider_http_requests();
     test_reasoning_language_contract_is_mapped_to_provider_payloads();
