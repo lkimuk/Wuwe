@@ -201,7 +201,14 @@ parsed_page parse_page(std::string_view body, llm_model_list_format format) {
   }
   const bool data_format =
     format == llm_model_list_format::openai || format == llm_model_list_format::anthropic;
-  const auto items = root.find(data_format ? "data" : "models");
+  auto items = root.find(data_format ? "data" : "models");
+  // Zhipu's alternate catalog uses models[].slug. Only accept this fallback
+  // for compatible discovery when data is absent; malformed data must fail.
+  const bool slug_format =
+    format == llm_model_list_format::openai && items == root.end() && root.contains("models");
+  if (slug_format) {
+    items = root.find("models");
+  }
   // Protobuf JSON can omit an empty repeated field in Gemini responses.
   if (items == root.end() && (format != llm_model_list_format::gemini ||
                                (!root.empty() && !root.contains("nextPageToken")))) {
@@ -216,7 +223,8 @@ parsed_page parse_page(std::string_view body, llm_model_list_format format) {
         return invalid();
       }
       llm_model_info model;
-      if (!read_optional_string(item, data_format ? "id" : "name", model.id) || model.id.empty()) {
+      const auto* id_field = slug_format ? "slug" : data_format ? "id" : "name";
+      if (!read_optional_string(item, id_field, model.id) || model.id.empty()) {
         return invalid();
       }
       if (format == llm_model_list_format::gemini && model.id.starts_with("models/")) {

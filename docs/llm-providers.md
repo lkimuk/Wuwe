@@ -282,6 +282,15 @@ does not infer context windows, prices, capabilities, account permissions, or
 filter out embedding models. A listed model is not a guarantee of callable access.
 Keep manual model entry available for services that do not implement discovery.
 
+The compatible parser also accepts Zhipu-style `models[].slug` catalogs when
+`data` is absent. An explicit `models_path` selects an alternate catalog route;
+it does not enable Responses generation. If `data` exists it takes precedence,
+and malformed `data` is rejected rather than hidden by a fallback.
+
+For a public catalog, set `require_api_key = false`, leave `api_key` empty, and
+set `load_api_key_from_environment = false` to send an anonymous request. The
+server still determines whether authentication is necessary.
+
 Operational contract:
 
 - `config.timeout` must be positive and is a total deadline across pages and

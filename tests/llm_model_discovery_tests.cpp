@@ -287,6 +287,78 @@ void test_custom_endpoint_and_validation() {
   require(none.requests.empty(), "invalid input reached transport");
 }
 
+void test_ccs_catalog_compatibility() {
+  // Versioned bases copied from CCS presets, including regional/plan overrides.
+  const std::pair<const char*, const char*> bases[] {
+    { "Kimi", "https://api.moonshot.cn/v1" },
+    { "Kimi", "https://api.moonshot.ai/v1" },
+    { "MiniMax", "https://api.minimaxi.com/v1" },
+    { "MiniMax", "https://api.minimax.io/v1" },
+    { "SiliconFlow", "https://api.siliconflow.cn/v1" },
+    { "SiliconFlow", "https://api.siliconflow.com/v1" },
+    { "Doubao", "https://ark.cn-beijing.volces.com/api/v3" },
+    { "Nvidia", "https://integrate.api.nvidia.com/v1" },
+    { "MiMo", "https://api.xiaomimimo.com/v1" },
+    { "StepFun", "https://api.stepfun.com/step_plan/v1" },
+    { "StepFun", "https://api.stepfun.ai/step_plan/v1" },
+    { "Zhipu", "https://open.bigmodel.cn/api/coding/paas/v4" },
+    { "OpenRouter", "https://openrouter.ai/api/v1" },
+    { "DeepSeek", "https://api.deepseek.com/v1" },
+  };
+  for (const auto& [provider, base] : bases) {
+    auto preset_cfg = config();
+    preset_cfg.base_url = base;
+    scripted_http preset_http;
+    preset_http.add(R"({"data":[{"id":"vendor/model","owned_by":"vendor"}]})");
+    const auto models = wuwe::list_llm_models(provider, preset_cfg, preset_http);
+    require(
+      !models.error_code && models.models.size() == 1 && models.models[0].id == "vendor/model",
+      "CCS preset catalog failed");
+    require(preset_http.requests[0].url == std::string(base) + "/models",
+      "CCS versioned preset URL duplicated its prefix");
+  }
+  // Public catalogs can already be requested anonymously without a new API.
+  scripted_http public_http;
+  public_http.add(R"({"data":[]})");
+  auto public_cfg = config();
+  public_cfg.api_key.clear();
+  public_cfg.require_api_key = false;
+  require(!wuwe::list_llm_models("OpenRouter", public_cfg, public_http).error_code &&
+            header(public_http.requests[0], "Authorization").empty(),
+    "explicit anonymous discovery should not attach credentials");
+  // CCS model_fetch.rs at 8272707d: Zhipu's alternate models[].slug catalog.
+  auto cfg = config();
+  cfg.base_url = "https://open.bigmodel.cn";
+  const wuwe::llm_model_list_options options { .models_path = "/api/v1/models" };
+  scripted_http http;
+  http.add(R"({"models":[{"slug":"glm-test"},{"slug":"glm-test"},{"slug":"glm-other"}]})");
+  const auto result = wuwe::list_llm_models("Zhipu", cfg, http, options);
+  require(!result.error_code && result.models.size() == 2 && result.models[0].id == "glm-test" &&
+            result.models[1].id == "glm-other",
+    "CCS-compatible slug catalog failed");
+  require(http.requests[0].url == "https://open.bigmodel.cn/api/v1/models",
+    "explicit alternate catalog path changed");
+  scripted_http precedence;
+  precedence.add(R"({"data":[],"models":[{"slug":"ignored"}]})");
+  const auto preferred = wuwe::list_llm_models("Zhipu", cfg, precedence, options);
+  require(!preferred.error_code && preferred.models.empty(), "data must take precedence");
+  for (const auto* body : { R"({"models":null})",
+         R"({"models":{}})",
+         R"({"models":[{}]})",
+         R"({"models":[{"slug":42}]})",
+         R"({"models":[{"slug":""}]})",
+         R"({"models":[{"slug":"bad\n"}]})",
+         R"({"data":null,"models":[{"slug":"must-not-mask-invalid-data"}]})" }) {
+    scripted_http malformed;
+    malformed.add(body);
+    expect_error(
+      wuwe::list_llm_models("Zhipu", cfg, malformed, options), llm_error_code::invalid_response);
+  }
+  scripted_http native;
+  native.add(R"({"models":[{"slug":"not-an-anthropic-catalog"}]})");
+  expect_error(wuwe::list_llm_models("Anthropic", cfg, native), llm_error_code::invalid_response);
+}
+
 void test_errors_and_atomic_results() {
   const std::pair<int, llm_error_code> statuses[] {
     { 301, llm_error_code::http_error },
@@ -497,6 +569,7 @@ int main() {
     test_endpoint_path_boundaries();
     test_custom_endpoint_and_validation();
     test_errors_and_atomic_results();
+    test_ccs_catalog_compatibility();
     test_limits_and_cancellation();
     test_real_http_backends();
     std::cout << "llm_model_discovery_tests passed\n";
