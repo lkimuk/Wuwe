@@ -696,6 +696,114 @@ void test_priority_provider_protocols() {
   verify_priority_provider_protocol<wuwe::mimo_llm_client>(true);
 }
 
+void test_discovery_and_generation_endpoint_parity() {
+  struct endpoint_case {
+    const char* base;
+    const char* chat_path;
+    const char* root;
+  };
+  const endpoint_case cases[] {
+    { "https://gateway.test", "", "https://gateway.test/v1" },
+    { "https://gateway.test/v1/", "/v1/chat/completions", "https://gateway.test/v1" },
+    { "https://gateway.test/api/v4", "/v1/chat/completions", "https://gateway.test/api/v4" },
+    { "https://gateway.test/prefix",
+      "custom/chat/completions",
+      "https://gateway.test/prefix/custom" },
+    { "https://gateway.test/custom", "/custom/chat/completions", "https://gateway.test/custom" },
+    { "https://v1", "/v1/chat/completions", "https://v1/v1" },
+  };
+  for (const auto& item : cases) {
+    auto http = std::make_shared<capture_http_client>(std::vector<wuwe::http_response> {
+      { .status_code = 200,
+        .body = R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})" },
+      { .status_code = 200, .body = R"({"data":[{"id":"chosen-model"}]})" },
+    });
+    const wuwe::llm_client_config cfg {
+      .base_url = item.base,
+      .chat_completions_path = item.chat_path,
+      .api_key = "test-key",
+      .load_api_key_from_environment = false,
+      .model = "chosen-model",
+      .max_retries = 0,
+    };
+    wuwe::openai_compatible_llm_client client(cfg, http);
+    wuwe::llm_request request;
+    request.messages.push_back({ .role = "user", .content = "hello" });
+    require(!client.complete(request).error_code, "endpoint parity completion failed");
+    const auto discovered = wuwe::list_llm_models("OpenAICompatible", cfg, *http);
+    require(!discovered.error_code && discovered.models[0].id == cfg.model,
+      "endpoint parity discovery failed");
+    require(http->requests[0].url == std::string(item.root) + "/chat/completions" &&
+              http->requests[1].url == std::string(item.root) + "/models",
+      "discovery and generation API roots diverged");
+  }
+}
+
+void test_native_endpoint_parity() {
+  const auto verify = []<typename Client>(const char* provider,
+                        const char* base,
+                        const char* complete_url,
+                        const char* stream_url,
+                        const char* models_url,
+                        const std::string& body,
+                        const std::string& stream_body,
+                        const std::string& models_body) {
+    auto http = std::make_shared<capture_http_client>(std::vector<wuwe::http_response> {
+      { .status_code = 200, .body = body },
+      { .status_code = 200, .body = stream_body },
+      { .status_code = 200, .body = models_body },
+    });
+    const wuwe::llm_client_config cfg {
+      .base_url = base,
+      .api_key = "test-key",
+      .load_api_key_from_environment = false,
+      .model = "chosen-model",
+      .max_retries = 0,
+    };
+    Client client(cfg, http);
+    wuwe::llm_request request;
+    request.messages.push_back({ .role = "user", .content = "hello" });
+    require(!client.complete(request).error_code, "native endpoint completion failed");
+    require(!client.complete_stream(request, {}).error_code, "native endpoint streaming failed");
+    const auto models = wuwe::list_llm_models(provider, cfg, *http);
+    require(!models.error_code && models.models.size() == 1, "native endpoint discovery failed");
+    require(http->requests.size() == 3 && http->requests[0].url == complete_url &&
+              http->requests[1].url == stream_url && http->requests[2].url == models_url,
+      "native completion, streaming and discovery API roots diverged");
+  };
+  verify.operator()<wuwe::anthropic_llm_client>("Anthropic",
+    "https://gateway.test/proxy/v1/",
+    "https://gateway.test/proxy/v1/messages",
+    "https://gateway.test/proxy/v1/messages",
+    "https://gateway.test/proxy/v1/models",
+    R"({"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"})",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    R"({"data":[{"id":"chosen-model"}],"has_more":false})");
+  for (const auto* version : { "v1", "v1beta" }) {
+    const auto root = std::string("https://gateway.test/proxy/") + version;
+    const std::string body =
+      R"({"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]})";
+    verify.operator()<wuwe::gemini_llm_client>("Gemini",
+      (root + "/").c_str(),
+      (root + "/models/chosen-model:generateContent").c_str(),
+      (root + "/models/chosen-model:streamGenerateContent?alt=sse").c_str(),
+      (root + "/models").c_str(),
+      body,
+      "data: " + body + "\n\n",
+      R"({"models":[{"name":"models/chosen-model"}]})");
+  }
+  const std::string ollama_body =
+    R"({"message":{"content":"ok"},"done":true,"done_reason":"stop"})";
+  verify.operator()<wuwe::ollama_llm_client>("Ollama",
+    "https://gateway.test/proxy/api/",
+    "https://gateway.test/proxy/api/chat",
+    "https://gateway.test/proxy/api/chat",
+    "https://gateway.test/proxy/api/tags",
+    ollama_body,
+    ollama_body + "\n",
+    R"({"models":[{"name":"chosen-model"}]})");
+}
+
 void test_openai_compatible_provider_presets() {
   const std::string openai_body =
     R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})";
@@ -1068,23 +1176,23 @@ void test_openai_compatible_replays_reasoning_content() {
   (void)client.complete(request);
   const auto payload = nlohmann::json::parse(http->requests.front().body);
   const auto& assistant = payload.at("messages").at(1);
-  require(assistant.value("reasoning_content", std::string {}) ==
-      "verbatim provider reasoning",
+  require(assistant.value("reasoning_content", std::string {}) == "verbatim provider reasoning",
     "OpenAI-compatible clients must replay provider reasoning state verbatim");
 }
 
 void test_deepseek_normalizes_validated_dsml_tool_calls() {
-  const std::string dsml =
-    "I will inspect the device.\n<｜DSML｜tool_calls>"
-    "<｜DSML｜invoke name=“lookup”>"
-    "<｜DSML｜parameter name=“query” string=“true”>model</｜DSML｜parameter>"
-    "<｜DSML｜parameter name=“limit” string=“false”>3</｜DSML｜parameter>"
-    "</｜DSML｜invoke></｜DSML｜tool_calls>";
-  const auto body = nlohmann::json {
-    { "choices",
-      nlohmann::json::array({ { { "message", { { "content", dsml } } },
-        { "finish_reason", "stop" } } }) },
-  }.dump();
+  const std::string dsml = "I will inspect the device.\n<｜DSML｜tool_calls>"
+                           "<｜DSML｜invoke name=“lookup”>"
+                           "<｜DSML｜parameter name=“query” string=“true”>model</｜DSML｜parameter>"
+                           "<｜DSML｜parameter name=“limit” string=“false”>3</｜DSML｜parameter>"
+                           "</｜DSML｜invoke></｜DSML｜tool_calls>";
+  const auto body =
+    nlohmann::json {
+      { "choices",
+        nlohmann::json::array(
+          { { { "message", { { "content", dsml } } }, { "finish_reason", "stop" } } }) },
+    }
+      .dump();
   auto http = std::make_shared<capture_http_client>(body);
   wuwe::deepseek_llm_client client(
     { .api_key = "", .require_api_key = false, .model = "deepseek-test" }, http);
@@ -1114,9 +1222,9 @@ void test_deepseek_normalizes_validated_dsml_tool_calls() {
 void test_deepseek_rejects_unregistered_or_malformed_dsml() {
   const auto make_body = [](const std::string& content) {
     return nlohmann::json {
-      { "choices", nlohmann::json::array(
-          { { { "message", { { "content", content } } } } }) },
-    }.dump();
+      { "choices", nlohmann::json::array({ { { "message", { { "content", content } } } } }) },
+    }
+      .dump();
   };
   auto http = std::make_shared<capture_http_client>(std::vector<wuwe::http_response> {
     { .body = make_body(
@@ -1220,8 +1328,8 @@ void test_deepseek_streams_while_filtering_text_tool_protocol() {
   require(completed_calls.size() == 1 && completed_calls.front().name == "lookup",
     "buffered protocol should emit a structured tool_call_done event");
   const auto payload = nlohmann::json::parse(http->requests.front().body);
-  require(payload.value("stream", false),
-    "text-protocol filtering must retain real provider streaming");
+  require(
+    payload.value("stream", false), "text-protocol filtering must retain real provider streaming");
 }
 
 void test_deepseek_stream_filter_restores_invalid_protocol_text() {
@@ -1252,11 +1360,10 @@ void test_deepseek_stream_filter_restores_invalid_protocol_text() {
 }
 
 void test_openai_compatible_rejects_reasoning_only_terminal_stream() {
-  const std::string body =
-    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"working\"},"
-    "\"finish_reason\":null}]}\n\n"
-    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
-    "data: [DONE]\n\n";
+  const std::string body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"working\"},"
+                           "\"finish_reason\":null}]}\n\n"
+                           "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                           "data: [DONE]\n\n";
   auto http = std::make_shared<capture_http_client>(body);
   wuwe::deepseek_llm_client client(
     { .api_key = "", .require_api_key = false, .model = "deepseek-test" }, http);
@@ -1857,6 +1964,8 @@ int main() {
     test_openai_compatible_provider_presets();
     test_new_provider_presets();
     test_priority_provider_protocols();
+    test_discovery_and_generation_endpoint_parity();
+    test_native_endpoint_parity();
     test_native_provider_clients_parse_text_and_tools();
     test_execution_context_trace_reaches_provider_http_requests();
     test_reasoning_language_contract_is_mapped_to_provider_payloads();

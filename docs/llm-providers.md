@@ -60,6 +60,133 @@ can call `context_budget_manager::fit()` explicitly.
 
 `OpenAICompatible` requires a `base_url`. Other presets supply a default endpoint that can still be overridden.
 
+### Kimi, MiniMax, SiliconFlow, and Doubao
+
+These presets reuse the Chat Completions adapter and support normal responses,
+streaming, and tool calls. They do not select a model automatically or pin a
+model catalog that can become stale. Set `config.model` or `request.model` to the
+model you intend to use.
+
+| ID | Default base URL | Chat path | Model-list path appended to base URL |
+| --- | --- | --- | --- |
+| `Kimi` | `https://api.moonshot.cn` | `/v1/chat/completions` | `/v1/models` |
+| `MiniMax` | `https://api.minimaxi.com` | `/v1/chat/completions` | `/v1/models` |
+| `SiliconFlow` | `https://api.siliconflow.cn` | `/v1/chat/completions` | `/v1/models` |
+| `Doubao` | `https://ark.cn-beijing.volces.com/api/v3` | `/chat/completions` | `/models` |
+
+```cpp
+wuwe::llm_client_config config {
+  .model = selected_model_id,
+}; // Loads MOONSHOT_API_KEY, then KIMI_API_KEY.
+auto client = wuwe::make_llm_client("Kimi", config);
+
+wuwe::llm_request request;
+request.messages.push_back({ .role = "user", .content = "Summarize this document." });
+request.temperature = 1.0; // Choose sampling parameters allowed by your model.
+auto response = client->complete(request);
+
+auto models = wuwe::list_llm_models("Kimi", config);
+```
+
+Public `kimi_llm_client`, `minimax_llm_client`, `siliconflow_llm_client`, and
+`doubao_llm_client` classes also accept an injected `std::shared_ptr<http_client>`.
+They use the same defaults and credential policy as the factory.
+
+- **Credentials:** these four presets only read the dedicated environment
+  variables listed above; they never fall back to `OPENAI_API_KEY` or
+  `OPENROUTER_API_KEY`. Explicit `api_key` wins, and
+  `load_api_key_from_environment = false` disables environment loading.
+- **Regional endpoints:** for international accounts, override `base_url` with
+  `https://api.moonshot.ai`, `https://api.minimax.io`, or
+  `https://api.siliconflow.com` respectively. These are base URLs without `/v1`,
+  because each preset already supplies `/v1/chat/completions`. Credentials must
+  belong to the selected service/region. No endpoint fallback is performed.
+- **Kimi:** assistant `reasoning_content` is replayed for thinking-model tool
+  continuations. Explicit `thinking_mode` uses `thinking.type=enabled/disabled`;
+  the default leaves the setting to the model. Model-specific temperature and
+  thinking restrictions remain upstream constraints; Wuwe does not silently
+  replace a requested sampling value.
+- **MiniMax:** native Chat Completions returns thinking inside `<think>...</think>`
+  in `content` by default. Wuwe preserves that content for multi-turn replay.
+  This preset does not enable `reasoning_split` or advertise separate reasoning
+  events, explicit tool choice, JSON output/schema, or stop controls. It supports
+  ordinary automatic tool calls. Unsupported declared controls are rejected
+  before network dispatch.
+- **SiliconFlow:** use the exact provider-qualified model ID returned by the
+  service, including any `Pro/` prefix. Model capabilities vary across the
+  catalog. Assistant `reasoning_content` is retained for reasoning-model tool
+  continuations; model-specific thinking switches are not inferred.
+- **Doubao:** use the model ID or your Ark inference endpoint ID (`ep-...`) as
+  `model`, as required by your deployment. Wuwe preserves it verbatim. Model
+  discovery queries the runtime `/api/v3/models` route; it is not an Ark
+  administrative endpoint/deployment inventory API. If the account or runtime
+  does not expose this route, handle the discovery error and configure the
+  model/endpoint ID manually.
+
+These defaults cover the normal API-platform endpoints. Coding Plan / Token Plan
+credentials and routes are separate configurations and are not implicitly
+substituted. Model-list results do not establish permissions to call a model.
+
+Endpoint references: [CC Switch provider presets](https://github.com/farion1231/cc-switch/blob/main/src/config/openclawProviderPresets.ts),
+[Kimi documentation](https://platform.moonshot.ai/docs/overview),
+[MiniMax Chat Completions](https://platform.minimax.io/docs/api-reference/text-openai-api),
+[MiniMax model listing](https://platform.minimax.io/docs/api-reference/models/openai/list-models),
+[SiliconFlow Chat Completions](https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions),
+and [Volcengine Ark documentation](https://www.volcengine.com/docs/82379).
+
+### NVIDIA NIM, StepFun, and Xiaomi MiMo
+
+These presets use the existing Chat Completions client, with dedicated API keys
+and the same factory, streaming, tool-call, and model-discovery interfaces:
+
+| ID | Default base URL | Chat path | Model-list path |
+| --- | --- | --- | --- |
+| `Nvidia` | `https://integrate.api.nvidia.com` | `/v1/chat/completions` | `/v1/models` |
+| `StepFun` | `https://api.stepfun.com` | `/v1/chat/completions` | `/v1/models` |
+| `MiMo` | `https://api.xiaomimimo.com` | `/v1/chat/completions` | `/v1/models` |
+
+For example, `make_llm_client("MiMo", config)` creates a configured client, and
+`list_llm_models("MiMo", config)` queries the same service. Set `config.model`
+explicitly; no model is chosen automatically. The public `nvidia_llm_client`,
+`stepfun_llm_client`, and `mimo_llm_client` classes accept an injected HTTP client
+as well. Only the dedicated environment variable in the table is consulted;
+unrelated OpenAI/OpenRouter credentials are never used as fallbacks.
+
+- **NVIDIA NIM:** the default targets NVIDIA's hosted API catalog. Keep the full
+  model identifier, such as its vendor prefix. Model capabilities and thinking
+  switches differ across hosted models; the preset does not inject a common
+  `thinking` switch or NVIDIA-specific `chat_template_kwargs`. Self-hosted NIM
+  addresses can be supplied explicitly using `base_url` and, when needed,
+  `chat_completions_path`.
+- **StepFun:** the default is the ordinary China API platform. An international
+  account can use `base_url = "https://api.stepfun.ai"`. Step Plan is a separate
+  subscription route and is not selected automatically; configure its base URL
+  explicitly, without duplicating the preset's `/v1` path. Model-specific
+  thinking controls are left to the provider default.
+- **MiMo:** the ordinary API platform accepts Bearer authentication for both
+  generation and model listing. The preset uses that documented format instead
+  of requiring a special `api-key` header. `thinking_mode` maps to
+  `thinking.type=enabled/disabled`; the default omits the switch.
+  `max_output_tokens` maps to **`max_completion_tokens`** for both normal and
+  streaming calls. MiMo only guarantees automatic tool selection, so leave
+  `tool_choice` unset; explicit tool-choice controls are rejected before dispatch.
+  Some MiMo thinking models override sampling parameters upstream (the current
+  V2.5 family documents temperature 1.0). Wuwe preserves the requested value and
+  does not promise deterministic sampling. Token Plan uses a separate endpoint
+  and key and is not implicitly substituted.
+
+All three presets preserve assistant `reasoning_content` in tool continuations
+and expose separate reasoning output when the upstream provides it. Model-list
+queries do not establish model permissions or capabilities; callers should handle
+discovery errors and keep manual model selection available.
+
+References: [NVIDIA API catalog](https://docs.api.nvidia.com/nim/reference/llm-apis),
+[NVIDIA model listing](https://docs.api.nvidia.com/nim/reference/models-1),
+[StepFun official integration examples](https://github.com/stepfun-ai/Step-3.5-Flash#readme),
+[MiMo Chat Completions](https://mimo.mi.com/static/docs/api/chat/openai-api.md),
+[MiMo model listing](https://mimo.mi.com/static/docs/api/model/list-models.md),
+and [MiMo thinking/tool continuation](https://mimo.mi.com/static/docs/quick-start/usage-guide/text-generation/deep-thinking.md).
+
 ## Create a client
 
 ```cpp
@@ -86,6 +213,99 @@ wuwe::llm_config config {
 auto client = wuwe::make_llm_client(
   "OpenAICompatible", std::move(config));
 ```
+
+## Discover available models
+
+`list_llm_models()` queries the configured endpoint without invoking a model or
+changing the provider, runtime registry, or router. Include
+`<wuwe/agent/llm/llm_model_discovery.h>` (also exported by `<wuwe/wuwe.h>`).
+
+```cpp
+wuwe::llm_client_config config {
+  .base_url = "https://gateway.example.com/v1",
+  .api_key = token,
+  .load_api_key_from_environment = false,
+  .timeout = 10'000,
+};
+
+const auto result = wuwe::list_llm_models("OpenAICompatible", config);
+if (result.error_code) {
+  // result.error_code is a Wuwe llm_error_code; http_status and
+  // transport_error retain structured diagnostic information.
+  return;
+}
+for (const auto& model : result.models) {
+  // model.id can be used as config.model; display_name is optional.
+}
+```
+
+The function uses the same provider defaults and environment-key policy as
+`make_llm_client()`. It does not require `config.model`. The provider ID must be a
+built-in registry ID; use `OpenAICompatible` for a custom compatible service.
+
+| Format | Default endpoint | Authentication | Pagination |
+| --- | --- | --- | --- |
+| OpenAI compatible | Sibling `models` route of the chat path | Bearer token | `has_more` / `last_id` → `after` when supplied |
+| Anthropic | `/v1/models` | `x-api-key`, `anthropic-version` | `has_more` / `last_id` → `after_id` |
+| Gemini | `/v1beta/models` | `x-goog-api-key` | `nextPageToken` → `pageToken` |
+| Ollama | `/api/tags` | Optional bearer token | Single list of installed models |
+
+Generation (including streaming) and discovery share endpoint construction,
+preserving base-URL prefixes and avoiding duplicate version suffixes:
+`https://host/v1/` becomes `https://host/v1/models` for discovery and
+`https://host/v1/chat/completions` for OpenAI-compatible generation. Native
+Anthropic `/v1`, Gemini `/v1` or `/v1beta`, and Ollama `/api` prefixes are also
+preserved. The built-in
+Zhipu preset uses `/api/paas/v4/models`. A nonstandard chat route that does not end
+in `/chat/completions` requires an explicit model-list path. Base URLs must be
+HTTP(S), without embedded credentials, queries, or fragments.
+
+For a gateway whose discovery format or route differs from generation:
+
+```cpp
+const auto result = wuwe::list_llm_models("Anthropic", config, {
+  .format = wuwe::llm_model_list_format::openai,
+  .models_path = "/openai/v1/models",
+});
+```
+
+`models_path` is appended to `base_url` after trimming trailing slashes; it must
+start with a single `/` and contain no query or fragment. In the example above,
+set `base_url` to the gateway root. `format` selects both response parsing and
+authentication headers. This does not change generation configuration. The
+function never probes alternative endpoints or follows HTTP redirects.
+
+The result contains **all pages or an error**, never a successful partial list.
+Duplicate IDs keep their first occurrence and its metadata, in server order.
+Gemini's `models/` resource prefix is removed; other IDs are preserved. Discovery
+does not infer context windows, prices, capabilities, account permissions, or
+filter out embedding models. A listed model is not a guarantee of callable access.
+Keep manual model entry available for services that do not implement discovery.
+
+Operational contract:
+
+- `config.timeout` must be positive and is a total deadline across pages and
+  parsing. Generation retry settings are not used; discovery makes no automatic
+  retries. Applications may retry a failed query explicitly.
+- `llm_model_list_options` bounds pages (100), unique models (10,000), and each
+  response body (8 MiB) by default. All limits must be positive. Exceeding a limit
+  returns `model_list_limit_exceeded`; malformed pages or repeated pagination
+  cursors return `invalid_response`.
+- An empty valid list succeeds. HTTP 404/405/501 return `unsupported_capability`;
+  401/403 return `authentication_failed`; 429 returns `rate_limited`. Other HTTP,
+  timeout, transport, and malformed-response errors remain distinguishable. No
+  upstream error bodies or credentials are included in error results.
+- Pass `std::stop_token` as the last argument to cancel. The overload accepting
+  `http_client&` borrows a transport for the call, enabling deterministic tests
+  and custom networking. It uses `send_stream()` to bound collection and forward
+  cancellation. Custom transports must honor the callback and stop token;
+  cancellation latency follows the selected transport. Transport exceptions are
+  propagated, like the underlying HTTP interface.
+- There is no global cache or background work. Concurrent calls are independent;
+  a caller sharing a custom transport is responsible for its thread safety.
+
+See `examples/src/llm_models_example.cpp` for a runnable CLI example. It loads
+credentials from the provider's environment variables.
 
 ## Registry and capabilities
 

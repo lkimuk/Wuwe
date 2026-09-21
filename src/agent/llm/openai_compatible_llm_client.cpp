@@ -1,5 +1,7 @@
 #include <wuwe/agent/llm/openai_compatible_llm_client.h>
 
+#include "llm_endpoint.hpp"
+
 #include "llm_retry.hpp"
 #include "llm_stream_timeouts.hpp"
 
@@ -245,23 +247,7 @@ std::string invalid_stream_event_message() {
 }
 
 std::string build_chat_completions_url(const llm_client_config& config) {
-  const auto path = config.chat_completions_path.empty() ? std::string { "/v1/chat/completions" }
-                                                         : config.chat_completions_path;
-  if (config.base_url.empty()) {
-    return path.front() == '/' ? path : "/" + path;
-  }
-  const bool base_has_slash = config.base_url.back() == '/';
-  const bool path_has_slash = path.front() == '/';
-  if (base_has_slash && path_has_slash) {
-    return config.base_url + path.substr(1);
-  }
-  if (!base_has_slash && !path_has_slash) {
-    return config.base_url + "/" + path;
-  }
-  if (path_has_slash) {
-    return config.base_url + path;
-  }
-  return config.base_url + path;
+  return agent::llm::detail::openai_chat_endpoint(config.base_url, config.chat_completions_path);
 }
 
 std::string trim_copy(std::string value) {

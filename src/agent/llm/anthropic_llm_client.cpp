@@ -1,5 +1,6 @@
 #include <wuwe/agent/llm/anthropic_llm_client.h>
 
+#include "llm_endpoint.hpp"
 #include "llm_retry.hpp"
 #include "llm_stream_timeouts.hpp"
 
@@ -287,7 +288,7 @@ llm_response anthropic_llm_client::complete(
 
   const http_request req {
     .method = "POST",
-    .url = config_.base_url + "/v1/messages",
+    .url = agent::llm::detail::api_endpoint(config_.base_url, "/v1", "/messages"),
     .headers = build_headers(),
     .body = build_payload(request, false).dump(),
     .timeout = config_.timeout,
@@ -502,7 +503,7 @@ llm_response anthropic_llm_client::complete_stream(
 
   const http_request req {
     .method = "POST",
-    .url = config_.base_url + "/v1/messages",
+    .url = agent::llm::detail::api_endpoint(config_.base_url, "/v1", "/messages"),
     .headers = build_headers(),
     .body = build_payload(request, true).dump(),
     .timeout = config_.timeout,

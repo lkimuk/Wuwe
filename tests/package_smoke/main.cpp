@@ -20,6 +20,16 @@ private:
   std::string model_;
 };
 
+class package_model_list_http final : public wuwe::http_client {
+public:
+  wuwe::http_response send(const wuwe::http_request& request) override {
+    if (request.method != "GET" || request.url != "https://api.xiaomimimo.com/v1/models") {
+      return { .status_code = 400 };
+    }
+    return { .status_code = 200, .body = R"({"data":[{"id":"package-test-model"}]})" };
+  }
+};
+
 } // namespace
 
 int main() {
@@ -30,6 +40,14 @@ int main() {
     return 1;
   }
 
+  package_model_list_http discovery_http;
+  const auto models = wuwe::list_llm_models("MiMo",
+    { .api_key = "package-test-key", .load_api_key_from_environment = false },
+    discovery_http);
+  if (models.error_code || models.models.size() != 1 ||
+      models.models[0].id != "package-test-model") {
+    return 1;
+  }
   for (const auto* id :
     { "Kimi", "MiniMax", "SiliconFlow", "Doubao", "Nvidia", "StepFun", "MiMo" }) {
     const auto client = wuwe::make_llm_client(id, { .load_api_key_from_environment = false });

@@ -1,5 +1,7 @@
 #include <wuwe/agent/llm/gemini_llm_client.h>
 
+#include "llm_endpoint.hpp"
+
 #include "llm_retry.hpp"
 #include "llm_stream_timeouts.hpp"
 
@@ -249,8 +251,15 @@ std::vector<std::pair<std::string, std::string>> gemini_llm_client::build_header
 
 std::string gemini_llm_client::build_url(const llm_request& request, bool stream) const {
   const auto model = gemini_model_name(request.model.empty() ? config_.model : request.model);
-  auto url = config_.base_url + "/v1beta/models/" + model +
-             (stream ? ":streamGenerateContent?alt=sse" : ":generateContent");
+  auto base = config_.base_url;
+  while (!base.empty() && base.back() == '/') {
+    base.pop_back();
+  }
+  const auto prefix =
+    agent::llm::detail::endpoint_base_path(base).ends_with("/v1") ? "/v1" : "/v1beta";
+  auto url = agent::llm::detail::api_endpoint(base,
+    prefix,
+    "/models/" + model + (stream ? ":streamGenerateContent?alt=sse" : ":generateContent"));
   return url;
 }
 

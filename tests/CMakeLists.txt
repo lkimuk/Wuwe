@@ -90,6 +90,11 @@ wuwe_copy_runtime_dlls(llm_provider_tests)
 
 add_test(NAME llm_provider_tests COMMAND llm_provider_tests)
 
+add_executable(llm_model_discovery_tests llm_model_discovery_tests.cpp)
+target_link_libraries(llm_model_discovery_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(llm_model_discovery_tests)
+add_test(NAME llm_model_discovery_tests COMMAND llm_model_discovery_tests)
+
 add_executable(p1_infrastructure_tests
     p1_infrastructure_tests.cpp
 )
@@ -271,6 +276,7 @@ add_executable(header_independence_tests
     header_independence/sandbox_plan_header.cpp
     header_independence/sandbox_codec_header.cpp
     header_independence/llm_dispatch_header.cpp
+    header_independence/llm_model_discovery_header.cpp
     header_independence/llm_provider_presets_header.cpp
     header_independence/skills_header.cpp
     header_independence/version_header.cpp

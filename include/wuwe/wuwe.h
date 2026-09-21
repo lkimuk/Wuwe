@@ -35,6 +35,7 @@
 #include <wuwe/agent/llm/gemini_llm_client.h>
 #include <wuwe/agent/llm/llm_agent_runner.h>
 #include <wuwe/agent/llm/llm_capabilities.hpp>
+#include <wuwe/agent/llm/llm_model_discovery.h>
 #include <wuwe/agent/llm/llm_provider_factory.h>
 #include <wuwe/agent/llm/llm_provider_registry.h>
 #include <wuwe/agent/llm/llm_usage.hpp>

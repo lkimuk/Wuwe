@@ -1,5 +1,6 @@
 #include <wuwe/agent/llm/ollama_llm_client.h>
 
+#include "llm_endpoint.hpp"
 #include "llm_retry.hpp"
 #include "llm_stream_timeouts.hpp"
 
@@ -257,7 +258,7 @@ llm_response ollama_llm_client::complete(const llm_request& request, std::stop_t
   }
   const http_request req {
     .method = "POST",
-    .url = config_.base_url + "/api/chat",
+    .url = agent::llm::detail::api_endpoint(config_.base_url, "/api", "/chat"),
     .headers = build_headers(),
     .body = build_payload(request, false).dump(),
     .timeout = config_.timeout,
@@ -403,7 +404,7 @@ llm_response ollama_llm_client::complete_stream(
 
   const http_request req {
     .method = "POST",
-    .url = config_.base_url + "/api/chat",
+    .url = agent::llm::detail::api_endpoint(config_.base_url, "/api", "/chat"),
     .headers = build_headers(),
     .body = build_payload(request, true).dump(),
     .timeout = config_.timeout,

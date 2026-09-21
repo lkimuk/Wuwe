@@ -71,6 +71,8 @@ public:
         return "LLM provider does not support a requested capability";
       case llm_error_code::tool_output_projection_failed:
         return "Tool output projection failed";
+      case llm_error_code::model_list_limit_exceeded:
+        return "Model list exceeded the configured page, model, or response limit";
       default:
         return "Unknown LLM error";
     }
