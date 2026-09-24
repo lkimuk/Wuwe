@@ -41,6 +41,26 @@ int main() {
   }
 
   package_model_list_http discovery_http;
+  wuwe::oauth_account_manager accounts(wuwe::make_memory_oauth_credential_store(), {});
+  const wuwe::codex_oauth_options codex_options { .client_id = "package-test",
+    .client_version = "1.0.0" };
+  const auto codex_refresh = wuwe::make_codex_oauth_refresher(codex_options);
+  wuwe::codex_oauth_client codex(accounts, codex_options);
+  wuwe::codex_llm_client codex_generation(
+    accounts, { "codex_oauth", "missing" }, { .model = "package-test", .client_version = "1.0.0" });
+  if (!codex_generation.supports_streaming() || !codex_generation.capabilities().provider_state ||
+      codex_generation.complete("hello").error_code != wuwe::oauth_error::account_not_found) {
+    return 1;
+  }
+  if (codex_refresh->provider_id() != "codex_oauth" ||
+      codex.list_models({ "codex_oauth", "missing" }).error !=
+        wuwe::oauth_error::account_not_found) {
+    return 1;
+  }
+  if (!accounts.accounts().empty() || accounts.access_token({ "missing", "account" }).error !=
+                                        wuwe::oauth_error::account_not_found) {
+    return 1;
+  }
   const auto models = wuwe::list_llm_models("MiMo",
     { .api_key = "package-test-key", .load_api_key_from_environment = false },
     discovery_http);

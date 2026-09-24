@@ -6,6 +6,13 @@ description: Configure built-in cloud and local model clients through one interf
 
 # LLM providers
 
+For callers adopting model discovery and the new presets, see the
+[中文接入指南](llm-integration-update-zh.md).
+
+Codex account login and account-scoped discovery use a separate
+[OAuth API](codex-oauth-integration-zh.md). Account-bound generation, streaming and
+function tools use [codex_llm_client](codex-generation-zh.md), which implements `llm_client`.
+
 Wuwe normalizes provider configuration, requests, responses, streaming events, tool calls, usage, retries, and errors behind `llm_client`.
 
 `llm_request::max_output_tokens` is the common output limit. Built-in OpenAI-compatible, Anthropic, Gemini, and Ollama clients translate it to their protocol-specific request field. `llm_usage` distinguishes prompt, completion, cached-prompt, and reasoning tokens. `calculate_llm_cost()` applies explicit per-million-token pricing and falls back to the normal input/output rate when a separate cache or reasoning rate is not supplied.
