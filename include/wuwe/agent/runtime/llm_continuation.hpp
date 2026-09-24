@@ -121,6 +121,10 @@ inline nlohmann::json message_to_json(const chat_message& value) {
   output["name"] = value.name ? nlohmann::json(*value.name) : nlohmann::json(nullptr);
   output["tool_call_id"] =
     value.tool_call_id ? nlohmann::json(*value.tool_call_id) : nlohmann::json(nullptr);
+  if (value.provider_state) {
+    output["provider_state"] = { { "provider", value.provider_state->provider },
+      { "data", value.provider_state->data } };
+  }
   return output;
 }
 
@@ -129,6 +133,11 @@ inline chat_message message_from_json(const nlohmann::json& value) {
   message.role = value.value("role", std::string {});
   message.content = value.value("content", std::string {});
   message.reasoning_content = value.value("reasoning_content", std::string {});
+  if (value.contains("provider_state") && !value.at("provider_state").is_null()) {
+    const auto& state = value.at("provider_state");
+    message.provider_state = llm_provider_state { state.at("provider").get<std::string>(),
+      state.at("data").get<std::string>() };
+  }
   if (value.contains("name") && !value.at("name").is_null()) {
     message.name = value.at("name").get<std::string>();
   }
@@ -253,11 +262,9 @@ inline llm_request request_from_json(const nlohmann::json& value) {
     request.max_output_tokens = value.at("max_output_tokens").get<int>();
   }
   const auto thinking_mode = value.value("thinking_mode", std::string("provider_default"));
-  request.thinking_mode = thinking_mode == "enabled"
-                            ? llm_thinking_mode::enabled
-                            : thinking_mode == "disabled"
-                                ? llm_thinking_mode::disabled
-                                : llm_thinking_mode::provider_default;
+  request.thinking_mode = thinking_mode == "enabled"    ? llm_thinking_mode::enabled
+                          : thinking_mode == "disabled" ? llm_thinking_mode::disabled
+                                                        : llm_thinking_mode::provider_default;
   request.stop_sequences = value.value("stop_sequences", std::vector<std::string> {});
   if (value.contains("seed") && !value.at("seed").is_null()) {
     request.seed = value.at("seed").get<std::int64_t>();
@@ -328,6 +335,7 @@ inline llm_request request_from_json(const nlohmann::json& value) {
       .deterministic_seed = true,
       .json_schema_output = true,
       .explicit_cache_control = true,
+      .provider_state = true,
     });
   if (!validation) {
     throw std::invalid_argument("invalid persisted LLM request: " + validation.message);

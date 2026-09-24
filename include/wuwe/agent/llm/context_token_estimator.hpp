@@ -36,6 +36,10 @@ public:
     detail::saturating_context_token_add(tokens, estimate_text(message.role));
     detail::saturating_context_token_add(tokens, estimate_text(message.content));
     detail::saturating_context_token_add(tokens, estimate_text(message.reasoning_content));
+    if (message.provider_state) {
+      // Conservative wire-size estimate; never assume opaque state is free.
+      detail::saturating_context_token_add(tokens, estimate_text(message.provider_state->data));
+    }
     if (message.name) {
       detail::saturating_context_token_add(tokens, estimate_text(*message.name));
     }

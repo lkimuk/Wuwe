@@ -23,6 +23,12 @@ bool sandbox_codec_header_is_independent();
 bool llm_dispatch_header_is_independent();
 bool llm_model_discovery_header_is_independent();
 bool llm_provider_presets_header_is_independent();
+bool oauth_account_header_is_independent();
+bool codex_oauth_header_is_independent();
+bool codex_llm_header_is_independent();
+bool oauth_authorization_header_is_independent();
+bool oauth_store_header_is_independent();
+bool oauth_refresh_header_is_independent();
 bool skills_header_is_independent();
 bool version_header_is_independent();
 bool umbrella_header_is_independent();
@@ -43,7 +49,10 @@ int main() {
              sandbox_plan_header_is_independent() && sandbox_codec_header_is_independent() &&
              llm_dispatch_header_is_independent() && llm_model_discovery_header_is_independent() &&
              llm_provider_presets_header_is_independent() && skills_header_is_independent() &&
-             version_header_is_independent() && umbrella_header_is_independent()
+             version_header_is_independent() && umbrella_header_is_independent() &&
+             oauth_account_header_is_independent() && oauth_authorization_header_is_independent() &&
+             oauth_store_header_is_independent() && oauth_refresh_header_is_independent() &&
+             codex_oauth_header_is_independent() && codex_llm_header_is_independent()
            ? 0
            : 1;
 }

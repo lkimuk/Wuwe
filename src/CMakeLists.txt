@@ -193,7 +193,7 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PUBLIC Advapi32 Userenv Ws2_32)
+    target_link_libraries(${PROJECT_NAME} PUBLIC Advapi32 Userenv Ws2_32 Crypt32 Bcrypt)
 endif()
 
 if(WUWE_HTTP_BACKEND_NORMALIZED STREQUAL "httplib")

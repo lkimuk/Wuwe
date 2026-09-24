@@ -32,6 +32,7 @@ enum class llm_error_code {
   unsupported_capability,
   tool_output_projection_failed,
   model_list_limit_exceeded,
+  response_limit_exceeded,
 };
 
 [[nodiscard]] const ::std::error_category& llm_category() noexcept;

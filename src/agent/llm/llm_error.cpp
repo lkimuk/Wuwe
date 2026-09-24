@@ -73,6 +73,8 @@ public:
         return "Tool output projection failed";
       case llm_error_code::model_list_limit_exceeded:
         return "Model list exceeded the configured page, model, or response limit";
+      case llm_error_code::response_limit_exceeded:
+        return "LLM response exceeded the configured stream or event limit";
       default:
         return "Unknown LLM error";
     }

@@ -39,6 +39,7 @@ public:
       response.set_content(request.body, "application/json");
     });
     server_.Get("/stream", [](const httplib::Request&, httplib::Response& response) {
+      response.set_header("X-Stream", "present");
       response.set_content("stream-one\nstream-two\n", "text/plain");
     });
     server_.Get("/slow-stream", [](const httplib::Request&, httplib::Response& response) {
@@ -336,6 +337,8 @@ void exercise_client(http_client& client, const local_http_server& server) {
     },
     [](std::string_view) { return false; });
   require(!!aborted.error_code, "callback abort should return an error");
+  require(aborted.status_code == 200 && find_http_header(aborted.headers, "X-Stream") == "present",
+    "callback abort must preserve received HTTP status and headers");
 
   std::stop_source stop_source;
   std::thread stopper([&] {

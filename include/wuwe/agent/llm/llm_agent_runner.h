@@ -548,6 +548,7 @@ private:
           continuation.used_tool_rounds,
           std::string {},
           std::string {},
+          std::nullopt,
           true,
           continuation.assistant_persisted,
           continuation.accumulated_usage,
@@ -635,6 +636,7 @@ private:
                 .role = "assistant",
                 .content = response.content,
                 .reasoning_content = response.reasoning_summary,
+                .provider_state = response.provider_state,
               });
               request.messages.push_back({
                 .role = "user",
@@ -714,6 +716,7 @@ private:
             .role = "assistant",
             .content = response.content,
             .reasoning_content = response.reasoning_summary,
+            .provider_state = response.provider_state,
           });
           request.messages.push_back({
             .role = "user",
@@ -923,6 +926,7 @@ private:
             used_tool_rounds,
             response.content,
             response.reasoning_summary,
+            response.provider_state,
             false,
             false,
             accumulated_usage,
@@ -959,6 +963,7 @@ private:
   std::optional<llm_response> process_tool_batch(llm_request& request,
     const std::vector<llm_tool_call>& calls, int used_tool_rounds,
     const std::string& assistant_content, const std::string& assistant_reasoning_content,
+    const std::optional<llm_provider_state>& assistant_provider_state,
     bool assistant_already_in_request,
     bool assistant_persisted, const llm_usage& accumulated_usage,
     const std::vector<std::string>& approved_tool_call_ids, const llm_agent_run_options& options,
@@ -1023,6 +1028,7 @@ private:
             .reasoning_content = assistant_reasoning_content,
             .tool_calls = calls,
             .context_source = llm_context_source::tool_result,
+            .provider_state = assistant_provider_state,
           });
           assistant_already_in_request = true;
         }
@@ -1079,6 +1085,7 @@ private:
         .reasoning_content = assistant_reasoning_content,
         .tool_calls = calls,
         .context_source = llm_context_source::tool_result,
+        .provider_state = assistant_provider_state,
       });
     }
     if (!assistant_persisted && options.persist_assistant_messages) {

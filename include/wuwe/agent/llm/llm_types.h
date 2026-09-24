@@ -198,6 +198,7 @@ struct llm_provider_capabilities {
   bool json_schema_output { false };
   bool explicit_cache_control { false };
   bool declared { true };
+  bool provider_state { false };
 };
 
 inline std::string effective_response_language(const llm_language_preferences& preferences) {
@@ -248,6 +249,14 @@ inline std::string llm_language_contract(const llm_language_preferences& prefere
   return contract;
 }
 
+// Opaque, provider-bound continuation material (for example encrypted reasoning).
+// Preserve it with its assistant message, including durable tool suspensions.
+// It is protocol state, not user-visible reasoning or an authentication token.
+struct llm_provider_state {
+  std::string provider;
+  std::string data;
+};
+
 struct chat_message {
   std::string role;
   std::string content;
@@ -259,6 +268,7 @@ struct chat_message {
   std::optional<std::string> tool_call_id;
   std::vector<llm_tool_call> tool_calls;
   llm_context_source context_source { llm_context_source::automatic };
+  std::optional<llm_provider_state> provider_state;
 };
 
 struct llm_request {
@@ -312,6 +322,7 @@ struct llm_response {
   std::vector<llm_tool_call> tool_calls;
   std::map<std::string, std::string> metadata;
   std::map<std::string, std::string> reasoning_metadata;
+  std::optional<llm_provider_state> provider_state;
 
   explicit operator bool() const noexcept {
     return !error_code;

@@ -316,6 +316,11 @@ http_response httplib_http_client::send_stream(const http_request& request,
   std::string body;
   bool aborted = false;
 
+  // Preserve received headers/status when a streaming consumer intentionally
+  // stops at a protocol terminal before HTTP EOF (httplib returns no Result).
+  int received_status = 0;
+  std::vector<http_header> received_headers;
+
   httplib::Request req;
   req.method = normalize_http_method(request.method);
   if (!is_supported_method(req.method)) {
@@ -324,6 +329,13 @@ http_response httplib_http_client::send_stream(const http_request& request,
   req.path = parsed->path;
   req.headers = make_headers(request);
   req.body = request.body;
+  req.response_handler = [&](const httplib::Response& response) {
+    received_status = response.status;
+    received_headers.clear();
+    for (const auto& [name, value] : response.headers)
+      received_headers.push_back({ name, value });
+    return true;
+  };
   if (request.max_redirects > 0) {
     req.redirect_count_ = static_cast<std::size_t>(request.max_redirects);
   }
@@ -355,6 +367,10 @@ http_response httplib_http_client::send_stream(const http_request& request,
 
   const auto result = client.send(req);
   auto response = make_http_response(result, std::move(body));
+  if (response.status_code == 0 && received_status != 0) {
+    response.status_code = received_status;
+    response.headers = std::move(received_headers);
+  }
   if (aborted && !response.error_code) {
     response.transport_error = make_error_code(transport_error::aborted_by_callback);
     response.error_code = response.transport_error;

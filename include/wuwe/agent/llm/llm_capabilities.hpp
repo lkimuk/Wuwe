@@ -36,6 +36,20 @@ struct llm_request_validation {
     };
   }
   std::unordered_set<std::string> tool_names;
+  for (const auto& message : request.messages) {
+    if (message.provider_state &&
+        (message.role != "assistant" || message.provider_state->provider.empty() ||
+          message.provider_state->data.empty())) {
+      return { .error_code = make_error_code(llm_error_code::invalid_request),
+        .message =
+          "Opaque continuation state requires an assistant message and provider identity" };
+    }
+    if (message.provider_state && capabilities.declared && !capabilities.provider_state) {
+      return { .error_code = make_error_code(llm_error_code::unsupported_capability),
+        .message = "LLM provider does not accept opaque continuation state",
+        .capability = "provider_state" };
+    }
+  }
   for (const auto& tool : request.tools) {
     if (tool.name.empty()) {
       return {

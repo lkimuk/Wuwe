@@ -401,7 +401,7 @@ private:
   }
 
   [[nodiscard]] static bool can_truncate(const ::wuwe::chat_message& message) {
-    return message.tool_calls.empty() && !message.content.empty();
+    return message.tool_calls.empty() && !message.provider_state && !message.content.empty();
   }
 
   void truncate_message(::wuwe::chat_message& message, std::size_t tokens_to_remove) const {

@@ -95,6 +95,25 @@ target_link_libraries(llm_model_discovery_tests PRIVATE wuwe)
 wuwe_copy_runtime_dlls(llm_model_discovery_tests)
 add_test(NAME llm_model_discovery_tests COMMAND llm_model_discovery_tests)
 
+add_executable(oauth_account_tests oauth_account_tests.cpp)
+add_executable(codex_oauth_tests codex_oauth_tests.cpp)
+add_executable(codex_llm_tests codex_llm_tests.cpp)
+target_link_libraries(codex_llm_tests PRIVATE wuwe)
+if(MSVC)
+    target_compile_options(codex_llm_tests PRIVATE /bigobj)
+endif()
+wuwe_copy_runtime_dlls(codex_llm_tests)
+add_test(NAME codex_llm_tests COMMAND codex_llm_tests)
+set_tests_properties(codex_llm_tests PROPERTIES TIMEOUT 30 LABELS "concurrency")
+target_link_libraries(codex_oauth_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(codex_oauth_tests)
+add_test(NAME codex_oauth_tests COMMAND codex_oauth_tests)
+set_tests_properties(codex_oauth_tests PROPERTIES TIMEOUT 30 LABELS "concurrency")
+target_link_libraries(oauth_account_tests PRIVATE wuwe)
+wuwe_copy_runtime_dlls(oauth_account_tests)
+add_test(NAME oauth_account_tests COMMAND oauth_account_tests)
+set_tests_properties(oauth_account_tests PROPERTIES TIMEOUT 30 LABELS "concurrency")
+
 add_executable(p1_infrastructure_tests
     p1_infrastructure_tests.cpp
 )
@@ -278,6 +297,12 @@ add_executable(header_independence_tests
     header_independence/llm_dispatch_header.cpp
     header_independence/llm_model_discovery_header.cpp
     header_independence/llm_provider_presets_header.cpp
+    header_independence/oauth_account_header.cpp
+    header_independence/codex_oauth_header.cpp
+    header_independence/codex_llm_header.cpp
+    header_independence/oauth_authorization_header.cpp
+    header_independence/oauth_store_header.cpp
+    header_independence/oauth_refresh_header.cpp
     header_independence/skills_header.cpp
     header_independence/version_header.cpp
     header_independence/umbrella_header.cpp
