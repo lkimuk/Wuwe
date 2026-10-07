@@ -1379,6 +1379,73 @@ void test_openai_compatible_rejects_reasoning_only_terminal_stream() {
     "empty-response diagnostics should preserve the observed reasoning size");
 }
 
+void test_openai_stream_completion_boundaries() {
+  using nlohmann::json;
+  const auto frame = [](const json& delta, const json& finish) {
+    return "data: " + json({{"choices", json::array({
+      {{"delta", delta}, {"finish_reason", finish}}
+    })}}).dump() + "\n\n";
+  };
+  const std::vector<json> deltas {
+    {{"reasoning_content", "working"}},
+    {{"content", "partial answer"}},
+    {{"tool_calls", json::array({{{"index", 0}, {"id", "call_1"},
+      {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{\"x\":"}}}}})}}
+  };
+  for (const auto& delta : deltas) {
+    for (const bool transport_error : {false, true}) {
+      std::shared_ptr<wuwe::http_client> http;
+      const auto body = frame(delta, nullptr);
+      if (transport_error) http = std::make_shared<streaming_error_http_client>(body);
+      else http = std::make_shared<capture_http_client>(body);
+      wuwe::openai_compatible_llm_client client(
+        {.api_key = "", .require_api_key = false, .model = "test", .max_retries = 0}, http);
+      int errors = 0, done = 0, tools = 0;
+      wuwe::llm_stream_callbacks callbacks;
+      callbacks.on_event = [&](const wuwe::llm_stream_event& e) {
+        errors += e.type == wuwe::llm_stream_event_type::error;
+        done += e.type == wuwe::llm_stream_event_type::done;
+        tools += e.type == wuwe::llm_stream_event_type::tool_call_done;
+      };
+      const auto response = client.complete_stream({}, callbacks);
+      require(bool(response.error_code), "unfinished streams must fail even with partial output");
+      require(response.stop_reason == "incomplete_stream", "truncation should be identifiable");
+      require(errors == 1 && done == 0 && tools == 0 && response.tool_calls.empty(),
+        "unfinished streams must never publish a completed response or executable tool");
+      require(response.metadata.at("saw_done") == "false", "completion diagnostics required");
+      if (transport_error) {
+        require(response.metadata.count("stream_transport_error") == 1,
+          "original transport error must be retained");
+        require(response.metadata.count("ignored_stream_transport_error") == 0,
+          "partial output must not suppress transport errors");
+      }
+    }
+  }
+  for (const auto& reason : {"length", "content_filter"}) {
+    auto http = std::make_shared<capture_http_client>(frame(deltas.back(), reason) + "data: [DONE]\n\n");
+    wuwe::openai_compatible_llm_client client(
+      {.api_key = "", .require_api_key = false, .model = "test"}, http);
+    int completed_tools = 0;
+    wuwe::llm_stream_callbacks callbacks;
+    callbacks.on_event = [&](const wuwe::llm_stream_event& e) {
+      completed_tools += e.type == wuwe::llm_stream_event_type::tool_call_done;
+    };
+    const auto response = client.complete_stream({}, callbacks);
+    require(bool(response.error_code) && response.tool_calls.empty() && completed_tools == 0,
+      "limited or filtered tool arguments must not be executable");
+    require(response.finish_reason == reason && response.metadata.at("saw_done") == "true",
+      "provider finish reason must survive error classification");
+  }
+  for (const auto& terminal : {frame(json::object(), "stop"), std::string("data: [DONE]\n\n")}) {
+    auto http = std::make_shared<streaming_error_http_client>(frame(deltas[1], nullptr) + terminal);
+    wuwe::openai_compatible_llm_client client(
+      {.api_key = "", .require_api_key = false, .model = "test"}, http);
+    const auto response = client.complete_stream({}, {});
+    require(!response.error_code && response.content == "partial answer",
+      "completed answers tolerate transport errors after a terminal event");
+  }
+}
+
 void test_advanced_generation_capabilities_are_mapped_or_rejected() {
   const nlohmann::json schema {
     { "type", "object" },
@@ -1977,6 +2044,7 @@ int main() {
     test_deepseek_streams_while_filtering_text_tool_protocol();
     test_deepseek_stream_filter_restores_invalid_protocol_text();
     test_openai_compatible_rejects_reasoning_only_terminal_stream();
+    test_openai_stream_completion_boundaries();
     test_advanced_generation_capabilities_are_mapped_or_rejected();
     test_native_provider_streaming_success_and_incomplete_streams();
     test_native_provider_streaming_uses_stage_timeout_options();

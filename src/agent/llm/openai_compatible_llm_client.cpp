@@ -633,6 +633,10 @@ llm_response openai_compatible_llm_client::complete_stream(
     agent::llm_detail::stream_timeout_guard timeout_guard(config_.stream_timeouts);
 
     const auto fail_stream = [&](std::error_code error_code, std::string content) {
+      result.metadata["finish_reason"] = result.finish_reason;
+      result.metadata["saw_done"] = saw_done ? "true" : "false";
+      result.metadata["reasoning_bytes"] = std::to_string(result.reasoning_summary.size());
+      result.metadata["content_bytes"] = std::to_string(result.content.size());
       result.error_code = error_code;
       result.content = std::move(content);
       stream_parse_failed = true;
@@ -840,11 +844,19 @@ llm_response openai_compatible_llm_client::complete_stream(
       result.error_code =
         classify_openai_error(response.error_code, body.is_discarded() ? json::object() : body);
 
-      if (emitted_output && saw_sse_event) {
+      result.metadata["stream_transport_error"] = response.error_code.message();
+      result.metadata["stream_transport_error_category"] = response.error_code.category().name();
+      result.metadata["stream_transport_error_value"] = std::to_string(response.error_code.value());
+      result.metadata["finish_reason"] = result.finish_reason;
+      result.metadata["saw_done"] = saw_done ? "true" : "false";
+      result.metadata["reasoning_bytes"] = std::to_string(result.reasoning_summary.size());
+      result.metadata["content_bytes"] = std::to_string(result.content.size());
+      if (saw_sse_event && (saw_done || !result.finish_reason.empty())) {
         result.error_code.clear();
         result.metadata["ignored_stream_transport_error"] = response.error_code.message();
       }
       else {
+        if (saw_sse_event) result.stop_reason = "incomplete_stream";
         result.content =
           openai_error_message(result.error_code, body.is_discarded() ? json::object() : body);
       }
@@ -937,6 +949,23 @@ llm_response openai_compatible_llm_client::complete_stream(
           .type = llm_stream_event_type::done,
           .response = result,
         });
+      return result;
+    }
+
+    // Do not publish executable tool calls from a truncated or limited stream.
+    if (!saw_done && result.finish_reason.empty()) {
+      result.stop_reason = "incomplete_stream";
+      fail_stream(agent::make_error_code(agent::llm_error_code::invalid_response),
+        "OpenAI-compatible streaming response ended before a terminal event.");
+      return result;
+    }
+    if (result.finish_reason == "length" || result.finish_reason == "content_filter") {
+      result.stop_reason = result.finish_reason == "length"
+        ? "output_limit_reached" : "content_filtered";
+      fail_stream(agent::make_error_code(agent::llm_error_code::invalid_response),
+        result.finish_reason == "length"
+          ? "OpenAI-compatible response reached the output token limit."
+          : "OpenAI-compatible response was stopped by the content filter.");
       return result;
     }
 
