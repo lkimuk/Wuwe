@@ -809,6 +809,7 @@ void test_openai_compatible_provider_presets() {
     R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})";
   wuwe::llm_request request;
   request.messages.push_back({ .role = "user", .content = "hello" });
+  request.max_output_tokens = 321;
 
   auto custom_path_http = std::make_shared<capture_http_client>(openai_body);
   wuwe::openai_compatible_llm_client custom_path_client(
@@ -849,6 +850,10 @@ void test_openai_compatible_provider_presets() {
   require(openai.complete(request).content == "ok", "OpenAI preset should parse response");
   require(openai_http->requests.front().url == "https://api.openai.com/v1/chat/completions",
     "OpenAI preset should use the OpenAI base URL");
+  const auto openai_payload = nlohmann::json::parse(openai_http->requests.front().body);
+  require(openai_payload.value("max_completion_tokens", 0) == 321 &&
+            !openai_payload.contains("max_tokens"),
+    "OpenAI preset should use max_completion_tokens for current OpenAI models");
 
   auto deepseek_http = std::make_shared<capture_http_client>(openai_body);
   wuwe::deepseek_llm_client deepseek(

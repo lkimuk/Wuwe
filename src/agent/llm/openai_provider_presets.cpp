@@ -19,11 +19,13 @@ llm_client_config normalize_dedicated_preset(std::string_view id, llm_client_con
 } // namespace
 
 openai_llm_client::openai_llm_client(llm_client_config config)
-    : openai_compatible_llm_client(normalize_config(std::move(config))) {
+    : openai_compatible_llm_client(normalize_config(std::move(config)), nullptr,
+        { .use_max_completion_tokens = true }) {
 }
 
 openai_llm_client::openai_llm_client(llm_client_config config, std::shared_ptr<http_client> http)
-    : openai_compatible_llm_client(normalize_config(std::move(config)), std::move(http)) {
+    : openai_compatible_llm_client(normalize_config(std::move(config)), std::move(http),
+        { .use_max_completion_tokens = true }) {
 }
 
 llm_client_config openai_llm_client::normalize_config(llm_client_config config) {
