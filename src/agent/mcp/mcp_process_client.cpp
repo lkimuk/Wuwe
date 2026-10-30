@@ -239,12 +239,18 @@ struct mcp_process_client::impl {
     auto environment_block = build_windows_environment_block(command.environment);
     const char* working_directory =
       command.working_directory.empty() ? nullptr : command.working_directory.c_str();
+    // MCP servers communicate exclusively over the redirected stdio handles
+    // above.  They must never create a user-visible console window when the
+    // host application starts them (for example node.exe, npx, or cmd.exe).
+    // CREATE_NO_WINDOW keeps the child completely managed by the MCP client
+    // while preserving the stdio transport.
+    constexpr DWORD creation_flags = CREATE_NO_WINDOW;
     const BOOL created = CreateProcessA(nullptr,
       command_line.data(),
       nullptr,
       nullptr,
       TRUE,
-      0,
+      creation_flags,
       environment_block.empty() ? nullptr : environment_block.data(),
       working_directory,
       &startup,
