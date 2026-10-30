@@ -13,3 +13,8 @@ endif()
 
 add_executable(wuwe_package_smoke main.cpp)
 target_link_libraries(wuwe_package_smoke PRIVATE wuwe::wuwe)
+
+if(MSVC)
+    # Catch mixed Debug/Release CRT dependencies in the installed package.
+    target_link_options(wuwe_package_smoke PRIVATE /WX)
+endif()

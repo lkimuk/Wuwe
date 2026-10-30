@@ -40,15 +40,35 @@ endif()
 # Do not let an unrelated consumer dependency with the generic ZLIB::ZLIB name
 # silently change that link contract.
 if(WUWE_USING_BUNDLED_CURL)
-    find_library(WUWE_BUNDLED_ZLIB_LIBRARY
+    find_library(WUWE_BUNDLED_ZLIB_LIBRARY_RELEASE
         NAMES zlibstatic zlibstat zlib z
         PATHS "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@"
-        NO_DEFAULT_PATH REQUIRED)
+        NO_DEFAULT_PATH)
+    find_library(WUWE_BUNDLED_ZLIB_LIBRARY_DEBUG
+        NAMES zlibstaticd zlibstatd zlibd zd
+        PATHS "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@"
+        NO_DEFAULT_PATH)
+    if(NOT WUWE_BUNDLED_ZLIB_LIBRARY_RELEASE AND NOT WUWE_BUNDLED_ZLIB_LIBRARY_DEBUG)
+        set(wuwe_FOUND FALSE)
+        set(wuwe_NOT_FOUND_MESSAGE "The bundled zlib archive is missing from the Wuwe installation")
+        return()
+    endif()
     if(NOT TARGET wuwe::bundled_zlib)
         add_library(wuwe::bundled_zlib STATIC IMPORTED)
         set_target_properties(wuwe::bundled_zlib PROPERTIES
-            IMPORTED_LOCATION "${WUWE_BUNDLED_ZLIB_LIBRARY}"
             INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
+        # Publish each installed configuration independently, including Debug-only
+        # packages. CMake can fall back to the available archive in single-config
+        # packages, while combined installations retain the matching CRT.
+        foreach(WUWE_ZLIB_CONFIG RELEASE DEBUG)
+            if(WUWE_BUNDLED_ZLIB_LIBRARY_${WUWE_ZLIB_CONFIG})
+                set_property(TARGET wuwe::bundled_zlib APPEND PROPERTY
+                    IMPORTED_CONFIGURATIONS "${WUWE_ZLIB_CONFIG}")
+                set_target_properties(wuwe::bundled_zlib PROPERTIES
+                    IMPORTED_LOCATION_${WUWE_ZLIB_CONFIG}
+                        "${WUWE_BUNDLED_ZLIB_LIBRARY_${WUWE_ZLIB_CONFIG}}")
+            endif()
+        endforeach()
     endif()
     foreach(WUWE_CURL_TARGET CURL::libcurl_static CURL::libcurl)
         if(TARGET "${WUWE_CURL_TARGET}")
