@@ -2084,6 +2084,13 @@ private:
   llm_response complete_model(llm_request request, const llm_agent_run_options& options,
     std::stop_token stop_token, bool use_streaming) const {
     const auto& callbacks = options.callbacks;
+    // The provider is run-local and may expose additional tools after a
+    // capability grant. Refresh the catalog for every regular model round;
+    // finalization requests intentionally clear tools and therefore skip this
+    // refresh so they remain tools-disabled.
+    if (tools_ && !request.tools.empty()) {
+      request.tools = tools_();
+    }
     const auto execution_context = request.execution_context;
     auto prepared_request = prepare_model_request(callbacks, std::move(request));
     if (!prepared_request) {
