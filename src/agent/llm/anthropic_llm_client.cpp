@@ -1,4 +1,5 @@
 #include <wuwe/agent/llm/anthropic_llm_client.h>
+#include "llm_message_content.hpp"
 
 #include "llm_endpoint.hpp"
 #include "llm_retry.hpp"
@@ -142,7 +143,7 @@ json anthropic_llm_client::build_payload(const llm_request& request, bool stream
       message["content"] = std::move(content);
     }
     else {
-      message["content"] = msg.content;
+      message["content"] = agent::llm::detail::anthropic_message_content(msg);
     }
     messages.push_back(std::move(message));
   }

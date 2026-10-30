@@ -37,6 +37,23 @@ struct llm_request_validation {
   }
   std::unordered_set<std::string> tool_names;
   for (const auto& message : request.messages) {
+    if (!message.images.empty() && message.role != "user") {
+      return { .error_code = make_error_code(llm_error_code::invalid_request),
+        .message = "LLM image input is only valid on user messages" };
+    }
+    if (!message.images.empty() && capabilities.declared && !capabilities.multimodal_input) {
+      return { .error_code = make_error_code(llm_error_code::unsupported_capability),
+        .message = "LLM provider does not accept image input",
+        .capability = "multimodal_input" };
+    }
+    for (const auto& image : message.images) {
+      if (image.bytes.empty() || image.bytes.size() > 20u * 1024u * 1024u ||
+          (image.media_type != "image/png" && image.media_type != "image/jpeg" &&
+            image.media_type != "image/webp" && image.media_type != "image/gif")) {
+        return { .error_code = make_error_code(llm_error_code::invalid_request),
+          .message = "LLM image input must be a non-empty PNG, JPEG, WebP, or GIF within 20 MiB" };
+      }
+    }
     if (message.provider_state &&
         (message.role != "assistant" || message.provider_state->provider.empty() ||
           message.provider_state->data.empty())) {

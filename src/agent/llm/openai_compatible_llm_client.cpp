@@ -1,4 +1,5 @@
 #include <wuwe/agent/llm/openai_compatible_llm_client.h>
+#include "llm_message_content.hpp"
 
 #include "llm_endpoint.hpp"
 
@@ -1042,7 +1043,8 @@ json openai_compatible_llm_client::build_openai_payload(const llm_request& reque
   }
 
   for (const auto& msg : request.messages) {
-    json message = { { "role", msg.role }, { "content", msg.content } };
+    json message = { { "role", msg.role },
+      { "content", agent::llm::detail::openai_message_content(msg) } };
     if (compatibility_policy_.replay_reasoning_content && !msg.reasoning_content.empty()) {
       message["reasoning_content"] = msg.reasoning_content;
     }

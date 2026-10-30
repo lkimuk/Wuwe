@@ -31,6 +31,7 @@ public:
       .streaming = true,
       .tools = true,
       .tool_choice = true,
+      .multimodal_input = true,
       .stop_sequences = true,
     });
   }

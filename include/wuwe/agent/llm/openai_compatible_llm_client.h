@@ -54,6 +54,7 @@ public:
       .tools = true,
       .tool_choice = true,
       .json_response_format = true,
+      .multimodal_input = true,
       .stop_sequences = true,
     });
   }

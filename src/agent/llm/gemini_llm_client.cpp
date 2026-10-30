@@ -1,4 +1,5 @@
 #include <wuwe/agent/llm/gemini_llm_client.h>
+#include "llm_message_content.hpp"
 
 #include "llm_endpoint.hpp"
 
@@ -177,6 +178,7 @@ json gemini_llm_client::build_payload(const llm_request& request) const {
       if (!msg.content.empty()) {
         parts.push_back({ { "text", msg.content } });
       }
+      agent::llm::detail::append_gemini_images(parts, msg);
       for (const auto& call : msg.tool_calls) {
         parts.push_back({ { "functionCall",
           { { "id", call.id },

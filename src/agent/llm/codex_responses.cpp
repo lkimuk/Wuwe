@@ -1,4 +1,5 @@
 #include "codex_responses.h"
+#include "llm_message_content.hpp"
 #include "../auth/codex_oauth_protocol.h"
 
 #include <algorithm>
@@ -120,6 +121,9 @@ payload_result build_payload(
     return true;
   };
   for (const auto& message : request.messages) {
+    for (const auto& image : message.images)
+      if (!count(image.bytes.size()))
+        return fail(llm_error_code::invalid_request);
     if (!count(message.content.size()) || !count(message.reasoning_content.size()) ||
         (message.provider_state && !count(message.provider_state->data.size())))
       return fail(llm_error_code::invalid_request);
@@ -234,9 +238,7 @@ payload_result build_payload(
     if (!message.content.empty() || (message.role == "user" && message.tool_calls.empty())) {
       body["input"].push_back({ { "type", "message" },
         { "role", message.role },
-        { "content",
-          json::array({ { { "type", message.role == "user" ? "input_text" : "output_text" },
-            { "text", message.content } } }) } });
+        { "content", agent::llm::detail::codex_message_content(message) } });
     }
     for (const auto& call : message.tool_calls) {
       if (!safe_text(call.id, 1024) || !function_name(call.name) ||

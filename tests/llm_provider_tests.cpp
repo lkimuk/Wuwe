@@ -739,6 +739,65 @@ void test_discovery_and_generation_endpoint_parity() {
   }
 }
 
+void test_provider_image_inputs_use_native_payloads() {
+  wuwe::llm_request request;
+  request.messages.push_back({ .role = "user",
+    .content = "look",
+    .images = { { .media_type = "image/png", .bytes = { 1, 2, 3 } } } });
+  const auto body = R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})";
+  auto openai_http = std::make_shared<capture_http_client>(body);
+  wuwe::openai_compatible_llm_client openai(
+    { .base_url = "https://gateway.test", .api_key = "test-key", .model = "vision" }, openai_http);
+  require(!openai.complete(request).error_code, "OpenAI image request should be accepted");
+  const auto openai_payload = nlohmann::json::parse(openai_http->requests.front().body);
+  const auto& openai_content = openai_payload["messages"].back()["content"];
+  require(openai_content.is_array() && openai_content[0]["type"] == "text" &&
+            openai_content[1]["type"] == "image_url" &&
+            openai_content[1]["image_url"]["url"] == "data:image/png;base64,AQID",
+    "OpenAI image input must use a data URL part");
+
+  auto anthropic_http = std::make_shared<capture_http_client>(
+    R"({"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"})");
+  wuwe::anthropic_llm_client anthropic(
+    { .base_url = "https://gateway.test", .api_key = "test-key", .model = "vision" }, anthropic_http);
+  require(!anthropic.complete(request).error_code, "Anthropic image request should be accepted");
+  const auto anthropic_payload = nlohmann::json::parse(anthropic_http->requests.front().body);
+  const auto& anthropic_content = anthropic_payload["messages"][0]["content"];
+  require(anthropic_content.is_array() && anthropic_content[0]["type"] == "image" &&
+            anthropic_content[0]["source"]["media_type"] == "image/png" &&
+            anthropic_content[0]["source"]["data"] == "AQID" &&
+            anthropic_content[1]["type"] == "text",
+    "Anthropic image input must use a base64 image block");
+
+  auto gemini_http = std::make_shared<capture_http_client>(
+    R"({"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]})");
+  wuwe::gemini_llm_client gemini(
+    { .base_url = "https://gateway.test", .api_key = "test-key", .model = "vision" }, gemini_http);
+  require(!gemini.complete(request).error_code, "Gemini image request should be accepted");
+  const auto gemini_payload = nlohmann::json::parse(gemini_http->requests.front().body);
+  const auto& gemini_parts = gemini_payload["contents"][0]["parts"];
+  require(gemini_parts[1]["inlineData"]["mimeType"] == "image/png" &&
+            gemini_parts[1]["inlineData"]["data"] == "AQID",
+    "Gemini image input must use inline data");
+
+  auto ollama_http = std::make_shared<capture_http_client>(
+    R"({"message":{"content":"ok"},"done":true,"done_reason":"stop"})");
+  wuwe::ollama_llm_client ollama(
+    { .base_url = "http://127.0.0.1:11434", .api_key = "", .require_api_key = false, .model = "vision" },
+    ollama_http);
+  require(!ollama.complete(request).error_code, "Ollama image request should be accepted");
+  const auto ollama_payload = nlohmann::json::parse(ollama_http->requests.front().body);
+  require(ollama_payload["messages"].back()["images"][0] == "AQID",
+    "Ollama image input must use its images array");
+
+  request.messages.front().images.front().media_type = "image/tiff";
+  auto rejected_http = std::make_shared<capture_http_client>(body);
+  wuwe::openai_compatible_llm_client rejected(
+    { .base_url = "https://gateway.test", .api_key = "test-key", .model = "vision" }, rejected_http);
+  require(static_cast<bool>(rejected.complete(request).error_code) && rejected_http->requests.empty(),
+    "Unsupported image media types must be rejected before HTTP");
+}
+
 void test_native_endpoint_parity() {
   const auto verify = []<typename Client>(const char* provider,
                         const char* base,
@@ -2038,6 +2097,7 @@ int main() {
     test_priority_provider_protocols();
     test_discovery_and_generation_endpoint_parity();
     test_native_endpoint_parity();
+    test_provider_image_inputs_use_native_payloads();
     test_native_provider_clients_parse_text_and_tools();
     test_execution_context_trace_reaches_provider_http_requests();
     test_reasoning_language_contract_is_mapped_to_provider_payloads();

@@ -30,6 +30,7 @@ public:
       .streaming = true,
       .tools = true,
       .json_response_format = true,
+      .multimodal_input = true,
       .local_runtime = true,
       .stop_sequences = true,
       .deterministic_seed = true,

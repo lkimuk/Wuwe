@@ -21,6 +21,7 @@ llm_provider_capabilities openai_capabilities() {
   auto capabilities = cloud_chat_capabilities();
   capabilities.deterministic_seed = true;
   capabilities.json_schema_output = true;
+  capabilities.multimodal_input = true;
   return capabilities;
 }
 
@@ -40,6 +41,7 @@ llm_provider_capabilities anthropic_capabilities() {
     .reasoning_summary = true,
     .streaming_reasoning_summary = true,
     .reasoning_language_control = llm_reasoning_language_control::prompt_contract,
+    .multimodal_input = true,
     .stop_sequences = true,
   };
 }
@@ -82,6 +84,7 @@ llm_provider_capabilities ollama_capabilities() {
     .reasoning_summary = true,
     .streaming_reasoning_summary = true,
     .reasoning_language_control = llm_reasoning_language_control::prompt_contract,
+    .multimodal_input = true,
     .local_runtime = true,
     .stop_sequences = true,
     .deterministic_seed = true,

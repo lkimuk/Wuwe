@@ -1,4 +1,5 @@
 #include <wuwe/agent/llm/ollama_llm_client.h>
+#include "llm_message_content.hpp"
 
 #include "llm_endpoint.hpp"
 #include "llm_retry.hpp"
@@ -149,6 +150,9 @@ json ollama_llm_client::build_payload(const llm_request& request, bool stream) c
     }
     if (msg.tool_call_id.has_value()) {
       message["tool_call_id"] = *msg.tool_call_id;
+    }
+    if (!msg.images.empty()) {
+      message["images"] = agent::llm::detail::ollama_message_images(msg);
     }
     if (!msg.tool_calls.empty()) {
       auto tool_calls = json::array();

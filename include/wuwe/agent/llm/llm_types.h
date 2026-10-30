@@ -257,9 +257,17 @@ struct llm_provider_state {
   std::string data;
 };
 
+// Provider-neutral image input. Bytes stay with the caller; clients encode
+// them into the provider payload and never persist them.
+struct llm_image_input {
+  std::string media_type;
+  std::vector<std::uint8_t> bytes;
+};
+
 struct chat_message {
   std::string role;
   std::string content;
+  std::vector<llm_image_input> images;
   // Provider-visible reasoning state that must be replayed verbatim by
   // providers such as DeepSeek when tools are used in thinking mode. This is
   // protocol state, not user-visible assistant content.
